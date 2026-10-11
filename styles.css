@@ -1,0 +1,257 @@
+/* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
+   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿），游戏是紫的，靠位置和粗细再区分一层 */
+.naut-root, .naut-ai-modal {
+  --naut-event: #e3a924;
+  --naut-task: #2b64c3;
+  --naut-prio: #d03739;
+  --naut-review: #31b0c6;
+  --naut-ai-claude: #d97757;
+  --naut-ai-codex: #62b0ea;
+  --naut-ai-workbuddy: #17a57f;
+  --naut-ai: var(--naut-ai-claude);
+  --naut-game: #b04fa8;
+  --naut-done: var(--text-faint);
+  --naut-now: var(--text-normal);
+  --naut-ease: cubic-bezier(.2, .7, .2, 1);
+}
+.naut-root { padding: 10px 12px 24px; }
+.naut-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.naut-head button { padding: 2px 8px; font-size: var(--font-ui-small); }
+.naut-date { flex: 1; text-align: center; font-weight: 600; }
+.naut-head .naut-bounds-btn { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.naut-head .naut-bounds-btn.is-set { color: var(--text-normal); }
+/* 起床 / 收工弹窗 */
+.naut-bounds-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.naut-bounds-name { width: 5em; }
+.naut-bounds-row input { width: 7em; font-variant-numeric: tabular-nums; }
+.naut-bounds-err { color: var(--text-error); font-size: var(--font-ui-small); min-height: 1.2em; margin: 4px 0; }
+.naut-empty { color: var(--text-muted); text-align: center; margin-top: 40px; }
+
+/* 容量条 */
+.naut-cap { margin-bottom: 6px; }
+.naut-bar { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; }
+.naut-bar > div { border-radius: 1px; }
+.naut-bar-task { background: var(--naut-task); }
+.naut-bar-free { background: var(--background-modifier-border); }
+.naut-bar-over { background: var(--naut-prio); }
+.naut-cap-text { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 5px; font-variant-numeric: tabular-nums; }
+.naut-over-text { color: var(--naut-prio); font-weight: 600; }
+.naut-muted { color: var(--text-faint); }
+
+/* 容量条下面的几行汇总：字用正文的灰，前面的小色块对应螺旋上的颜色（细线 = 内圈的线，方块 = 主带上的段） */
+.naut-ai-line, .naut-game-line, .naut-review-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; font-variant-numeric: tabular-nums; }
+.naut-game-line::before, .naut-review-line::before, .naut-sw { content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.naut-sw + .naut-sw { margin-left: -3px; }
+/* 按 Agent 上色：带 naut-by-xxx 的元素自己和里面用到 --naut-ai 的地方都换成那个 Agent 的颜色 */
+.naut-by-claude { --naut-ai: var(--naut-ai-claude); }
+.naut-by-codex { --naut-ai: var(--naut-ai-codex); }
+.naut-by-workbuddy { --naut-ai: var(--naut-ai-workbuddy); }
+.naut-bg-claude { background: var(--naut-ai-claude); }
+.naut-bg-codex { background: var(--naut-ai-codex); }
+.naut-bg-workbuddy { background: var(--naut-ai-workbuddy); }
+.naut-game-line::before { background: var(--naut-game); }
+.naut-review-line::before { background: var(--naut-review); width: 8px; height: 8px; }
+
+/* 螺旋上方固定的一行：鼠标划到哪一段，立刻显示那一段的时间和做的事。高度定死，有字没字下面都不跳 */
+.naut-hover { display: flex; justify-content: center; align-items: baseline; gap: 8px; height: 1.6em; line-height: 1.6em; margin: 6px 0 -4px; padding: 0 4px; white-space: nowrap; overflow: hidden; font-size: var(--font-ui-small); }
+.naut-hover-time { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.naut-hover-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 700; color: var(--text-normal); }
+.naut-hover-sub { flex: 0 20 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+
+/* 螺旋 */
+.naut-svg { width: 100%; max-width: 340px; display: block; margin: 0 auto; overflow: visible; }
+.naut-track { fill: none; stroke: var(--background-modifier-border); stroke-width: 14; stroke-linecap: round; }
+.naut-seg { fill: none; stroke-width: 14; stroke-linecap: butt; cursor: pointer; transition: stroke-width .16s var(--naut-ease), opacity .16s ease-out; }
+.naut-event { stroke: var(--naut-event); }
+.naut-task { stroke: var(--naut-task); }
+.naut-prio { stroke: var(--naut-prio); }
+.naut-done { stroke: var(--naut-done); }
+.naut-seg.naut-review { stroke: var(--naut-review); }
+.naut-done-event { opacity: 0.45; }
+/* 做到一半：已经做过的几段画淡，后面排的画实 */
+.naut-seg.naut-worked { opacity: 0.45; }
+.naut-hour { font-size: 8px; fill: var(--text-muted); opacity: 0.75; text-anchor: middle; dominant-baseline: middle; }
+.naut-log { fill: var(--text-normal); opacity: 0.7; }
+.naut-center { font-size: 16px; font-weight: 600; fill: var(--text-normal); text-anchor: middle; font-variant-numeric: tabular-nums; }
+/* 现在：一根中性色的指针（红色留给「重要」），圆点外面一圈底色，压在线段上也看得清 */
+.naut-now { stroke: var(--naut-now); stroke-width: 1.25; stroke-linecap: round; opacity: 0.5; }
+.naut-now-dot { fill: var(--naut-now); stroke: var(--background-primary); stroke-width: 2; }
+.naut-now-halo { fill: var(--naut-now); opacity: 0; pointer-events: none; transform-box: fill-box; transform-origin: center; animation: naut-pulse 2.6s ease-out infinite; }
+
+/* 🤖 人机协作 / 🎮 游戏：内圈细线 */
+.naut-ai, .naut-game { fill: none; stroke-width: 3; stroke-linecap: round; opacity: 0.9; transition: stroke-width .16s var(--naut-ease); }
+.naut-ai { stroke: var(--naut-ai); }
+.naut-game { stroke: var(--naut-game); }
+.naut-ai.is-hot, .naut-game.is-hot { stroke-width: 5; opacity: 1; }
+/* 细线上面叠的一条看不见的粗线，只管接鼠标 */
+.naut-hit { fill: none; stroke: transparent; stroke-width: 9; stroke-linecap: round; pointer-events: stroke; }
+
+/* 这天实际开始之前 / 结束之后 */
+.naut-off { fill: none; stroke: var(--background-modifier-border); stroke-width: 3; stroke-dasharray: 2 5; stroke-linecap: round; }
+/* 起止把手 */
+.naut-handle { fill: var(--background-primary); stroke: var(--text-muted); stroke-width: 2; cursor: grab; touch-action: none; transition: stroke .15s, stroke-width .15s var(--naut-ease); }
+.naut-handle:hover { stroke: var(--text-accent); stroke-width: 3; }
+.naut-handle-label { font-size: 10px; font-weight: 600; fill: var(--text-normal); text-anchor: middle; pointer-events: none; font-variant-numeric: tabular-nums; }
+
+/* 鼠标停在螺旋的一段或列表的一行上：同一件事的线段和那一行一起亮，其余的线段淡下去 */
+.naut-seg:hover, .naut-seg.is-hot { stroke-width: 17; }
+.naut-seg.is-hot { opacity: 1; }
+.naut-has-hot .naut-seg:not(.is-hot) { opacity: 0.25; }
+.naut-row.is-hot { background: var(--background-modifier-hover); }
+
+/* 列表 */
+.naut-list { margin-top: 8px; font-size: var(--font-ui-small); }
+.naut-sec { margin: 10px 0 4px; font-size: var(--font-ui-smaller); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.naut-row { display: flex; gap: 8px; padding: 3px 6px; border-radius: 4px; border-left: 3px solid transparent; cursor: pointer; transition: background-color .12s ease-out; }
+.naut-row:hover { background: var(--background-modifier-hover); }
+.naut-time { min-width: 3.6em; flex: none; white-space: nowrap; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.naut-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.naut-dur { flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.naut-row.is-event { border-left-color: var(--naut-event); }
+.naut-row.is-task { border-left-color: var(--naut-task); }
+.naut-row.is-prio { border-left-color: var(--naut-prio); }
+.naut-row.is-over { border-left-color: var(--naut-prio); color: var(--naut-prio); }
+.naut-row.is-done { border-left-color: var(--naut-done); color: var(--text-muted); }
+.naut-row.is-review { border-left-color: var(--naut-review); }
+.naut-row.is-susp { border-left-color: var(--text-faint); color: var(--text-muted); }
+.naut-row.naut-ai-row { border-left-color: var(--naut-ai); cursor: default; }
+.naut-row.naut-ai-row .naut-dur { color: color-mix(in srgb, var(--naut-ai) 78%, var(--text-normal)); font-weight: 600; }
+/* 进行中的那一行：时间前面一个跟着呼吸的小圆点 */
+.naut-row.is-doing .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
+.naut-row.is-doing.is-prio .naut-time::before { background: var(--naut-prio); }
+
+/* 长期项目 · 该推一把 */
+.naut-proj-head { cursor: pointer; user-select: none; }
+.naut-proj-note { font-size: .78em; color: var(--text-muted); padding: 2px 4px 4px; }
+.naut-link { cursor: pointer; color: var(--text-accent); }
+.naut-proj .naut-proj-why { width: auto; min-width: 5.5em; font-size: .85em; color: var(--text-muted); }
+.naut-proj .naut-proj-why.is-late { color: var(--naut-prio); }
+.naut-proj .naut-proj-why.is-soon { color: var(--color-orange); }
+.naut-proj-add { flex: none; font-size: .8em; padding: 0 7px; height: 20px; margin-left: 4px; }
+
+/* 🤖 人机协作：近 7 天 */
+.naut-ai-week { display: flex; gap: 4px; height: 44px; margin: 6px 4px 2px; }
+.naut-ai-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; }
+.naut-ai-bar { display: flex; flex-direction: column-reverse; gap: 1px; overflow: hidden; opacity: 0.45; border-radius: 3px 3px 0 0; transform-origin: bottom; transition: opacity .15s; }
+.naut-ai-part { flex: 1 0 0; min-height: 1px; }
+.naut-ai-col.is-cur .naut-ai-bar, .naut-ai-col:hover .naut-ai-bar { opacity: 1; }
+.naut-ai-day { font-size: 9px; text-align: center; color: var(--text-faint); margin-top: 2px; }
+
+/* ▶ 开始做（改 DOING + Raycast 专注） */
+.naut-play { flex: none; font-size: .75em; padding: 0 6px; height: 20px; margin-left: 4px; opacity: 0; transition: opacity .15s; }
+.naut-row:hover .naut-play, .naut-play:focus-visible { opacity: 1; }
+@media (hover: none) { .naut-play { opacity: 1; } }
+
+/* 📅 macOS 日历 */
+.naut-cal-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.naut-cal-line.is-error { color: var(--text-error); white-space: normal; }
+
+/* ⏱ 正在专注的这一轮 / 🍚 吃饭锻炼中：一条淡蓝底的小条 */
+.naut-focus-line { display: flex; align-items: center; gap: 6px; font-size: var(--font-ui-smaller); color: var(--text-normal); font-weight: 600; margin-top: 6px; padding: 3px 4px 3px 8px; border-radius: 6px; background: color-mix(in srgb, var(--naut-task) 9%, transparent); }
+.naut-focus-line.naut-break-line { background: color-mix(in srgb, var(--naut-event) 14%, transparent); }
+.naut-focus-line span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.naut-focus-stop { flex: none; font-size: .9em; padding: 0 8px; height: 20px; }
+
+/* 🤖 这件任务期间的 Claude 会话 */
+.naut-ai-badge { flex: none; font-size: .8em; color: color-mix(in srgb, var(--naut-ai) 70%, var(--text-normal)); margin-left: 4px; cursor: pointer; }
+.naut-ai-badge:hover { text-decoration: underline; }
+.naut-ai-badge.is-weak { opacity: .45; }
+.naut-ai-modal .naut-ai-sess { border-left: 3px solid var(--naut-ai); padding: 6px 10px; margin: 10px 0; }
+.naut-ai-sess.is-weak { opacity: .65; border-left-color: var(--background-modifier-border); }
+.naut-ai-sess-title { font-weight: 600; }
+.naut-ai-sess-text { color: var(--text-muted); font-size: var(--font-ui-small); margin-top: 2px; }
+.naut-ai-sess-meta { color: var(--text-faint); font-size: var(--font-ui-smaller); margin-top: 4px; word-break: break-all; }
+.naut-ai-sess-btns { display: flex; gap: 8px; margin-top: 6px; }
+
+/* 📏 预估 vs 实际 */
+.naut-review-row { border-left-color: var(--text-faint); }
+.naut-calib { cursor: help; }
+
+/* 快捷操作 */
+.naut-ai-group { font-weight: 600; margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--background-modifier-border); }
+.naut-status-text { white-space: pre-wrap; font-size: var(--font-ui-small); line-height: 1.6; }
+.naut-quick-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.naut-kbd { flex: none; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.naut-ai-more { margin-top: 8px; }
+.naut-ai-more > summary { cursor: pointer; color: var(--text-muted); font-size: var(--font-ui-small); }
+
+/* ---------------- 动效 ---------------- */
+
+/* 一直在动的只有两处：「现在」圆点往外散的一圈，和正在做的那件（螺旋上从现在排起的那一段、列表里的小圆点）慢慢呼吸 */
+@keyframes naut-pulse { from { transform: scale(1); opacity: 0.32; } to { transform: scale(3.4); opacity: 0; } }
+@keyframes naut-breathe { 50% { opacity: 0.5; } }
+.naut-seg.naut-live { animation: naut-breathe 2.8s ease-in-out infinite; }
+.naut-has-hot .naut-seg.naut-live:not(.is-hot) { animation: none; }
+
+/* 入场（.naut-enter）：只在打开视图、换一天时放一次，每分钟的刷新不放。
+   轨道从早上往夜里画出来，各段按自己的开始时间（--naut-d）跟着长出来，指针转到现在，列表一行行浮上来 */
+@keyframes naut-draw { from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; } 12% { opacity: 1; } to { stroke-dasharray: 1; stroke-dashoffset: 0; } }
+@keyframes naut-draw-soft { from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; } to { stroke-dasharray: 1; stroke-dashoffset: 0; } }
+@keyframes naut-fade { from { opacity: 0; } }
+@keyframes naut-rise { from { opacity: 0; transform: translateY(5px); } }
+@keyframes naut-sweep { from { opacity: 0; transform: rotate(-50deg); } }
+@keyframes naut-wipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes naut-grow { from { transform: scaleY(0); } }
+
+.naut-enter .naut-track { animation: naut-draw .85s cubic-bezier(.3, .2, .2, 1) backwards; }
+.naut-enter .naut-off { animation: naut-fade .5s ease-out .5s backwards; }
+.naut-enter .naut-seg { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards; }
+.naut-enter .naut-seg.naut-live { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards, naut-breathe 2.8s ease-in-out 1.4s infinite; }
+.naut-enter .naut-ai, .naut-enter .naut-game { animation: naut-draw-soft .5s var(--naut-ease) calc(var(--naut-d, 0ms) + 120ms) backwards; }
+.naut-enter .naut-hour, .naut-enter .naut-log { animation: naut-fade .4s ease-out var(--naut-d, 0ms) backwards; }
+.naut-enter .naut-now-g { transform-origin: 160px 160px; animation: naut-sweep .9s var(--naut-ease) .2s backwards; }
+.naut-enter .naut-handle, .naut-enter .naut-center { animation: naut-fade .4s ease-out .6s backwards; }
+.naut-enter .naut-bar { animation: naut-wipe .6s var(--naut-ease) backwards; }
+.naut-enter .naut-cap > :not(.naut-bar) { animation: naut-fade .4s ease-out .15s backwards; }
+.naut-enter .naut-list > * { animation: naut-rise .32s var(--naut-ease) backwards; animation-delay: calc(220ms + var(--naut-i, 0) * 24ms); }
+.naut-enter .naut-ai-bar { animation: naut-grow .5s var(--naut-ease) backwards; }
+.naut-enter .naut-ai-col:nth-child(2) .naut-ai-bar { animation-delay: 40ms; }
+.naut-enter .naut-ai-col:nth-child(3) .naut-ai-bar { animation-delay: 80ms; }
+.naut-enter .naut-ai-col:nth-child(4) .naut-ai-bar { animation-delay: 120ms; }
+.naut-enter .naut-ai-col:nth-child(5) .naut-ai-bar { animation-delay: 160ms; }
+.naut-enter .naut-ai-col:nth-child(6) .naut-ai-bar { animation-delay: 200ms; }
+.naut-enter .naut-ai-col:nth-child(7) .naut-ai-bar { animation-delay: 240ms; }
+
+/* 截成 PNG 发 Telegram 的那份离屏副本：不动。系统设了「减弱动态效果」的也不动 */
+.naut-snap *, .naut-snap *::before { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .naut-root *, .naut-root *::before { animation: none !important; transition: none !important; }
+}
+
+/* 🧭 各个大方向今天花了多久 */
+.naut-dir-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+
+/* ---------------- 开一轮专注：选大方向的框 ---------------- */
+/* 每个方向一种颜色（--c），选中的那张卡片和下面的「开始」按钮跟着它变 */
+.naut-focus-modal { --c: var(--naut-task); --naut-task: #2b64c3; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-game: #b04fa8; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
+.naut-fm-title { font-size: 1.25em; font-weight: 700; }
+.naut-fm-sub { color: var(--text-muted); font-size: var(--font-ui-small); margin: 4px 0 14px; line-height: 1.5; }
+.naut-fm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.naut-fm-card { position: relative; padding: 14px 14px 12px; border-radius: 12px; cursor: pointer; user-select: none;
+  border: 1.5px solid color-mix(in srgb, var(--c) 28%, transparent); background: color-mix(in srgb, var(--c) 7%, var(--background-primary));
+  transition: transform .16s var(--naut-ease), box-shadow .16s var(--naut-ease), background-color .16s, border-color .16s;
+  animation: naut-fm-in .32s var(--naut-ease) backwards; animation-delay: calc(var(--naut-i, 0) * 45ms); }
+.naut-fm-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px color-mix(in srgb, var(--c) 22%, transparent); }
+.naut-fm-card:active { transform: translateY(0) scale(.98); }
+.naut-fm-card.is-on { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, var(--background-primary)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 22%, transparent); }
+.naut-fm-key { position: absolute; top: 8px; right: 10px; min-width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 5px; font-size: 11px; font-weight: 600;
+  color: color-mix(in srgb, var(--c) 75%, var(--text-normal)); background: color-mix(in srgb, var(--c) 14%, transparent); }
+.naut-fm-card.is-on .naut-fm-key { color: #fff; background: var(--c); }
+.naut-fm-emoji { display: inline-block; font-size: 26px; line-height: 1.2; transition: transform .2s var(--naut-ease); }
+.naut-fm-card.is-on .naut-fm-emoji { transform: scale(1.15) rotate(-6deg); }
+.naut-fm-name { font-weight: 700; margin-top: 6px; }
+.naut-fm-today { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.naut-fm-chips { display: flex; gap: 8px; margin-top: 14px; }
+.naut-fm-chips .naut-fm-chip { flex: 1; border-radius: 999px; box-shadow: none; border: 1.5px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); cursor: pointer;
+  transition: background-color .16s, border-color .16s, color .16s; }
+.naut-fm-chips .naut-fm-chip:hover { border-color: color-mix(in srgb, var(--c) 50%, transparent); color: var(--text-normal); }
+.naut-fm-chips .naut-fm-chip.is-on { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); color: color-mix(in srgb, var(--c) 80%, var(--text-normal)); font-weight: 600; }
+.naut-fm-bar { display: flex; gap: 8px; margin-top: 16px; }
+.naut-fm-bar .naut-fm-no { flex: none; box-shadow: none; color: var(--text-muted); cursor: pointer; }
+.naut-fm-bar .naut-fm-go { flex: 1; border: none; box-shadow: none; border-radius: 8px; font-weight: 700; color: #fff; background: var(--c); cursor: pointer; transition: background-color .2s, transform .12s var(--naut-ease), filter .15s; }
+.naut-fm-bar .naut-fm-go:hover { filter: brightness(1.08); }
+.naut-fm-bar .naut-fm-go:active { transform: scale(.98); }
+@keyframes naut-fm-in { from { opacity: 0; transform: translateY(8px) scale(.97); } }
+@media (prefers-reduced-motion: reduce) {
+  .naut-focus-modal *, .naut-focus-modal { animation: none !important; transition: none !important; }
+}
