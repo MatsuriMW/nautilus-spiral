@@ -23,9 +23,23 @@ Events stay pinned to their time. To-dos flow from "now" into the free gaps, in 
 - **Daily notes written as lists**, one file per day. Folder and file name format are settings (defaults: `日记/`, `YYYY_MM_DD`).
 - Optional: Xcode Command Line Tools (for the calendar helper), Raycast (Focus), the `claude` CLI (co-writing).
 
+## Works with Telegram Companion
+
+Install [Telegram Companion](https://github.com/MatsuriMW/telegram-companion) next to it and your phone becomes the remote: send `?` to get today's spiral as an image, say when you got up or went to bed to set the day's bounds, pause the clock when you leave for a meal, tick tasks off, and receive the weekly direction review. Nothing to configure here: both plugins enabled is enough. Details in the Chinese section 「和 Telegram Companion 联动」.
+
 ## Install
 
 Until it is listed in the community directory: download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/MatsuriMW/nautilus-spiral/releases/latest) into `<vault>/.obsidian/plugins/nautilus-spiral/`, or add this repository in BRAT.
+
+## Setup
+
+The core needs three things; everything else is optional and listed in the Chinese section 「从零配置」.
+
+1. In the plugin settings, set your daily-note **folder** and **file name format** (a moment.js format such as `YYYY-MM-DD`), and the hours your day starts and ends.
+2. In today's note, write a couple of list items: `- 14:00-15:00 meeting` and `- TODO reply to mail 20m`.
+3. Open the spiral from the ribbon icon or the command 「打开螺旋日程」.
+
+Two rules that edit your note are on by default: at most 3 tasks may be `DOING` at once, and a `DOING` task untouched for 3 hours becomes `PAUSED`. Set either to 0 to turn it off. If you do not use Raycast, switch off 「同时开 Raycast 专注」.
 
 ## Network, accounts and files outside your vault
 
@@ -34,7 +48,7 @@ Nothing leaves your computer unless you turn on one of the optional features bel
 | What | When | Where it goes |
 |---|---|---|
 | Session titles, your last few prompts, the end of the last reply, and your open task lines | Only with "co-writing" on, when a new session appears or one goes idle | Your own `claude` CLI, i.e. Anthropic, under your Claude Code login. Runs of 12 or more digits are removed first |
-| The spiral image and text summaries | Only if you use the companion plugins that send them | Telegram Bot API, through your own bot |
+| The weekly direction review (text); the spiral image when you ask for it from your phone | Only if Telegram Companion is installed and set up | Telegram Bot API, through your own bot. The bot token is read from Telegram Companion's settings and is not stored by this plugin |
 | Reminders, including task names | Only if you set a Discord channel | Your own local `notify-discord` script and the webhook it holds |
 
 Files read outside the vault, all read-only: `~/.claude/projects`, `~/.config/claude/projects`, `~/.codex/sessions`, `~/.workbuddy/projects` (agent session logs; turn the feature off in settings to stop). A daily summary is kept in the plugin folder as `ai-usage.json`.
@@ -75,11 +89,41 @@ MIT licensed.
 - **预计**是弹性推演：按你写的时长往前排，随时间重算，用来回答「今天还排得下吗、接下来做什么」。
 - **实际**是事后的实证：任务改成 DOING 的那一刻开始计时，改回来或做完时停止，中断再继续就记成好几段。做完的任务按实际做的时段画在螺旋上，和当初的预计放在一起，一天下来哪件事估短了、哪段时间被打断了，都能看到。
 
-## 三步用起来
+## 从零配置
 
-1. **在日记里写事件和待办。** 日记默认在 `日记/YYYY_MM_DD.md`（设置里可改），每件事一个列表项，写法见下一节。
-2. **打开螺旋。** 点左侧功能区的螺旋日程图标（orbit），或运行命令「打开螺旋日程」。默认每次启动 Obsidian 都会打开今天的日记，并把左侧栏切到螺旋。
-3. **做的时候改状态。** 开始做一件事改成 `DOING`，做完改成 `DONE`。也可以按 ⌘⇧↵ 开始，到点回答「做完了」，插件替你改。螺旋会随日记保存自动重画。
+这个插件是从作者自己的工作流里长出来的，功能多，但大部分是可选的。先把第一层配好就能用，其余的用到哪个开哪个。
+
+### 第一层：五分钟能用
+
+1. **装上并启用。** 从 [Release](https://github.com/MatsuriMW/nautilus-spiral/releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`，放进 `<库>/.obsidian/plugins/nautilus-spiral/`，在「第三方插件」里启用。用 BRAT 的话直接填这个仓库的地址。
+2. **告诉它日记在哪。** 设置 → Nautilus Spiral：
+   - 「日记文件夹」和「日记文件名格式」改成你自己的。格式是 moment.js 的写法，比如 `YYYY-MM-DD`；默认值 `日记/` 和 `YYYY_MM_DD` 是作者的习惯。
+   - 「一天从几点开始 / 到几点结束 / 日记日期分界」按你的作息改。默认是早 8 点到次日早 8 点、早 8 点前算前一天，这是给熬夜的人用的；正常作息可以改成 7、24、4 之类。
+3. **在今天的日记里写两行试试。** 每件事一个列表项，比如 `- 14:00-15:00 开会` 和 `- TODO 回邮件 20m`。写法见下一节。
+4. **打开螺旋。** 点左侧功能区的螺旋图标（orbit），或运行命令「打开螺旋日程」。
+5. **做的时候改状态。** 开始做一件事改成 `DOING`，做完改成 `DONE`。也可以按 ⌘⇧↵ 开始，到点回答「做完了」，插件替你改。螺旋会随日记保存自动重画。
+
+装上以后先看一眼这三处默认行为，不合适就改：
+
+- **会改你日记的两条规则默认开着**：同时最多 3 件 `DOING`（再开一件，最早的那件被改成 `PAUSED`）；`DOING` 超过 3 小时没动也改成 `PAUSED`。在「硬规则」里把数字改成 0 就是关掉。
+- **没装 Raycast 的**：把「同时开 Raycast 专注」关掉，否则每次开始做都会提示打不开。
+- **启动行为**：默认每次启动 Obsidian 都打开今天的日记、把左侧栏切到螺旋。设置最下面可以关。
+
+### 第二层：用到哪个开哪个
+
+| 功能 | 要先有什么 | 在哪开 | 默认 |
+|---|---|---|---|
+| 把 macOS 日历的事件排进来 | Xcode 命令行工具（`xcode-select --install`）；第一次用时允许 Obsidian 访问日历 | 「读 macOS 日历」 | 关 |
+| ▶ 开始做时顺带开 Raycast Focus | Raycast | 「同时开 Raycast 专注」 | 开 |
+| 螺旋内圈画出 Agent 干活的时段 | 本机用过 Claude Code、Codex 或 WorkBuddy（读它们留在本机的会话日志） | 「显示人机协作」 | 开 |
+| 自动把 Agent 会话记进日记 | 装了 `claude` 命令行并登录过；路径不是 `~/.local/bin/claude` 的话在设置里改。建议同时装 Done To Top，新写的行才会进对应的分区 | 「🤖 自动记日记」 | 关 |
+| 每周方向回顾 | 先开「自动记日记」；发到手机要装 Telegram Companion，或者配了 Discord | 「每周方向回顾」 | 开 |
+| 提醒发到 Discord | 你自己有一个发 Discord 的命令行脚本，放在 `~/.local/bin/notify-discord`，调用方式是 `notify-discord --as <显示名> <频道> <内容>` | 「提醒发到 Discord 的哪个频道」 | 空 |
+| 手机上看螺旋、记作息、勾任务 | Telegram Companion，见下面「和 Telegram Companion 联动」 | 不用开，两个插件都启用就行 | — |
+| 记录游戏时间 | macOS；在设置里填你玩的游戏的进程关键词 | 「记录游戏时间」 | 开 |
+| 🧭 长期项目提醒 | 库里有 `scripts/long-projects.js`。这是作者自己库里的脚本，仓库里没有，一般人用不上 | 「显示长期项目提醒」 | 开，没有脚本时不显示 |
+
+macOS 以外的系统只有第一层和「人机协作」能用；日历、对话框、提示音、专注提醒和游戏时间都依赖 macOS。
 
 ## 日记里的写法
 
@@ -269,7 +313,7 @@ MIT licensed.
 
 每个会话会被归到一个大方向。方向优先用设置里写的那几个；都不合适时模型会自己起一个短名字，之后同类的事沿用这个名字。专注弹框里设置的方向不满 4 个时，空位用最近 7 天花时间最多的方向补上。
 
-每周日晚上 9 点以后，插件发一条「本周方向」：这一周各个方向花了多久、占多少、和上周比，最后问一句下周想调哪个。装了「任务提醒」就走它的 Telegram，没有就发 Discord。命令「发一条本周方向回顾」可以随时看。只算 Agent 会话里的时间。
+每周日晚上 9 点以后，插件发一条「本周方向」：这一周各个方向花了多久、占多少、和上周比，最后问一句下周想调哪个。装了 Telegram Companion 就用它的机器人发，没有就发 Discord。命令「发一条本周方向回顾」可以随时看。只算 Agent 会话里的时间。
 
 ## 提醒怎么发
 
@@ -383,10 +427,29 @@ MIT licensed.
 | 提醒发到 Discord 的哪个频道 | 空 | 填了就把不用回答的提醒发到那个频道，见「提醒发到 Discord」 |
 | 自动把 Agent 会话记进今天的日记 | 关 | 见「🤖 自动记日记」；间隔默认 20 分钟，模型默认 haiku |
 
+## 和 Telegram Companion 联动
+
+[Telegram Companion](https://github.com/MatsuriMW/telegram-companion) 是同一个作者的另一个插件：手机上发给 Telegram 机器人的话直接进当天日记，想聊的时候它先读你近一周的日记再开口。两个插件是一起长出来的，放在一起时手机就成了螺旋日程的遥控器：
+
+| 你在 Telegram 里 | 螺旋日程这边 |
+|---|---|
+| 发 `?` 或 `/now` | 回一张今天的螺旋图，加上正在做什么、接下来几件、哪些排不下 |
+| 发「起了」「睡了」 | 把这一天实际的开始和结束设成你说话的时刻，顺便算出昨晚几点睡、睡了多久 |
+| 发「去吃饭了」「去锻炼了」「午睡」 | 正在做的事暂停计时；回来说「吃完了」「练完了」「醒了」再切回去 |
+| 发 `done 写稿 2h`、`doing 写稿` | 直接改今天日记里对应的那条任务并补上时间（这一条还要装 Done To Top） |
+| 周日晚上 | 收到一条「本周方向」回顾 |
+| 和它聊天 | 它读得到今天做完几件、还剩多少、这几天几点收工，而不只是日记里的字 |
+
+**怎么配**：先按 Telegram Companion 自己的上手指南把机器人配好（建一个机器人、填令牌、给它发一条消息让它认得你）。之后两个插件都启用就行，螺旋日程这边什么都不用填：机器人的令牌和你的聊天号只存在 Telegram Companion 的设置里，螺旋日程要发消息时去读它的。
+
+再加一个[任务提醒](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/nautilus-notify)的话，定时的日程图、拖了好几天的待办（带按钮）也会推到同一个机器人。
+
+Telegram Companion 只在桌面端跑，电脑上的 Obsidian 得开着，手机上发的消息才有人接。
+
 ## 和其它插件一起用
 
 - **任务提醒**（[`nautilus-notify`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/nautilus-notify)）：用螺旋日程算出的排程发 macOS 通知：事件快开始了、钉住的待办过点了、DOING 做太久了、今天排不下了、下一件该做什么，还有早上的今日简报和晚上的收尾提醒。
-- **Telegram Companion**（[`telegram-companion`](https://github.com/MatsuriMW/telegram-companion)）：手机上发 `?` 或 `/now`，回复一张今天的螺旋图和图文版的容量、接下来的任务（「任务提醒」定时推送的图文版、「起了」「睡了」的回执也带这张图）；发「起了」「睡了」，把这天实际的开始和结束设成消息发出的时刻（睡了还会收掉进行中的计时）；发 `done 写稿 2h`，把今天那条任务改成 DONE。
+- **Telegram Companion**（[`telegram-companion`](https://github.com/MatsuriMW/telegram-companion)）：见上一节。
 - **任务状态快切**（[`task-toggle`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/task-toggle)）：⌘/ 在 无 → TODO → DOING 时间 → DONE 时间段 之间切换，自动写上开始和完成的时刻。
 - **Done To Top**（[`done-to-top`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top)）：把日记里的任务按 DONE / DOING / TODO 分区归位，没做完的整块发送到明天。
 

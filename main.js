@@ -3061,12 +3061,22 @@ module.exports = class NautilusSpiral extends Plugin {
     lines.push("", `合计 ${dur(total)}。只算了 Agent 会话里的时间，不经过 Claude / Codex / WorkBuddy 做的事不在里面。`, "下周想把哪个方向调多、哪个调少？");
     return lines.join("\n");
   }
-  // 发出去：有「任务提醒」插件就走它的 Telegram，没有就发 Discord，再没有就只在 Obsidian 里显示
+  // 用 Telegram Companion 的机器人给你发一条文字：令牌和你的聊天号都从它的设置里读，螺旋日程自己不存。没装或者还没和机器人说过话，返回 false
+  async toTelegram(text) {
+    const ps = this.app.plugins.plugins;
+    const tp = ps["telegram-companion"] || ps["telegram-inbox-local"];
+    const token = tp?.settings?.token, chat = tp?.settings?.owner_chat_id;
+    if (!token || !chat) return false;
+    try {
+      await OB.requestUrl({ url: `https://api.telegram.org/bot${token}/sendMessage`, method: "POST", contentType: "application/json", body: JSON.stringify({ chat_id: chat, text }) });
+      return true;
+    } catch (e) { console.error("[螺旋日程] Telegram 没发出去", e); return false; }
+  }
+  // 发出去：装了 Telegram Companion 就用它的机器人发，没有就发 Discord，再没有就只在 Obsidian 里显示
   async sendWeekly() {
     const text = this.weeklyDirs();
     if (!text) return "这一周还没有按方向记下来的时间";
-    const np = this.app.plugins.plugins["nautilus-notify"];
-    if (np && np.tg && await np.tg(text, "").catch(() => false)) return "发到 Telegram 了";
+    if (await this.toTelegram(text)) return "发到 Telegram 了";
     if (await this.toDiscord(text)) return "发到 Discord 了";
     new OB.Notice(text, 20000);
     return "Telegram 和 Discord 都没发出去，先显示在这里";
@@ -3714,7 +3724,7 @@ class SpiralSettings extends PluginSettingTab {
     num("每隔几分钟整理一次", "", "autoLogEvery", 5, 240);
     num("多久没动算停了（分钟）", "会话这么久没有动静，就把它那一行从 DOING 改成 SUSPENDED，并把实际做的时段写在这一行下面（⏱ 开头的子项）；又动了改回 DOING", "autoLogIdle", 5, 600);
     text("本机提醒的提示音", "系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "notifySound");
-    new Setting(containerEl).setName("每周方向回顾").setDesc("周日晚上 9 点以后发一条：这一周各个大方向花了多久、占多少、和上周比。走「任务提醒」的 Telegram，没有就发 Discord")
+    new Setting(containerEl).setName("每周方向回顾").setDesc("周日晚上 9 点以后发一条：这一周各个大方向花了多久、占多少、和上周比。装了 Telegram Companion 就用它的机器人发，没有就发 Discord")
       .addToggle((t) => t.setValue(s.weeklyDirs !== false).onChange(async (v) => { s.weeklyDirs = v; await this.plugin.saveData(s); }));
     text("用哪个模型判断", "claude 命令行的 --model，比如 haiku、sonnet。只在出现新会话、或者会话停下来时问一次，一次很短", "autoLogModel");
     text("claude 命令路径", "本机 Claude Code 的命令行（要先登录过）", "claudePath");
