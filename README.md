@@ -18,7 +18,7 @@ Events stay pinned to their time. To-dos flow from "now" into the free gaps, in 
 - **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
 - **macOS Calendar, read-only.** Calendar events can be laid onto the spiral as fixed events.
 - **Agent time.** Reads the local session logs of Claude Code, Codex and WorkBuddy and draws when each agent was working as thin inner rings, one colour per agent.
-- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `SUSPENDED` and the actual time spans are written under it. The plugin never marks anything `DONE` for you.
+- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `SUSPENDED` and the actual time spans are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app is taken as your explicit signal, and that line is marked `DONE`.
 - **Weekly direction review.** Each session is filed under a broad direction; on Sunday night you get the week's split.
 
 ## Requirements
@@ -302,14 +302,16 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 | 在动 | 那一行改成 `DOING`；日记里没有对应的行，就新写一行 `- DOING 00:45 🤖 优化螺旋日程的配色` |
 | 40 分钟没动静 | 改成 `SUSPENDED`，并把实际做的时段写在这一行下面：`- ⏱ 00:45–01:20、04:02–04:24 · 共 52m · Claude` |
 | 又动了 | 改回 `DOING` |
+| 你在 Claude 桌面 app 里把会话归档了 | 改成 `DONE 19:20 …`（时刻是会话最后有动静的时候），实际时段照样写在下面 |
 | 回复里明说要你去做的事 | 另记一条 `- TODO 🤖 …`，一个会话最多一条 |
 
-- **机器不标 DONE**。它只在 DOING 和 SUSPENDED 之间来回切，这两个状态可逆、不丢时间。它觉得某件事看着像是整个做完了，只在提醒里说一声，DONE 由你自己改；你改成 DONE 之后，它把完整的时段补在下面，这一行就到此为止。
+- **机器不自己判断 DONE**。它只在 DOING 和 SUSPENDED 之间来回切，这两个状态可逆、不丢时间。它觉得某件事看着像是整个做完了，只在提醒里说一声，DONE 由你自己改；你改成 DONE 之后，它把完整的时段补在下面，这一行就到此为止。
+- **归档算你说的做完了**。在 Claude 桌面 app 里把一个会话归档，它那一行就记成 DONE，前几天记下、还挂着的行也在当天的日记里补上。你自己改回 TODO / PAUSED 的行不动。归档只是 app 给会话打的标记，会话记录还在，用时照常统计。app 里开了「自动归档」的话，归档不代表做完，在设置里关掉「归档的会话记成 DONE」。只认 Claude 桌面 app 的归档，终端里的 Claude Code、Codex 和 WorkBuddy 没有这个信号。
 - **名字和方向谁来定**：出现新会话、或者某个会话刚停下来时，插件调一次本机的 `claude -p --model haiku`，把会话标题、你说的最后几句、最后一条回复的结尾和日记里没做完的任务行发给它，让它起一个短名字、看它对上日记里哪一行、归到哪个大方向。走的是命令行自己的登录，不留会话记录。一长串数字（卡号之类）会先抹掉。
 - **接在你写的行上**：会话做的事如果就是日记里已有的某一行，就改那一行，不另写。两条限制：留给你本人做的事（看一眼、拍板、自己跑命令）不会被接上；第一次见到就已经停了的会话不去碰你写的 TODO。
 - **你改的算数**：你手动把它停下，要等会话有了新动静才改回 DOING；你手动改成 DOING，两小时内不会因为会话没动就被搁置。删掉或者改了名字的行，之后不再管。
 - **用时怎么算**：按会话真正在动的时段算，螺旋、列表、长期项目和「预估 vs 实际」都照常统计。自动管着的行不走「改成 DOING 就开始计时」那一套，也不受 DOING 上限、超时暂停和吃饭暂停管。`⏱` 开头的子项是记录，解析日记时会跳过，不会被当成事件。
-- **改了什么会告诉你**：每次整理合成一条提醒，同一类的折在一起（在做的、搁置的、看着像做完了的、记了要你做的）。
+- **改了什么会告诉你**：每次整理合成一条提醒，同一类的折在一起（在做的、搁置的、归档后记成做完的、看着像做完了的、记了要你做的）。
 - 只管得到经过这几个 Agent 做的事。不经过它们做的任务照旧按你自己改的状态和下面的暂停规则走。
 - 命令「现在把 Agent 会话整理进今天的日记」可以手动跑一次。打开开关之前就停了的会话不补记。
 

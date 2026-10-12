@@ -56,6 +56,7 @@ const DEFAULTS = {
   autoLogModel: "haiku",          // 判断「做的是什么事、做完没有」用哪个模型（claude 命令行的 --model）
   claudePath: "~/.local/bin/claude",
   autoLogNotify: true,  // 自动记成 DONE / SUSPENDED 时发一条带按钮的通知，不对可以在通知上改
+  autoLogArchiveDone: true,   // 在 Claude 桌面 app 里归档了的会话，它那一行记成 DONE
   autoLogSince: 0,      // 开启自动记录的时刻（毫秒）：这之前就停了的会话不补记
   autoLogState: {},     // { "2026_10_11": { 会话号: { key, label, dir, status, min, created, parkedAt, hold, gone, skip } } }
 };
@@ -593,6 +594,44 @@ function notifyTool() {
     return app;
   })().catch((e) => { notifyApp = null; throw e; });
   return notifyApp;
+}
+
+// ---------------- Claude 桌面 app 里归档了哪些会话 ----------------
+// app 给每个会话存一份 claude-code-sessions/<账号>/<组织>/local_….json，归档只是把里面的 isArchived 设成 true，
+// 会话记录（~/.claude/projects 里的 .jsonl）原样留着。返回归档了的会话号（cliSessionId，和 .jsonl 的文件名是同一个）。
+// cache：路径 → { mtime, sid, archived }，没变的文件不重读；一周没动过的文件不看（自动记录的状态只留几天）
+async function archivedSessions(cache) {
+  const os = require("os"), path = require("path"), fs = require("fs");
+  const home = os.homedir();
+  const base = process.platform === "darwin" ? path.join(home, "Library/Application Support")
+    : process.platform === "win32" ? (process.env.APPDATA || path.join(home, "AppData/Roaming"))
+    : (process.env.XDG_CONFIG_HOME || path.join(home, ".config"));
+  const out = new Set();
+  const walk = async (dir, depth) => {
+    let ents;
+    try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (depth < 3) await walk(p, depth + 1); continue; }
+      if (!e.isFile() || !/^local_.*\.json$/.test(e.name)) continue;
+      let st;
+      try { st = await fs.promises.stat(p); } catch (err) { continue; }
+      if (st.mtimeMs < Date.now() - 7 * 864e5) continue;
+      let c = cache.get(p);
+      if (!c || c.mtime !== st.mtimeMs) {
+        c = { mtime: st.mtimeMs, sid: "", archived: false };
+        try {
+          const d = JSON.parse(await fs.promises.readFile(p, "utf8"));
+          c.sid = String(d.cliSessionId || "");
+          c.archived = d.isArchived === true;
+        } catch (err) { c.mtime = 0; }   // app 正好在写这个文件：下一轮再读
+        cache.set(p, c);
+      }
+      if (c.archived && c.sid) out.add(c.sid);
+    }
+  };
+  await walk(path.join(base, "Claude", "claude-code-sessions"), 0);
+  return out;
 }
 
 // ---------------- 调一次本机的 claude 命令行 ----------------
@@ -3130,7 +3169,8 @@ module.exports = class NautilusSpiral extends Plugin {
   // ---------------- 自动把 Agent 会话记进今天的日记 ----------------
   // 每隔一阵看一眼今天有哪些 Claude / Codex / WorkBuddy 会话在动：
   //   · 新会话：让小模型看标题、你说的话、最后一条回复，起一个短名字，并看它是不是日记里已有的某一行（是就接在那一行上，不是就新写一行）
-  //   · 还在动 = DOING；停了一阵 = 小模型判断是 DONE 还是 SUSPENDED，回复里明说要你做的事另记成 TODO
+  //   · 还在动 = DOING；停了一阵 = SUSPENDED，小模型看着像做完了的只提醒，回复里明说要你做的事另记成 TODO
+  //   · 你在 Claude 桌面 app 里把会话归档了 = 做完了，它那一行记成 DONE（前几天记下、还挂着的行也补上）
   //   · 用时按会话真正在动的时段算，写进计时记录（workLog），螺旋和列表照常统计；新写的 DONE 行尾带上时长
   // 你自己改过状态、或者删掉的行，之后不再管。状态记在 autoLogState：{ 日记日: { 会话号: { key, label, dir, status, min, … } } }
 
@@ -3281,14 +3321,17 @@ module.exports = class NautilusSpiral extends Plugin {
     return it ? { it, cur: it.state === "done" ? "done" : it.doing ? "doing" : it.suspended ? "suspended" : "open" } : null;
   }
 
-  // 把一个会话对应的那一行改成 DOING 或 SUSPENDED（机器只在这两个之间切，DONE 留给你自己改）。那一行不存在而且是新会话，就新写一行
+  // 把一个会话对应的那一行改成 DOING 或 SUSPENDED（机器自己只在这两个之间切）；status = "done" 只在你把会话归档了的时候用：
+  // 写成「DONE 最后有动静的时刻」，不写起止时间段（中间断过的会话，时间段会把空档也算进去），实际用时看下面的 ⏱ 子项。
+  // 那一行不存在而且是新会话，就新写一行。x = 这个会话这一天的记录，前几天的明细没了就是 null（DONE 后面不写时刻）
   autoLine(text, rec, x, status) {
     const lines = text.split("\n");
     const found = this.autoFind(text, rec.key);
-    const first = x.segs[0][0];
+    const first = x ? x.segs[0][0] : 0;
+    const done = (body) => `DONE ${x ? clock(x.segs[x.segs.length - 1][1]) + " " : ""}${body}`;
     if (!found) {
       if (!rec.fresh) return { text, gone: true };
-      return { text: this.placeBlock(text, [status === "doing" ? `- DOING ${clock(first)} ${rec.label}` : `- SUSPENDED ${rec.label}`]) };
+      return { text: this.placeBlock(text, [status === "doing" ? `- DOING ${clock(first)} ${rec.label}` : status === "done" ? `- ${done(rec.label)}` : `- SUSPENDED ${rec.label}`]) };
     }
     const { it } = found;
     const raw = lines[it.line];
@@ -3296,7 +3339,8 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!p) return { text };
     // 自己写的行文字是定的；接在你写的行上就留着你的原话，只去掉开头的时间段
     const body = rec.created ? rec.label : p.rest.replace(/^\d{1,2}[:：]\d{2}\s*[-–~～到至]\s*\d{1,2}[:：]\d{2}\s*/, "");
-    const next = status === "doing" ? `${p.prefix}DOING ${p.since && p.kw === "DOING" ? p.since : clock(rec.created ? first : x.segs[x.segs.length - 1][0])} ${body}` : `${p.prefix}SUSPENDED ${body}`;
+    const next = status === "doing" ? `${p.prefix}DOING ${p.since && p.kw === "DOING" ? p.since : clock(rec.created ? first : x.segs[x.segs.length - 1][0])} ${body}`
+      : status === "done" ? p.prefix + done(body) : `${p.prefix}SUSPENDED ${body}`;
     if (next === raw) return { text };
     // 顶格的行换了状态要挪到那个状态的分区里（连同子项）；缩进的子项原地改
     const core = this.app.plugins.plugins["done-to-top"]?.core;
@@ -3331,6 +3375,42 @@ module.exports = class NautilusSpiral extends Plugin {
     return lines.join("\n");
   }
 
+  // 前几天记下、到现在还挂着（DOING / SUSPENDED）的行：会话归档了，就在它当天的日记里补成 DONE。
+  // 你自己改成 TODO / PAUSED 的不动。返回改了的（给提醒用）；日记正好在被改的那一天这一轮跳过，下一轮再来
+  async autoArchivePast(arch, todayKey, dry, report) {
+    const cfg = this.settings;
+    const out = [];
+    for (const dayKey of Object.keys(cfg.autoLogState || {})) {
+      if (dayKey === todayKey) continue;
+      const hits = Object.entries(cfg.autoLogState[dayKey]).filter(([sid, r]) => arch.has(sid) && r.key && !r.skip && !r.gone && (r.status === "doing" || r.status === "suspended"));
+      if (!hits.length) continue;
+      const file = this.app.vault.getAbstractFileByPath(`${cfg.folder}/${dayKey}.md`);
+      if (!(file instanceof TFile)) continue;
+      const base = await this.readJournal(file);
+      let text = base;
+      const list = (this.aiStore && this.aiStore.days[dayKey] && this.aiStore.days[dayKey].list) || [];
+      const work = (cfg.workLog || {})[dayKey] || {};
+      const after = [];
+      for (const [sid, rec] of hits) {
+        const found = this.autoFind(text, rec.key);
+        if (!found) { after.push(() => { rec.gone = true; }); continue; }
+        if (found.cur !== "doing" && found.cur !== "suspended") { after.push(() => { rec.status = found.cur; }); continue; }
+        const x = list.find((s) => s.sid === sid && s.segs && s.segs.length) || null;
+        text = this.autoLine(text, rec, x, "done").text;
+        const segs = (work[rec.key] || []).filter((s) => s[1] != null);
+        if (segs.length) text = this.autoClock(text, rec.key, segs, x ? AI_AGENTS[aiAgent(x)] : "");
+        const name = workKey(rec.label).replace(AUTO_MARK, "");
+        after.push(() => { rec.status = "done"; });
+        out.push(`${name}（${dayKey.replace(/\D+/g, "-").slice(5)}）`);
+        report.changes.push(`DONE（已归档，${dayKey}）：${rec.label}`);
+      }
+      if (dry) continue;
+      if (await this.writeJournal(file, base, text)) after.forEach((f) => f());
+      else out.splice(0, out.length, ...out.filter((s) => !s.endsWith(`（${dayKey.replace(/\D+/g, "-").slice(5)}）`)));
+    }
+    return out;
+  }
+
   // dry = 只算不写，返回打算怎么改（report.diff）
   async autoLogRun({ dry = false } = {}) {
     const cfg = this.settings;
@@ -3353,6 +3433,8 @@ module.exports = class NautilusSpiral extends Plugin {
       snap = JSON.stringify(st);
       const since = cfg.autoLogSince ? aiDay(cfg.autoLogSince, cfg) : null;
       const lastOf = (x) => x.segs[x.segs.length - 1][1];
+      // 你在 Claude 桌面 app 里归档了的会话 = 做完了
+      const arch = cfg.autoLogArchiveDone !== false ? await archivedSessions(this._archCache ||= new Map()).catch(() => new Set()) : new Set();
       const todo = [], live = [];
       for (const x of day.list) {
         if (!x.segs || !x.segs.length) continue;
@@ -3363,7 +3445,7 @@ module.exports = class NautilusSpiral extends Plugin {
           if (since && (since.key > dayKey || (since.key === dayKey && last < since.t))) continue;   // 开启之前就停了的会话不补记
           if (x.min < 3) continue;   // 刚开头 / 一两句问答，先不记
           todo.push({ x, active, fresh: true });
-        } else if (rec.status === "doing" && !active && !rec.asked) todo.push({ x, active, rec });   // 刚停下来：问一次是不是其实做完了、有没有要你做的
+        } else if (rec.status === "doing" && !active && !rec.asked && !arch.has(x.sid)) todo.push({ x, active, rec });   // 刚停下来：问一次是不是其实做完了、有没有要你做的（归档了的不用问）
         else live.push({ x, active, rec });
       }
       // 1. 新会话、刚停下来的会话：问小模型（一次最多 8 个，多的下一轮）
@@ -3380,7 +3462,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const base = await this.readJournal(file);
       let text = base;
       const work = ((cfg.workLog ||= {})[dayKey] ||= {});
-      const digest = { doing: [], suspended: [], done: [], todo: [] };
+      const digest = { doing: [], suspended: [], done: [], archived: [], todo: [] };
       const clocks = new Set();
       for (const { x, active, fresh } of [...ask, ...todo.slice(8), ...live]) {
         const a = ans.get(x.sid);
@@ -3415,6 +3497,15 @@ module.exports = class NautilusSpiral extends Plugin {
           rec.status = cur;
         }
         const name = workKey(rec.label).replace(AUTO_MARK, "");
+        // 你把这个会话归档了：算做完，标 DONE，实际时段补在下面。你自己改回 TODO / PAUSED 的行不动
+        if (arch.has(x.sid) && (fresh || cur === "doing" || cur === "suspended")) {
+          text = this.autoLine(text, rec, x, "done").text;
+          rec.status = "done"; delete rec.fresh; delete rec.parkedAt; delete rec.hold;
+          clocks.add(rec.key);
+          digest.archived.push(`${name}（${dur(x.min)}）`);
+          report.changes.push(`DONE（已归档）：${rec.label}（${dur(x.min)}）`);
+          continue;
+        }
         if (active && cur !== "doing" && !(rec.parkedAt != null && last <= rec.parkedAt)) {
           const r = this.autoLine(text, rec, x, "doing");
           text = r.text; rec.status = "doing"; delete rec.parkedAt; delete rec.fresh;
@@ -3454,13 +3545,14 @@ module.exports = class NautilusSpiral extends Plugin {
       for (const [k, segs] of byKey) merged.set(k, unionSegs([...(work[k] || []).filter((s) => s[1] != null), ...segs].map(([a, b]) => [a, b])));
       for (const k of clocks) if (merged.has(k)) text = this.autoClock(text, k, merged.get(k), [...who.get(k)].join(" / "));
       report.diff = diffLines(base, text);
-      if (dry) { cfg.autoLogState[dayKey] = JSON.parse(snap); return report; }
+      if (dry) { await this.autoArchivePast(arch, dayKey, true, report); cfg.autoLogState[dayKey] = JSON.parse(snap); return report; }
       if (!(await this.writeJournal(file, base, text))) {
         cfg.autoLogState[dayKey] = JSON.parse(snap);   // 日记正好被改了：这一轮不算，下一轮重来
         report.error = "日记正在被改，这一轮没写";
         return report;
       }
       for (const [k, segs] of merged) work[k] = segs;
+      if (arch.size) digest.archived.push(...await this.autoArchivePast(arch, dayKey, false, report));
       // 各个大方向今天花了多久，另存一份给每周回顾用（会话的明细只留最近几天）
       (cfg.dirLog ||= {})[dayKey] = { ...this.dirStats(dayKey), "": Math.max(0, Math.round((day.wall || 0) - Object.values(this.dirStats(dayKey)).reduce((n, m) => n + m, 0))) };
       for (const k of Object.keys(cfg.dirLog).sort().slice(0, -70)) delete cfg.dirLog[k];
@@ -3483,6 +3575,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const parts = [
       sec("▶ 在做", d.doing),
       sec(`💤 ${idle} 分钟没动，先搁置了`, d.suspended),
+      sec("📦 会话归档了，记成做完", d.archived),
       sec("✅ 看着像是做完了，要标 DONE 自己改一下", d.done),
       sec("📌 记了要你做的", d.todo),
     ].filter(Boolean);
@@ -3718,17 +3811,19 @@ class SpiralSettings extends PluginSettingTab {
         .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
     text("提醒发到 Discord 的哪个频道", "填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停、欢迎回来、自动记成做完 / 搁置、专注到点）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "discordChannel");
     containerEl.createEl("h3", { text: "🤖 自动记日记" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "每隔一阵看一眼今天的 Claude / Codex / WorkBuddy 会话：还在动的记成 DOING，停了的由小模型判断是 DONE 还是 SUSPENDED，回复里明说要你做的事记成 TODO。能对上日记里已有的行就改那一行，对不上就新写一行（开头带 🤖）。用时按会话真正在动的时段算。你自己改过状态或者删掉的行，之后不再管。" });
+    containerEl.createEl("p", { cls: "setting-item-description", text: "每隔一阵看一眼今天的 Claude / Codex / WorkBuddy 会话：还在动的记成 DOING，停了一阵的记成 SUSPENDED，回复里明说要你做的事记成 TODO；DONE 由你自己改，或者把会话归档。能对上日记里已有的行就改那一行，对不上就新写一行（开头带 🤖）。用时按会话真正在动的时段算。你自己改过状态或者删掉的行，之后不再管。" });
     new Setting(containerEl).setName("自动把 Agent 会话记进今天的日记").setDesc("打开的这一刻之前就停了的会话不补记")
       .addToggle((t) => t.setValue(!!s.autoLog).onChange(async (v) => { s.autoLog = v; if (v) s.autoLogSince = Date.now(); await this.plugin.saveData(s); }));
     num("每隔几分钟整理一次", "", "autoLogEvery", 5, 240);
     num("多久没动算停了（分钟）", "会话这么久没有动静，就把它那一行从 DOING 改成 SUSPENDED，并把实际做的时段写在这一行下面（⏱ 开头的子项）；又动了改回 DOING", "autoLogIdle", 5, 600);
+    new Setting(containerEl).setName("归档的会话记成 DONE").setDesc("在 Claude 桌面 app 里把一个会话归档，就当这件事做完了：它那一行改成 DONE，完成时刻取会话最后有动静的时候，前几天还挂着的行也一起补上。你自己改回 TODO / PAUSED 的行不动。app 里开了「自动归档」的话，归档不代表做完，把这一项关掉")
+      .addToggle((t) => t.setValue(s.autoLogArchiveDone !== false).onChange(async (v) => { s.autoLogArchiveDone = v; await this.plugin.saveData(s); }));
     text("本机提醒的提示音", "系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "notifySound");
     new Setting(containerEl).setName("每周方向回顾").setDesc("周日晚上 9 点以后发一条：这一周各个大方向花了多久、占多少、和上周比。装了 Telegram Companion 就用它的机器人发，没有就发 Discord")
       .addToggle((t) => t.setValue(s.weeklyDirs !== false).onChange(async (v) => { s.weeklyDirs = v; await this.plugin.saveData(s); }));
     text("用哪个模型判断", "claude 命令行的 --model，比如 haiku、sonnet。只在出现新会话、或者会话停下来时问一次，一次很短", "autoLogModel");
     text("claude 命令路径", "本机 Claude Code 的命令行（要先登录过）", "claudePath");
-    new Setting(containerEl).setName("改了日记就告诉我").setDesc("每次整理把改了什么合成一条发出来（在做的、搁置的、看着像做完了的、记了要你做的，各折成一组）")
+    new Setting(containerEl).setName("改了日记就告诉我").setDesc("每次整理把改了什么合成一条发出来（在做的、搁置的、归档后记成做完的、看着像做完了的、记了要你做的，各折成一组）")
       .addToggle((t) => t.setValue(s.autoLogNotify !== false).onChange(async (v) => { s.autoLogNotify = v; await this.plugin.saveData(s); }));
     containerEl.createEl("h3", { text: "硬规则（只管今天的日记）" });
     num("同时最多几件 DOING", "再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。0 = 不限", "doingLimit", 0, 20);
