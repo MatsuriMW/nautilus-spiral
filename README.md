@@ -2,6 +2,10 @@
 
 A spiral day planner for Obsidian that reads your daily note.
 
+<p align="center">
+  <img src="assets/demo.gif" width="380" alt="Hovering over the spiral: the line above it instantly shows what each segment was, while the matching segments and list row light up">
+</p>
+
 Events stay pinned to their time. To-dos flow from "now" into the free gaps, in list order and by estimated duration. As time moves on, unfinished tasks are pushed forward, and a capacity bar tells you whether today still fits. What you actually did is drawn on the same spiral, so plan and reality sit side by side.
 
 **The interface and most of this README are in Chinese.** [中文说明](#中文说明)
