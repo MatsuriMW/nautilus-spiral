@@ -8,6 +8,10 @@ A spiral day planner for Obsidian that reads your daily note.
 
 Events stay pinned to their time. To-dos flow from "now" into the free gaps, in list order and by estimated duration. As time moves on, unfinished tasks are pushed forward, and a capacity bar tells you whether today still fits. What you actually did is drawn on the same spiral, so plan and reality sit side by side.
 
+**A 34-second tour** (Chinese captions, with sound). The panel in the film is drawn by the plugin's own code from a made-up daily note:
+
+https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
+
 **The interface and most of this README are in Chinese.** [中文说明](#中文说明)
 
 ## What it does
@@ -76,6 +80,10 @@ MIT licensed.
 # 螺旋日程
 
 把今天日记里的事件和待办画成一圈螺旋：固定事件钉在它的时刻上，待办按列表顺序和预计时长，从「现在」开始自动填进事件之间的空档。时间往前走，没做完的任务就跟着往后流；排不下的，当场告诉你缺多少。
+
+34 秒看完它做什么（有声音）。片子里的面板是插件自己的代码按一篇虚构日记画出来的：
+
+https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 
 插件只读日记，会改日记的只有三种时候：你开始做一件事、你回答「做完了吗」、触发了下面的暂停规则。每次都只改那几行（DOING / DONE / PAUSED）。日记照常用列表写，在 Obsidian 里写、在 Bike 里写、从 Telegram 记进来都行。打开设置后，macOS「日历」里的事件也会当固定事件排进来，▶ 还可以顺带开一段 Raycast 专注。
 
