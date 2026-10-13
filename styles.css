@@ -1,6 +1,6 @@
 /* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
    内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿），游戏是紫的，靠位置和粗细再区分一层 */
-.naut-root, .naut-ai-modal {
+.naut-root, .naut-ai-modal, .naut-status-modal {
   --naut-event: #e3a924;
   --naut-task: #2b64c3;
   --naut-prio: #d03739;
@@ -302,3 +302,80 @@
 @media (prefers-reduced-motion: reduce) {
   .status-bar-item.naut-status { animation: none !important; transition: none !important; }
 }
+
+/* ---------------- ⌃⌥V 现在怎样 ---------------- */
+/* 从上到下：时刻和今天过了多少 → 三块容量数字 → 在做的（计时每秒走）→ 接下来 → 今天的成绩 → 一排按钮。打开时一块一块浮上来 */
+.modal.naut-status-modal { width: min(480px, 92vw); padding: 22px 22px 18px; border-radius: 16px; }
+.naut-status-modal .modal-content > * { animation: naut-rise .34s var(--naut-ease) backwards; animation-delay: calc(var(--naut-i, 0) * 26ms); }
+.naut-st-head { display: flex; align-items: flex-end; gap: 14px; }
+.naut-st-clock { font-size: 44px; line-height: 1; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--text-normal); }
+.naut-st-headright { padding-bottom: 3px; min-width: 0; }
+.naut-st-date { font-weight: 600; }
+.naut-st-sub { font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* 今天过了多少：一条细轨道，蓝的一段是已经过去的，小圆点是现在 */
+.naut-st-day { position: relative; height: 4px; margin: 14px 0 16px; border-radius: 2px; background: var(--background-modifier-border); }
+.naut-st-day-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--naut-task) 35%, transparent), var(--naut-task)); transform-origin: left; animation: naut-st-grow .7s var(--naut-ease) .12s backwards; }
+.naut-st-day-now { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--background-primary); border: 2.5px solid var(--naut-task); box-shadow: 0 0 0 0 color-mix(in srgb, var(--naut-task) 40%, transparent); animation: naut-st-ping 2.6s ease-out infinite; }
+@keyframes naut-st-grow { from { transform: scaleX(0); } }
+@keyframes naut-st-ping { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--naut-task) 45%, transparent); } 70%, 100% { box-shadow: 0 0 0 9px transparent; } }
+/* 三块数字 */
+.naut-st-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.naut-st-tile { padding: 10px 12px 9px; border-radius: 12px; background: var(--background-secondary); border: 1px solid var(--background-modifier-border); transition: transform .16s var(--naut-ease), box-shadow .16s var(--naut-ease); }
+.naut-st-tile:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 0, 0, .06); }
+.naut-st-tile-v { font-size: 20px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.naut-st-tile-l { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 1px; }
+.naut-st-tile.is-positive { background: color-mix(in srgb, var(--color-green) 9%, var(--background-primary)); border-color: color-mix(in srgb, var(--color-green) 30%, transparent); }
+.naut-st-tile.is-positive .naut-st-tile-v { color: color-mix(in srgb, var(--color-green) 78%, var(--text-normal)); }
+.naut-st-tile.is-warning { background: color-mix(in srgb, var(--naut-prio) 8%, var(--background-primary)); border-color: color-mix(in srgb, var(--naut-prio) 32%, transparent); }
+.naut-st-tile.is-warning .naut-st-tile-v { color: var(--naut-prio); }
+.naut-st-budget { margin-top: 8px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* 小节标题：字后面拖一条细线 */
+.naut-st-sec { display: flex; align-items: center; gap: 10px; margin: 16px 0 6px; font-size: var(--font-ui-smaller); font-weight: 600; color: var(--text-muted); letter-spacing: .04em; }
+.naut-st-sec::after { content: ""; flex: 1; height: 1px; background: var(--background-modifier-border); }
+/* 一行一件事：左边是时刻 / 状态，右边是时长 / 计时；左边的色条和螺旋上同一种颜色 */
+.naut-st-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 8px 5px 10px; margin: 2px 0; border-radius: 8px; border-left: 3px solid var(--background-modifier-border); transition: background-color .12s ease, transform .12s var(--naut-ease); }
+.naut-st-row[class] { cursor: default; }
+.naut-st-row.is-doing, .naut-st-row.is-task, .naut-st-row.is-prio, .naut-st-row.is-event, .naut-st-row.is-paused, .naut-st-row.is-over { cursor: pointer; }
+.naut-st-row:hover { background: var(--background-modifier-hover); }
+.naut-st-row:active { transform: scale(.985); }
+.naut-st-left { flex: none; min-width: 3.4em; color: var(--text-muted); font-size: var(--font-ui-small); font-variant-numeric: tabular-nums; }
+.naut-st-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.naut-st-right { flex: none; color: var(--text-muted); font-size: var(--font-ui-small); font-variant-numeric: tabular-nums; }
+.naut-st-row.is-doing { border-left-color: var(--naut-task); background: color-mix(in srgb, var(--naut-task) 6%, transparent); }
+.naut-st-row.is-doing .naut-st-label { font-weight: 600; }
+.naut-st-row.is-doing .naut-st-right { color: var(--naut-task); font-weight: 600; }
+.naut-st-row.is-doing .naut-st-left { min-width: 0; }
+.naut-st-row.is-doing .naut-st-left::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--naut-task); vertical-align: 1px; animation: naut-breathe 2.8s ease-in-out infinite; }
+.naut-st-row.is-doing.is-auto { border-left-color: var(--naut-ai); background: color-mix(in srgb, var(--naut-ai) 7%, transparent); }
+.naut-st-row.is-doing.is-auto .naut-st-left::before { background: var(--naut-ai); }
+.naut-st-row.is-doing.is-auto .naut-st-right { color: color-mix(in srgb, var(--naut-ai) 80%, var(--text-normal)); }
+.naut-st-row.is-focus { border-left-color: var(--naut-task); }
+.naut-st-row.is-focus .naut-st-left, .naut-st-row.is-break .naut-st-left, .naut-st-row.is-paused .naut-st-left { min-width: 0; }
+.naut-st-row.is-task { border-left-color: var(--naut-task); }
+.naut-st-row.is-prio { border-left-color: var(--naut-prio); }
+.naut-st-row.is-event { border-left-color: var(--naut-event); }
+.naut-st-row.is-paused .naut-st-label { color: var(--text-muted); }
+.naut-st-row.is-over { border-left-color: var(--naut-prio); color: var(--naut-prio); }
+.naut-st-empty { padding: 14px 0 4px; text-align: center; color: var(--text-muted); }
+/* 今天的成绩：几个小胶囊 */
+.naut-st-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.naut-st-chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: var(--font-ui-small); background: var(--background-secondary); border: 1px solid var(--background-modifier-border); font-variant-numeric: tabular-nums; }
+.naut-st-chip.is-over { color: var(--color-orange); border-color: color-mix(in srgb, var(--color-orange) 35%, transparent); }
+.naut-st-btns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 18px; }
+.naut-st-btns button { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: 8px; cursor: pointer; transition: transform .12s var(--naut-ease), filter .15s; }
+.naut-st-btns button:active { transform: scale(.96); }
+.naut-st-btns button .naut-kbd { opacity: .65; font-size: var(--font-ui-smaller); }
+.naut-st-btns button.mod-cta .naut-kbd { color: inherit; }
+@media (prefers-reduced-motion: reduce) {
+  .naut-status-modal *, .naut-status-modal *::before { animation: none !important; transition: none !important; }
+}
+
+/* 「人机协作」标题右边的「整理进日记」 */
+.naut-sec-ai { display: flex; align-items: center; justify-content: space-between; }
+.naut-log-now { font-size: var(--font-ui-smaller); height: 20px; padding: 0 8px; border-radius: 999px; box-shadow: none; border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); cursor: pointer; transition: color .16s, border-color .16s, background-color .16s, transform .12s var(--naut-ease); }
+.naut-log-now:hover:not(:disabled) { color: var(--naut-ai); border-color: color-mix(in srgb, var(--naut-ai) 55%, transparent); background: color-mix(in srgb, var(--naut-ai) 8%, transparent); }
+.naut-log-now:active:not(:disabled) { transform: scale(.94); }
+.naut-log-now:disabled { opacity: .6; animation: naut-breathe 1.4s ease-in-out infinite; }
+/* 人机协作里的项目行能点开看会话 */
+.naut-row.naut-ai-row { cursor: pointer; }
+.naut-auto-err { color: var(--color-orange); cursor: help; }

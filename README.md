@@ -28,10 +28,11 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 - **Capacity at a glance.** Planned, then remaining / overload / no fitting slot, then the percentage of the day's flexible time still free; below that, flexible and event time as "left now / whole day". A status bar item shows the running timer, or the same capacity summary when nothing is running.
 - **Play back the day.** One button sweeps "now" from the start of the day to its end in six seconds and re-plans as it goes. Nothing in the note is changed.
 - **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
-- **macOS Calendar, read-only.** Calendar events can be laid onto the spiral as fixed events.
+- **Calendars, read-only.** Events from macOS Calendar and from Google Calendar (through the Google Calendar API, with an OAuth client you create yourself) can be laid onto the spiral as fixed events. Both can be on at once; the same event is kept once.
+- **Small sounds, two moods.** A soft tick when you click a segment or a row, and a short synthesized sound whenever a task changes state anywhere in the vault, whoever changed it (a hotkey, a task plugin, a board, typing). Moving forward (`TODO`, `DOING`, `DONE`) rises and is bright; stopping or not making it (`PAUSED`, `WAITING`, `SUSPENDED`, `CANCELLED`, `FAILED`) falls, lower and rougher each step. No audio files; one switch turns it off.
 - **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI) and WorkBuddy, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one produced. You pick which of the three you actually use.
 - **Active and passive recording, together.** You record on purpose: the plan, the estimates, the states you set by hand. The machine records in the background as your assistant: when each agent session was really moving, and for how long. Both end up in the same daily note and on the same spiral.
-- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `SUSPENDED` and the actual time spans are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app or in Codex is taken as your explicit signal, and that line is marked `DONE`.
+- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `SUSPENDED` and the actual time spans are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app or in Codex is taken as your explicit signal, and that line is marked `DONE`. The same pass can be run by hand at any time (`⌃⌥L`, or the button beside 「人机协作」), whether or not the automatic one is on.
 - **Weekly direction review.** Each session is filed under a broad direction; on Sunday night you get the week's split.
 
 ## Optional execution layer
@@ -49,7 +50,7 @@ The difference from Nautilus Log: there is no single master switch and no popove
 
 - **Desktop only.** Developed and used on macOS. The spiral, planning and time tracking are plain Obsidian; calendar, dialogs, sounds, focus prompts and game tracking are macOS-only. Windows and Linux are untested.
 - **Daily notes written as lists**, one file per day. Folder and file name format are settings (defaults: `日记/`, `YYYY_MM_DD`).
-- Optional: Xcode Command Line Tools (for the calendar helper), Raycast (Focus), the `claude` or `codex` CLI (co-writing).
+- Optional: Xcode Command Line Tools (for the macOS calendar helper), Raycast (Focus), the `claude` or `codex` CLI (co-writing), a Google account and your own Google Cloud OAuth client (Google Calendar).
 
 ## Installation
 
@@ -78,6 +79,9 @@ Nothing leaves your computer unless you turn on one of the optional features bel
 | Session titles, your last few prompts, the end of the last reply, and your open task lines | Only with "co-writing" on, when a new session appears or one goes idle | One local CLI under its own login: `claude` (Anthropic) if it is installed, otherwise `codex` (OpenAI). You can fix the choice in settings. Runs of 12 or more digits are removed first |
 | The weekly direction review (text); the spiral image when you ask for it from your phone | Only if Telegram Companion is installed and set up | Telegram Bot API, through your own bot. The bot token is read from Telegram Companion's settings and is not stored by this plugin |
 | Reminders, including task names | Only if you set a Discord channel | Your own local `notify-discord` script and the webhook it holds |
+| Requests for your calendar list and the day's events; nothing is written to the calendar | Only if you turn on Google Calendar and connect an account | Google: `accounts.google.com` (you sign in and consent in your browser), `oauth2.googleapis.com` (tokens), `www.googleapis.com` (Calendar API). The only scope requested is `calendar.readonly`, through an OAuth client of type "Desktop app" that you create in your own Google Cloud project; the plugin ships no shared key |
+
+Google Calendar needs a Google account. The client secret and the refresh token are kept in Obsidian's secret storage (the system keychain), not in the plugin's `data.json`; on Obsidian versions without secret storage they fall back to `data.json`. While you are connecting, the plugin listens on `127.0.0.1` on a random port to receive the authorization code from your browser, and closes it as soon as the code arrives or after five minutes.
 
 Files read outside the vault, all read-only, and only for the agents switched on under 「主力 AI 工具」 in settings: `~/.claude/projects`, `~/.config/claude/projects` and the Claude desktop app's `claude-code-sessions` folder (which sessions are archived); `~/.codex/sessions`, `~/.codex/archived_sessions` and `~/.codex/session_index.jsonl` (session titles); `~/.workbuddy/projects`. A daily summary is kept in the plugin folder as `ai-usage.json`.
 

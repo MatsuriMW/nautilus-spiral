@@ -28,10 +28,11 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 - **容量一眼看清。** 已计划多少，余量、超载还是空档不足，全天可安排的时间还剩百分之几；下面一行是可安排的时间和事件时间各自「现在还剩 / 全天」。状态栏里常驻一格：在做事时是计时，没在做时是同一句容量。
 - **回放一整天。** 点一下，6 秒里「现在」从一天的开头扫到结尾，计划跟着重排。日记不会被改。
 - **专注轮。** 开始一件任务时带上计时，愿意的话再带一段 Raycast Focus；也可以不选任务，只选一个大方向开一轮。
-- **macOS 日历，只读。** 日历里的事件可以当固定事件排进螺旋。
+- **日历，只读。** macOS「日历」和 Google 日历（走 Google Calendar API，用你自己建的 OAuth 客户端）里的事件都可以当固定事件排进螺旋。两个可以同时开，同一件事只留一份。
+- **小音效，两种情绪。** 点螺旋上的一段、列表里的一行，有一声轻的「嗒」；库里任何一篇笔记的任务状态一变也响一声，不管是谁改的（快捷键、任务插件、看板、手敲）。往前走的（`TODO`、`DOING`、`DONE`）音往上走，明亮；停下来的、没成的（`PAUSED`、`WAITING`、`SUSPENDED`、`CANCELLED`、`FAILED`）音往下落，一个比一个低、一个比一个糙。全是现合成的，不带声音文件，一个开关就能关。
 - **Agent 的时间。** 读 Claude Code、Codex（桌面版和命令行）、WorkBuddy 留在本机的会话日志，把每个 Agent 干活的时段画成内圈的细线，一个 Agent 一种颜色，带上各自产出的 token。三个里用哪几个，你自己选。
 - **主动记录和被动记录结合。** 你有意记的：计划、预计时长、手动改的状态。机器在旁边替你记的：每个 Agent 会话真正在动的时段和时长。两种记录落在同一篇日记、同一圈螺旋上。
-- **人机共写（可选，默认关）。** Agent 会话在动，日记里对应的那一行变成 `DOING`；40 分钟没动静变成 `SUSPENDED`，实际时段写在它下面。插件不自己判断 `DONE`；你在 Claude 桌面 app 或 Codex 里把会话归档，才算你说的做完了。
+- **人机共写（可选，默认关）。** Agent 会话在动，日记里对应的那一行变成 `DOING`；40 分钟没动静变成 `SUSPENDED`，实际时段写在它下面。插件不自己判断 `DONE`；你在 Claude 桌面 app 或 Codex 里把会话归档，才算你说的做完了。同一件事随时可以手动跑一次（`⌃⌥L`，或者「人机协作」旁边的按钮），自动的开没开着都行。
 - **每周方向回顾。** 每个会话归到一个大方向，周日晚上给你这一周的分配。
 
 ## 快速开始
@@ -109,6 +110,9 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 | 会话标题、你最近说的几句、最后一条回复的结尾、日记里没做完的任务行 | 只在打开「自动记日记」后，出现新会话或者某个会话停下来时 | 本机的一个命令行，用它自己的登录：装了 `claude` 就用它（Anthropic），没有就用 `codex`（OpenAI），设置里可以指定。12 位以上的连续数字会先抹掉 |
 | 每周方向回顾（文字）；你从手机上要的螺旋图 | 只在装了并配好 Telegram Companion 时 | Telegram Bot API，经你自己的机器人。机器人的 token 从 Telegram Companion 的设置里读，本插件不存 |
 | 提醒，里面有任务名 | 只在填了 Discord 频道时 | 你本机的 `notify-discord` 脚本，以及它拿着的 webhook |
+| 读日历列表和当天事件的请求；不往日历里写任何东西 | 只在打开「读 Google 日历」并连接了账号时 | Google：`accounts.google.com`（你在浏览器里登录、同意）、`oauth2.googleapis.com`（令牌）、`www.googleapis.com`（Calendar API）。申请的权限只有 `calendar.readonly`，用的是你在自己的 Google Cloud 项目里建的「桌面应用」OAuth 客户端，插件不带任何公共的密钥 |
+
+Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 Obsidian 的密钥存储（系统钥匙串）里，不写进插件的 `data.json`；老版本 Obsidian 没有密钥存储时才退回 `data.json`。连接的那一会儿，插件在 `127.0.0.1` 的一个随机端口上等浏览器把授权码送回来，收到就关，最多等五分钟。
 
 **读库外的文件**，都是只读，而且只读设置里「主力 AI 工具」开着的那几个：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了）；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
 

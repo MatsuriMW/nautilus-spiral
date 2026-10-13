@@ -14,6 +14,8 @@ const DEFAULTS = {
   autoOpened: false,
   showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
   aiAgents: { claude: true, codex: true, workbuddy: true },   // 主力 AI 工具：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  googleCal: false,       // 读 Google 日历里的事件当固定事件（只读，走 Google Calendar API）
+  googleClientId: "",     // 你自己在 Google Cloud 里建的 OAuth 客户端（桌面应用）的 ID；客户端密钥和刷新令牌不放在这儿，在系统钥匙串里
   showUnrecorded: true,   // 过去没有任何记录的时间在螺旋上画成斜纹，容量条下面给一行「有记录 / 没记录」
   showDayReview: true,    // 列表里的「📋 当日复盘」：这一天每件任务的预计和实际，逐件对照
   dayReviewFolded: true,  // 当日复盘默认收着，标题上带结论
@@ -430,36 +432,88 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
 }
 
 // ---------------- 界面上的小音效 ----------------
-// 现合成的短音，不带声音文件：[频率, 几秒后响, 响多久]。音量很小，是「手感」，不是提醒（提醒另有系统提示音）
+// 现合成的短音，不带声音文件。type = 波形，notes = [频率, 响多久]，一个接一个响。
+// 任务状态各有各的声音，分两种情绪：
+//   往前走的（TODO / DOING / DONE）：正弦、三角波，音往上走，越往后越亮；
+//   停下来的、没成的（PAUSED / WAITING / SUSPENDED / CANCELLED / FAILED）：音往下落，越往后越低，波形也越糙（方波、锯齿波）。
 const SOUNDS = {
-  start: [[587, 0, 0.07], [880, 0.05, 0.11]],                     // 开始做：轻轻往上一跳
-  done: [[784, 0, 0.12], [988, 0.08, 0.12], [1319, 0.16, 0.3]],   // 做完：三个上行的音
-  pause: [[659, 0, 0.1], [494, 0.07, 0.18]],                      // 停下：往下落一步
-  play: [[392, 0, 0.09], [523, 0.06, 0.09], [784, 0.12, 0.2]],    // 回放开始
-  stop: [[784, 0, 0.09], [523, 0.07, 0.24]],                      // 回放结束，回到现在
+  TODO:      { type: "triangle", notes: [[523, 0.09]] },                              // 记下一件：干净的一声
+  DOING:     { type: "sine",     notes: [[523, 0.08], [784, 0.13]] },                 // 开始做：往上跳五度
+  DONE:      { type: "sine",     notes: [[659, 0.08], [880, 0.08], [1175, 0.20]] },   // 做完：三个上行的音，最后一个拖长
+  PAUSED:    { type: "sine",     notes: [[587, 0.08], [494, 0.14]], vol: 0.8 },       // 停一下：轻轻落一步，还会回来
+  WAITING:   { type: "sine",     notes: [[494, 0.09], [494, 0.12]], vol: 0.8 },       // 等别人：同一个音敲两下，悬着
+  SUSPENDED: { type: "sine",     notes: [[392, 0.10], [294, 0.18]], vol: 0.8 },       // 搁置：往下落四度
+  CANCELLED: { type: "square",   notes: [[330, 0.08], [247, 0.16]], vol: 0.45 },      // 不做了：方波，短促地落下去
+  FAILED:    { type: "sawtooth", notes: [[196, 0.10], [147, 0.22]], vol: 0.5 },       // 没成：锯齿波，最低最沉
+  CLEAR:     { type: "triangle", notes: [[440, 0.06]], vol: 0.6 },                    // 关键词去掉了
+  tick:      { type: "triangle", notes: [[880, 0.045]], vol: 0.5 },                   // 点了一下
+  play:      { type: "sine",     notes: [[392, 0.07], [523, 0.07], [784, 0.16]] },    // 回放开始
+  stop:      { type: "sine",     notes: [[784, 0.08], [523, 0.20]] },                 // 回放结束，回到现在
+  log:       { type: "sine",     notes: [[523, 0.06], [659, 0.06], [784, 0.14]], vol: 0.8 },   // 把会话整理进日记了
 };
+const SOUND_VOLUME = 0.16;
 let audioCtx = null;
-function blip(name, vol = 0.045) {
+function blip(name) {
+  const spec = SOUNDS[name];
+  if (!spec) return;
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx || !SOUNDS[name]) return;
+    if (!Ctx) return;
     audioCtx ||= new Ctx();
     if (audioCtx.state === "suspended") audioCtx.resume();
-    const t0 = audioCtx.currentTime + 0.01;
-    for (const [freq, at, len] of SOUNDS[name]) {
+    let t = audioCtx.currentTime + 0.005;
+    const vol = SOUND_VOLUME * (spec.vol ?? 1);
+    for (const [freq, len] of spec.notes) {
       const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(freq, t0 + at);
-      gain.gain.setValueAtTime(0.0001, t0 + at);
-      gain.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + len);
+      osc.type = spec.type;
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.0001, t);                       // 淡入淡出，不然开头结尾会「啪」一下
+      gain.gain.linearRampToValueAtTime(vol, t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + len);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
-      osc.start(t0 + at);
-      osc.stop(t0 + at + len + 0.03);
+      osc.start(t);
+      osc.stop(t + len + 0.02);
+      t += len * 0.85;
     }
   } catch (e) { /* 没有声音设备就不响 */ }
 }
+
+// 任务状态一变就响一声，不管是谁改的（TODOseq 里点关键词、⌘/、看板、手敲）：只看那一行的关键词从什么变成了什么。
+// kwSnapshot：一篇笔记里每一行的状态，Map(去掉关键词和时间以后的正文 → 关键词)，没有关键词的行是 ""；同样的正文出现两次分不清是哪一行，记成 null 不管
+const KW_SOUND = { TODO: "TODO", LATER: "TODO", DOING: "DOING", NOW: "DOING", "IN-PROGRESS": "DOING", DONE: "DONE", PAUSED: "PAUSED", WAITING: "WAITING", WAIT: "WAITING", SUSPENDED: "SUSPENDED", CANCELED: "CANCELLED", CANCELLED: "CANCELLED", FAILED: "FAILED" };
+function kwSnapshot(content) {
+  const out = new Map();
+  let inCode = false, count = 0;
+  for (const raw of content.split("\n")) {
+    if (/^\s*(```|~~~)/.test(raw)) { inCode = !inCode; continue; }
+    if (inCode || !raw.trim() || ++count > 6000) continue;
+    let s = raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s+/, "").replace(STAMP_RE, "");
+    let kw = "";
+    const cb = CHECKBOX_RE.exec(s);
+    if (cb) { kw = cb[1] === " " ? "TODO" : cb[1] === "/" ? "DOING" : cb[1] === "-" ? "CANCELLED" : "DONE"; s = s.slice(cb[0].length); }
+    const m = /^(TODO|DOING|LATER|NOW|PAUSED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)(?=\s|$)\s*/.exec(s);
+    if (m) { kw = m[1]; s = s.slice(m[0].length); }
+    // 关键词后面跟着的时刻 / 时间段是记录，会跟着状态一起变，不算正文
+    s = s.replace(/^\d{1,2}[:：]\d{2}(?:\s*[-–~～]\s*\d{1,2}[:：]\d{2})?\s*/, "").trim();
+    if (!s || s.startsWith("⏱")) continue;
+    out.set(s, out.has(s) ? null : kw);
+  }
+  return out;
+}
+// 前后两份快照里，哪几行的状态变了：[{ body, from, to }]。新写的行、删掉的行不算
+function kwChanges(prev, cur) {
+  const out = [];
+  for (const [body, kw] of cur) {
+    const was = prev.get(body);
+    if (kw !== null && was !== undefined && was !== null && was !== kw) out.push({ body, from: was, to: kw });
+  }
+  return out;
+}
+// 一次改了好几行时只响一声，响最要紧的那个
+const KW_RANK = ["DONE", "FAILED", "CANCELLED", "DOING", "SUSPENDED", "WAITING", "PAUSED", "TODO", "CLEAR"];
+const kwCue = (changes) => changes.map((c) => (c.to ? KW_SOUND[c.to] || "CLEAR" : "CLEAR")).sort((a, b) => KW_RANK.indexOf(a) - KW_RANK.indexOf(b))[0] || "";
+
 // ---------------- 容量 · 没记录的时间 · 当日复盘 ----------------
 // 这三样的判定规则照 Roam 上的 Nautilus Log（MIT，github.com/404KSG/roam-nautilus-log 的 log-core.js / timing-core.js），数字的口径和它一致。
 
@@ -1017,6 +1071,125 @@ class MacCalendar {
   }
 }
 
+// ---------------- Google 日历（只读） ----------------
+// 走 Google Calendar API。用的是你自己在 Google Cloud 里建的 OAuth 客户端（类型选「桌面应用」），插件不带任何公共的密钥。
+// 连接：在本机临时开一个只听 127.0.0.1 的端口，浏览器里登录、同意以后 Google 把授权码送回这个端口（带 PKCE），换成令牌。
+// 申请的权限只有 calendar.readonly。刷新令牌和客户端密钥放进 Obsidian 的密钥存储（系统钥匙串），不写进 data.json；老版本 Obsidian 没有密钥存储才退回 data.json。
+// 读出来的事件整理成和 macOS 日历同一个样子：{ id, title, start, end（毫秒）, allDay, calendar, color, location, url, source: "google" }
+const GOOGLE_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
+class GoogleCalendar {
+  // host = { get(id), set(id, value)：存取密钥；clientId()；http(req) → { status, json }；open(url) }。分开是为了能单独测
+  constructor(host) {
+    this.host = host;
+    this.access = null;      // { token, until }
+    this.cals = null;        // { at, list }
+  }
+  connected() { return !!this.host.get("refresh"); }
+
+  // 浏览器里要打开的授权地址
+  authUrl(redirect, challenge, state) {
+    const q = new URLSearchParams({ client_id: this.host.clientId(), redirect_uri: redirect, response_type: "code", scope: GOOGLE_SCOPE,
+      code_challenge: challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent", state });
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + q.toString();
+  }
+
+  // 连接：开端口 → 开浏览器 → 等授权码 → 换令牌。timeout 秒内没完成就算了
+  async connect(timeout = 300) {
+    if (!this.host.clientId() || !this.host.get("secret")) throw new Error("先填客户端 ID 和客户端密钥");
+    const crypto = require("crypto"), http = require("http");
+    const b64 = (buf) => buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const verifier = b64(crypto.randomBytes(48)), state = b64(crypto.randomBytes(16));
+    const challenge = b64(crypto.createHash("sha256").update(verifier).digest());
+    const server = http.createServer();
+    await new Promise((ok, bad) => { server.once("error", bad); server.listen(0, "127.0.0.1", ok); });
+    const redirect = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const code = await new Promise((ok, bad) => {
+        const timer = setTimeout(() => bad(new Error("等了太久，没有收到授权")), timeout * 1000);
+        server.on("request", (req, res) => {
+          const u = new URL(req.url, redirect);
+          if (!u.searchParams.has("code") && !u.searchParams.has("error")) { res.writeHead(404); res.end(); return; }
+          const good = u.searchParams.get("state") === state && u.searchParams.has("code");
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(`<!doctype html><meta charset="utf-8"><title>螺旋日程</title><body style="font:16px/1.6 -apple-system,sans-serif;text-align:center;padding-top:18vh">${good ? "连上了，可以关掉这个页面，回到 Obsidian。" : "没有连上：" + (u.searchParams.get("error") || "授权信息对不上") + "。回到 Obsidian 再试一次。"}</body>`);
+          clearTimeout(timer);
+          good ? ok(u.searchParams.get("code")) : bad(new Error(u.searchParams.get("error") === "access_denied" ? "你在浏览器里拒绝了授权" : "授权信息对不上：" + (u.searchParams.get("error") || "state 不一致")));
+        });
+        this.host.open(this.authUrl(redirect, challenge, state));
+      });
+      const r = await this.host.http({ url: "https://oauth2.googleapis.com/token", method: "POST", contentType: "application/x-www-form-urlencoded",
+        body: new URLSearchParams({ client_id: this.host.clientId(), client_secret: this.host.get("secret"), code, code_verifier: verifier, grant_type: "authorization_code", redirect_uri: redirect }).toString() });
+      if (r.status !== 200 || !r.json.refresh_token) throw new Error("换令牌失败：" + ((r.json && (r.json.error_description || r.json.error)) || r.status));
+      this.host.set("refresh", r.json.refresh_token);
+      this.access = { token: r.json.access_token, until: Date.now() + (r.json.expires_in - 60) * 1000 };
+      this.cals = null;
+    } finally { server.close(); }
+  }
+
+  disconnect() { this.host.set("refresh", ""); this.access = null; this.cals = null; }
+
+  async token() {
+    if (this.access && Date.now() < this.access.until) return this.access.token;
+    const refresh = this.host.get("refresh");
+    if (!refresh) throw new Error("还没连接 Google 账号");
+    const r = await this.host.http({ url: "https://oauth2.googleapis.com/token", method: "POST", contentType: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ client_id: this.host.clientId(), client_secret: this.host.get("secret"), refresh_token: refresh, grant_type: "refresh_token" }).toString() });
+    if (r.status !== 200 || !r.json.access_token) {
+      // 授权被撤销或者过期了：要重新连接
+      if (r.json && r.json.error === "invalid_grant") { this.host.set("refresh", ""); throw new Error("Google 的授权失效了，到设置里重新连接"); }
+      throw new Error("刷新 Google 令牌失败：" + ((r.json && (r.json.error_description || r.json.error)) || r.status));
+    }
+    this.access = { token: r.json.access_token, until: Date.now() + (r.json.expires_in - 60) * 1000 };
+    return this.access.token;
+  }
+
+  async api(path, params = {}) {
+    const r = await this.host.http({ url: `https://www.googleapis.com/calendar/v3${path}?${new URLSearchParams(params).toString()}`, method: "GET", headers: { Authorization: "Bearer " + await this.token() } });
+    if (r.status === 401) { this.access = null; throw new Error("Google 说令牌无效，下一次会重新取"); }
+    if (r.status !== 200) throw new Error("Google 日历：" + ((r.json && r.json.error && r.json.error.message) || r.status));
+    return r.json;
+  }
+
+  // 账号下的日历：[{ id, title, color, primary, shown }]。shown = 在 Google 日历界面里勾着显示的。十分钟读一次
+  async calendars() {
+    if (this.cals && Date.now() - this.cals.at < 600e3) return this.cals.list;
+    const list = [];
+    let pageToken = "";
+    do {
+      const d = await this.api("/users/me/calendarList", { maxResults: "250", ...(pageToken ? { pageToken } : {}) });
+      for (const c of d.items || []) list.push({ id: c.id, title: c.summaryOverride || c.summary || c.id, color: c.backgroundColor || "", primary: !!c.primary, shown: c.selected !== false && !c.hidden });
+      pageToken = d.nextPageToken || "";
+    } while (pageToken);
+    this.cals = { at: Date.now(), list };
+    return list;
+  }
+
+  // from ~ to（毫秒）之间的事件。只读界面里勾着显示的日历；取消了的、你拒绝了的不要
+  async events(from, to, skip = new Set()) {
+    const out = [];
+    for (const cal of await this.calendars()) {
+      if (!cal.shown || skip.has(cal.title)) continue;
+      let pageToken = "";
+      do {
+        const d = await this.api(`/calendars/${encodeURIComponent(cal.id)}/events`, { timeMin: new Date(from).toISOString(), timeMax: new Date(to).toISOString(), singleEvents: "true", orderBy: "startTime", maxResults: "250", ...(pageToken ? { pageToken } : {}) });
+        for (const e of d.items || []) { const x = GoogleCalendar.event(e, cal); if (x) out.push(x); }
+        pageToken = d.nextPageToken || "";
+      } while (pageToken);
+    }
+    return out;
+  }
+
+  // Google 的一条事件 → 螺旋用的样子。全天事件给的是日期（2026-10-13，结束那天不含），按本地时区的 0 点算
+  static event(e, cal) {
+    if (!e || e.status === "cancelled" || !e.start || !e.end) return null;
+    if ((e.attendees || []).some((a) => a.self && a.responseStatus === "declined")) return null;
+    const allDay = !!e.start.date;
+    const at = (x) => (x.date ? new Date(x.date + "T00:00:00").getTime() : Date.parse(x.dateTime));
+    const start = at(e.start), end = at(e.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return { id: e.id || "", title: e.summary || "", start, end, allDay, calendar: cal.title, color: cal.color, location: e.location || "", url: e.htmlLink || "", source: "google" };
+  }
+}
 // ---------------- 人机协作：Claude Code 的本地会话日志 ----------------
 // ~/.claude/projects/**/*.jsonl，每条 assistant 消息带 usage。按日记日（dayCutoff 分界）汇总成：
 //   协作时长 = 有 Claude 在干活的墙钟时间（几个窗口同时开只算一次）；Claude 工时 = 各会话活跃时间相加（并行就多于协作时长）
@@ -1437,7 +1610,7 @@ class AiSessionsModal extends OB.Modal {
     box.createDiv({ cls: "naut-ai-sess-title", text: x.title || first.slice(0, 120) || "（没有标题）" });
     if (x.title && first) box.createDiv({ cls: "naut-ai-sess-text", text: first.slice(0, 200) });
     const cli = agent === "codex" || x.app === "cli";   // 默认按钮给哪个：Codex 和终端里的 Claude Code 回终端，其余回 Claude 桌面版
-    const when = x.overlap != null ? `和这件重叠 ${dur(x.overlap)}` : `${clock(x.lastAt)} 还在动`;
+    const when = x.overlap != null ? `和这件重叠 ${dur(x.overlap)}` : x.stopped ? `最后在 ${clock(x.lastAt)}` : `${clock(x.lastAt)} 还在动`;
     box.createDiv({ cls: "naut-ai-sess-meta", text: `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 产出 ${fmtTok(x.out)} tok` });
     if (agent === "workbuddy") return;
     const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
@@ -1453,19 +1626,97 @@ class AiSessionsModal extends OB.Modal {
   onClose() { this.contentEl.empty(); }
 }
 
-// 一段文字 + 几个按钮（⌃⌥V 现在怎样）
-class TextModal extends OB.Modal {
-  constructor(app, title, text, buttons = []) { super(app); this.title = title; this.text = text; this.buttons = buttons; }
+// ⌃⌥V「现在怎样」：一眼看清这会儿在做什么、今天还排得下吗、接下来是什么。
+// 上面是时刻和今天过了多少；中间三块数字是容量；下面依次是在做的（计时每秒走）、接下来、今天的成绩；最下面一排是这会儿最可能要按的
+class StatusModal extends OB.Modal {
+  constructor(app, plugin, data) { super(app); this.plugin = plugin; this.d = data; }
   onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl("h3", { text: this.title });
-    contentEl.createDiv({ cls: "naut-status-text", text: this.text });
-    if (this.buttons.length) {
-      const bar = contentEl.createDiv({ cls: "naut-ai-sess-btns" });
-      for (const [label, fn] of this.buttons) bar.createEl("button", { text: label }).onclick = () => { this.close(); fn(); };
+    const { contentEl, d, plugin } = this;
+    this.modalEl.addClass("naut-status-modal");
+    contentEl.empty();
+    let i = 0;
+    const rise = (el) => { el.style.setProperty("--naut-i", String(i++)); return el; };
+    const go = (item) => { plugin.sound("tick"); this.close(); if (d.file) plugin.openItem(d.file, item); };
+    const short = (label) => label.replace(/\[\[(?:[^\]|]*\|)?([^\]]+)\]\]/g, "$1").replace(/\s*←\s*\S+\s*$/, "");
+
+    // 时刻 + 今天过了多少
+    const head = rise(contentEl.createDiv({ cls: "naut-st-head" }));
+    this.clockEl = head.createDiv({ cls: "naut-st-clock", text: moment().format("HH:mm") });
+    const hr = head.createDiv({ cls: "naut-st-headright" });
+    hr.createDiv({ cls: "naut-st-date", text: d.date.format("M月D日 dddd") });
+    const frac = Math.max(0, Math.min(1, (d.now - d.S) / (d.E - d.S)));
+    hr.createDiv({ cls: "naut-st-sub", text: `${clock(d.S)} → ${d.E >= 1440 ? "次日 " : ""}${clock(d.E)} · 已过 ${Math.round(frac * 100)}%` });
+    const day = rise(contentEl.createDiv({ cls: "naut-st-day" }));
+    day.createDiv({ cls: "naut-st-day-fill", attr: { style: `width:${(frac * 100).toFixed(1)}%` } });
+    day.createDiv({ cls: "naut-st-day-now", attr: { style: `left:${(frac * 100).toFixed(1)}%` } });
+
+    if (!d.file) {
+      rise(contentEl.createDiv({ cls: "naut-st-empty", text: `今天（${d.dayKey}）还没有日记` }));
+    } else {
+      // 容量：三块数字 + 一行预算
+      const C = d.C;
+      const tiles = rise(contentEl.createDiv({ cls: "naut-st-tiles" }));
+      const tile = (label, value, tone, tip) => { const t = tiles.createDiv({ cls: `naut-st-tile is-${tone}`, attr: tip ? { "aria-label": tip } : {} }); t.createDiv({ cls: "naut-st-tile-v", text: value }); t.createDiv({ cls: "naut-st-tile-l", text: label }); };
+      tile("已计划", dur(C.demand), "neutral", "没做完的待办一共还要多久");
+      tile(C.status.label, dur(C.status.value), C.status.key === "remaining" ? (C.free > 0 ? "positive" : "neutral") : "warning", C.status.key === "overload" ? "已计划的比可安排的时间多出这么多" : C.status.key === "fragmented" ? "总时间够，但没有一段连续的空档放得下" : "排完已计划的以后还空着这么多");
+      tile("剩余", `${C.left}%`, C.tone, "余量 ÷ 全天可安排的时间");
+      rise(contentEl.createDiv({ cls: "naut-st-budget", text: `${C.burning === "available" ? "🔥 " : ""}可安排 ${dur(C.available)} / ${dur(C.totalAvailable)} · ${C.burning === "events" ? "🔥 " : ""}事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}` }));
+
+      // 在做的
+      const sec = (title, n) => rise(contentEl.createDiv({ cls: "naut-st-sec" })).createSpan({ text: n != null ? `${title} ${n}` : title });
+      const row = (cls, left, label, right, item) => {
+        const r = rise(contentEl.createDiv({ cls: `naut-st-row ${cls}` }));
+        r.createSpan({ cls: "naut-st-left", text: left });
+        r.createSpan({ cls: "naut-st-label", text: label });
+        const rt = r.createSpan({ cls: "naut-st-right", text: right });
+        if (item) r.onclick = () => go(item);
+        return rt;
+      };
+      this.timers = [];
+      if (d.session || d.brk || d.doing.length) sec("在做", d.doing.length || null);
+      if (d.session) for (const t of d.session.tasks) {
+        const el = row("is-focus", "⏱", `专注 · ${short(t.label)}`, "", null);
+        this.timers.push(() => el.setText(Date.now() < t.end ? `还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}` : "到点了"));
+      }
+      if (d.brk) row("is-break", breakIcon(d.brk.word), `${d.brk.word}中 · ${moment(d.brk.since).format("HH:mm")} 起`, dur(Math.max(1, Math.round((Date.now() - d.brk.since) / 60e3))), null);
+      for (const x of d.doing) {
+        const el = row("is-doing" + (x.auto ? " is-auto" : ""), "", short(x.item.label), "", x.item);
+        if (x.since) this.timers.push(() => el.setText(elapsedText(Date.now() - x.since)));
+        else el.setText(x.spent >= 1 ? `已做 ${dur(x.spent)}` : "进行中");
+      }
+
+      // 接下来（固定事件和排进去的待办，按时间）
+      const upcoming = [...d.events.map((e) => ({ at: Math.max(e.start, d.now), kind: "event", item: e, right: `${clock(e.start)}–${clock(e.end)}` })),
+        ...d.next.map((t) => ({ at: t.segments[t.workedN][0], kind: t.prio ? "prio" : "task", item: t, right: t.remaining < t.dur - 1 ? `剩 ${dur(t.remaining)}` : dur(t.dur) }))].sort((a, b) => a.at - b.at).slice(0, 6);
+      if (upcoming.length) sec("接下来");
+      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? "进行中" : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item);
+      if (d.over.length) row("is-over", "—", `排不下 ${d.over.length} 件：${d.over.slice(0, 3).map((t) => short(t.label)).join("、")}${d.over.length > 3 ? "…" : ""}`, "", d.over[0]);
+      if (d.suspended.length) row("is-paused", "💤", `搁置 ${d.suspended.length} 件：${d.suspended.slice(0, 3).map((t) => short(t.label)).join("、")}${d.suspended.length > 3 ? "…" : ""}`, "", d.suspended[0]);
+      if (!d.doing.length && !d.session && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: "今天没有排着的事了" }));
+
+      // 今天的成绩
+      sec("今天");
+      const chips = rise(contentEl.createDiv({ cls: "naut-st-chips" }));
+      const chip = (text, cls = "") => chips.createSpan({ cls: `naut-st-chip ${cls}`, text });
+      chip(`✅ 做完 ${d.done} · 还有 ${d.open}`);
+      if (d.review && d.review.comparedCount) chip(`📋 偏差 ${signed(d.review.varianceMinutes)}`, d.review.varianceMinutes > 0 ? "is-over" : "");
+      if (d.ai) { const c = chip(""); for (const k of Object.keys(AI_AGENTS)) if (d.ai.by && d.ai.by[k] && d.ai.by[k].wall) c.createSpan({ cls: `naut-sw naut-bg-${k}` }); c.appendText(`🤖 协作 ${dur(d.ai.wall)} · ${fmtTok(d.ai.out)} tok`); }
+      if (d.games) chip(`🎮 ${dur(d.games)}`);
     }
+
+    // 这会儿最可能要按的
+    const bar = rise(contentEl.createDiv({ cls: "naut-st-btns" }));
+    const btn = (text, key, fn, cta) => { const b = bar.createEl("button", { cls: cta ? "mod-cta" : "", text }); if (key) b.createSpan({ cls: "naut-kbd", text: key }); b.onclick = () => { plugin.sound("tick"); this.close(); fn(); }; };
+    if (d.file && d.next.length && !d.doing.length) btn("▶ 开始下一件", plugin.hotkeyText("start-next"), () => plugin.startNext(), true);
+    btn("打开螺旋", plugin.hotkeyText("open"), () => plugin.activate(), !(d.file && d.next.length && !d.doing.length));
+    btn("🤖 整理进日记", plugin.hotkeyText("auto-log"), () => plugin.logNow());
+    btn("Agent 会话", plugin.hotkeyText("doing-ai"), () => plugin.showDoingAi());
+
+    const tick = () => { this.clockEl.setText(moment().format("HH:mm")); for (const f of this.timers || []) f(); };
+    tick();
+    this.timer = window.setInterval(tick, 1000);
   }
-  onClose() { this.contentEl.empty(); }
+  onClose() { window.clearInterval(this.timer); this.contentEl.empty(); }
 }
 
 // 手填这天实际的开始（起床）/ 结束（收工）时间，和拖螺旋上的绿 / 红把手是一回事。留空 = 用设置里的默认
@@ -1687,6 +1938,7 @@ class SpiralView extends ItemView {
     this._enter = false;
     root.toggleClass("naut-enter", enter);
     root.toggleClass("naut-playing", this._play != null);
+    root.onclick = (e) => { if (e.target && e.target.closest && e.target.closest(".naut-seg, .naut-hit, .naut-gap, .naut-slot, .naut-log, .naut-row, .naut-ai-col, .naut-proj-head")) this.plugin.sound("tick"); };
     root.removeClass("naut-has-hot");
 
     const head = root.createDiv({ cls: "naut-head" });
@@ -2107,7 +2359,14 @@ class SpiralView extends ItemView {
   // 🤖 人机协作：按项目分 + 近 7 天
   renderAi(list, store, date, ai) {
     const cfg = this.plugin.settings;
-    list.createDiv({ cls: "naut-sec", text: "🤖 人机协作" });
+    const sec = list.createDiv({ cls: "naut-sec naut-sec-ai", text: "🤖 人机协作" });
+    // 手动整理一次：把今天的 Agent 会话记进日记（和自动记日记是同一件事，不用等它的间隔）
+    if (date.isSame(this.plugin.today(), "day")) {
+      const b = sec.createEl("button", { cls: "naut-log-now", text: "整理进日记", attr: { "aria-label": "现在把今天的 Agent 会话整理进日记：在动的记成 DOING，停了的记成 SUSPENDED，归档了的记成 DONE" } });
+      b.onclick = async (e) => { e.stopPropagation(); b.disabled = true; b.setText("整理中…"); try { await this.plugin.logNow(); } finally { b.disabled = false; b.setText("整理进日记"); } };
+      if (cfg.autoLog && this.plugin._autoErr) list.createDiv({ cls: "naut-proj-note naut-auto-err", text: `⚠ 自动记日记上一轮没问到模型：${this.plugin._autoErr}`,
+        attr: { title: "给会话起名字、对上日记里的行要问一次模型，用的是本机的 claude 或 codex 命令行。可以到设置里换一个命令行，或者点「整理进日记」先用会话标题记上" } });
+    }
     if (ai) {
       const rows = Object.entries(ai.proj).filter(([, p]) => p.out >= 1000 || p.min >= 2).sort((a, b) => b[1].out - a[1].out).slice(0, 5);
       for (const [name, p] of rows) {
@@ -2116,6 +2375,11 @@ class SpiralView extends ItemView {
         row.createSpan({ cls: "naut-time", text: dur(p.min) });
         row.createSpan({ cls: "naut-label", text: name });
         row.createSpan({ cls: "naut-dur", text: fmtTok(p.out) });
+        // 点一下：这个项目这天有哪几个会话，能直接回去
+        row.onclick = () => {
+          const sess = (ai.list || []).filter((x) => x.dir === name && x.segs && x.segs.length).sort((x, y) => y.min - x.min).map((x) => ({ ...x, related: true, stopped: true, lastAt: x.segs[x.segs.length - 1][1] }));
+          if (sess.length) new AiSessionsModal(this.app, `「${name}」这天的 Agent 会话`, [{ list: sess }]).open();
+        };
       }
     }
     const days = [];
@@ -2193,6 +2457,13 @@ module.exports = class NautilusSpiral extends Plugin {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
     this.states = new Map();   // path -> Map(label -> state)，用来发现「刚改成 DONE」
     this.cal = new MacCalendar();
+    this.gcal = new GoogleCalendar({
+      get: (id) => this.secret(`google-${id}`),
+      set: (id, value) => this.secret(`google-${id}`, value),
+      clientId: () => String(this.settings.googleClientId || "").trim(),
+      http: async (req) => { const r = await OB.requestUrl({ ...req, throw: false }); let json = null; try { json = r.json; } catch (e) { /* 不是 JSON */ } return { status: r.status, json: json || {} }; },
+      open: (url) => window.open(url),
+    });
     this.core = { parseJournal, parseDuration, parseProgress, stripProgress, stripDuration, applyWork, workKey, schedule, fill, normalize };   // 给「任务提醒」插件复用
     this.saveSoon = debounce(() => this.saveData(this.settings), 1000, true);
     this.refresh = debounce(() => { if (!this.dragging) this.views().forEach((v) => v.render()); }, 300, true);   // 正在拖把手时不重绘
@@ -2233,6 +2504,11 @@ module.exports = class NautilusSpiral extends Plugin {
       for (const v of this.views()) if (v.offset !== offset) v.go(offset);
     }));
     this.registerEvent(this.app.vault.on("modify", (f) => this.onFileChange(f)));
+    // 任务状态切换的音效：全库的笔记都看（TODOseq 的任务列表、看板改的不一定是日记）
+    this.kw = new Map();   // path -> kwSnapshot
+    this.registerEvent(this.app.vault.on("modify", (f) => this.onAnyModify(f)));
+    this.registerEvent(this.app.workspace.on("file-open", (f) => this.kwBaseline(f)));
+    this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
     this.registerInterval(window.setInterval(() => this.refresh(), 60 * 1000));
     this.registerInterval(window.setInterval(() => { this.autoLogTick(); this.weeklyTick(); }, 60 * 1000));
@@ -2501,17 +2777,14 @@ module.exports = class NautilusSpiral extends Plugin {
         const r = await this.ask("螺旋日程 · 测试通知", "看到这条就说明通了。点「收到」试试按钮", ["收到", "不用了"], 60);
         new OB.Notice(r == null ? "发不出去：系统没允许「螺旋日程」发通知。到「系统设置 → 通知 → 螺旋日程」打开「允许通知」，或者在通知中心里找到它的授权请求点「允许」。在那之前到点提醒照旧弹对话框" : r === "" ? "通知发出去了，但没点按钮（60 秒到了）" : r === "__click__" ? "收到：你点的是通知本身" : `收到：你点了「${r}」`, 10000);
       } },
-      { id: "auto-log", name: "现在把 Agent 会话整理进今天的日记", run: async () => {
-        const r = await this.autoLogRun();
-        new OB.Notice(r.error ? `没整理成：${r.error}` : r.changes.length ? `整理进日记了：\n${r.changes.join("\n")}` : "没有要改的：会话都已经记过了，或者还太短", 8000);
-      } },
+      { id: "auto-log", name: "现在把 Agent 会话整理进今天的日记", key: ca("L"), run: () => this.logNow() },
       { id: "focus-end", name: "结束这一轮专注（问做完了没有）", key: ca("E"), when: () => !!this.session(), run: () => this.askDone(this.session()) },
       { id: "break-back", name: "吃饭 / 锻炼回来了（问要不要切回 DOING）", key: ca("B"), when: () => !!this.settings.breakState, run: () => { this.settings.breakState.asking = false; this.askBack(this.settings.breakState); } },
       { id: "review", name: "预估 vs 实际（复盘）", key: ca("R"), run: () => this.showReview() },
       { id: "open", name: "打开螺旋日程", key: ca("O"), run: () => this.activate() },
       { id: "day-bounds", name: "设置今天的起床 / 收工时间", key: ca("T"), run: () => new BoundsModal(this.app, this, this.today()).open() },
       { id: "open-today", name: "打开今天的日记（凌晨按日界算前一天）", run: () => this.openToday() },
-      { id: "calendar-refresh", name: "重新读取 macOS 日历", run: () => { this.cal.cache.clear(); this.refresh(); } },
+      { id: "calendar-refresh", name: "重新读取日历（macOS 日历 / Google 日历）", run: () => { this.cal.cache.clear(); this.gcal.cals = null; this.refresh(); } },
     ];
   }
 
@@ -2528,25 +2801,42 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // ⌃⌥V 现在怎样：这一轮专注每条线还剩多久、吃饭中、在做的、容量和接下来
   async showStatus() {
-    const lines = [];
-    const s = this.session();
-    if (s) lines.push(`⏱ 专注中 · ${s.tasks.length} 条线`, ...s.tasks.map((t) => `   ${t.label} · ${Date.now() < t.end ? `还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}` : "到点了"}（${moment(t.end).format("HH:mm")} 到点）`), "");
-    const b = this.settings.breakState;
-    if (b) lines.push(`${breakIcon(b.word)} ${b.word}中 · ${moment(b.since).format("HH:mm")} 起 · ${dur(Math.max(1, Math.round((Date.now() - b.since) / 60e3)))}${b.keys.length ? ` · 暂停了 ${b.keys.length} 件` : ""}`, "");
-    const file = this.todayFile();
-    if (file) {
-      const items = parseJournal(await this.app.vault.cachedRead(file), this.settings);
-      const doing = items.filter((t) => t.kind === "task" && t.state === "open" && t.doing);
-      const paused = items.filter((t) => t.kind === "task" && t.state === "open" && t.paused);
-      if (doing.length) lines.push(`▶ 在做 ${doing.length} 件：${doing.map((t) => t.label).join("、")}`);
-      if (paused.length) lines.push(`⏸ 暂停 ${paused.length} 件：${paused.map((t) => t.label).join("、")}`);
-      if (doing.length || paused.length) lines.push("");
-    }
-    lines.push(await this.capacityText());
-    new TextModal(this.app, `现在 · ${moment().format("HH:mm")}`, lines.join("\n"), [
-      ["正在做的事的 Agent 会话", () => this.showDoingAi()],
-      ["打开螺旋日程", () => this.activate()],
-    ]).open();
+    new StatusModal(this.app, this, await this.statusData()).open();
+  }
+
+  // ⌃⌥V 面板要的东西，一次备齐
+  async statusData() {
+    const cfg = this.settings, date = this.today(), dayKey = date.format(cfg.format);
+    const m = moment(), now = normalize(m.hours() * 60 + m.minutes(), cfg);
+    const bounds = (cfg.dayBounds || {})[dayKey] || {};
+    const S = bounds.start ?? cfg.dayStart * 60, E = bounds.end ?? cfg.dayEnd * 60;
+    const d = { date, dayKey, now, S, E, file: this.todayFile(), session: this.session(), brk: cfg.breakState, doing: [], suspended: [], next: [], over: [], events: [], C: null, done: 0, open: 0, review: null, ai: null, gaps: null };
+    if (!d.file) return d;
+    const items = parseJournal(await this.app.vault.cachedRead(d.file), cfg);
+    this.withCalendar(items, date);
+    applyWork(items, cfg, dayKey, now, 0, bounds);
+    const plan = schedule(items, cfg, now, 0, bounds);
+    d.C = capacity(items, plan, cfg, now, 0, bounds);
+    const auto = this.autoKeys(dayKey);
+    const base = moment(dayKey, cfg.format).valueOf();
+    const work = (cfg.workLog || {})[dayKey] || {};
+    const open = items.filter((t) => t.kind === "task" && t.state === "open" && !t.container);
+    d.doing = open.filter((t) => t.doing).map((t) => {
+      const seg = (work[workKey(t.label)] || []).find((s) => s[1] == null);
+      return { item: t, auto: auto.has(workKey(t.label)), since: seg ? base + seg[0] * 60e3 : null, spent: t.spentToday };
+    });
+    d.suspended = plan.suspended;   // 搁置的不排；暂停的（PAUSED）照常排，在「接下来」里带个 ⏸
+    d.next = plan.queue.filter((t) => !t.doing && t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).slice(0, 5);
+    d.over = plan.queue.filter((t) => t.overflow);
+    d.events = items.filter((i) => i.kind === "event" && i.end > now).sort((a, b) => a.start - b.start).slice(0, 3);
+    const tasks = items.filter((i) => i.kind === "task" && !i.container);
+    d.done = tasks.filter((i) => i.state === "done").length;
+    d.open = open.length;
+    d.review = cfg.showDayReview !== false ? dayReview(items, cfg, { live: true, auto }).summary : null;
+    d.ai = cfg.showAi !== false ? aiPick((await this.aiUsage()).days[dayKey], cfg) : null;
+    const games = cfg.trackGames !== false ? ((await this.gameLog()).days[dayKey] || []) : [];
+    d.games = games.length ? unionMin(games) : 0;
+    return d;
   }
 
   // ⌃⌥C 正在做的事（DOING，加上这一轮专注里的）各自期间的 Claude 会话；再加上最近 15 分钟还在动、没对上任何一件的会话
@@ -2650,11 +2940,29 @@ module.exports = class NautilusSpiral extends Plugin {
       over: rows.filter((r) => r.actual > r.est * 1.2).length, under: rows.filter((r) => r.actual < r.est * 0.8).length, cats, worst };
   }
 
+  // 密钥（Google 的刷新令牌、客户端密钥）：放进 Obsidian 的密钥存储，那里用的是系统钥匙串，不进 data.json、不跟着库同步。
+  // 给了 value 就是存（空串 = 删掉）。老版本 Obsidian 没有密钥存储，才退回 data.json 的 secrets
+  secret(id, value) {
+    const key = `nautilus-spiral-${id}`, store = this.app.secretStorage;
+    if (store && typeof store.getSecret === "function") {
+      if (value === undefined) return store.getSecret(key) || "";
+      if (value) store.setSecret(key, value); else if (typeof store.deleteSecret === "function") store.deleteSecret(key); else store.setSecret(key, "");
+      return value;
+    }
+    const bag = (this.settings.secrets ||= {});
+    if (value === undefined) return bag[key] || "";
+    if (value) bag[key] = value; else delete bag[key];
+    this.saveSoon();
+    return value;
+  }
   // ---- macOS 日历 ----
 
-  // 这天的日历事件：先交缓存（同步），过期了在后台重读，读完有变化再重画。关着或不是 Mac 桌面版返回 null
+  useMacCal() { return !!this.settings.calendar && !!(OB.Platform && OB.Platform.isMacOS && OB.Platform.isDesktopApp); }
+  useGoogleCal() { return !!this.settings.googleCal && this.gcal.connected(); }
+
+  // 这天的日历事件（macOS「日历」和 Google 日历，开了哪个读哪个）：先交缓存（同步），过期了在后台重读，读完有变化再重画。两个都没开返回 null
   calendarFor(date) {
-    if (!this.settings.calendar || !(OB.Platform && OB.Platform.isMacOS && OB.Platform.isDesktopApp)) return null;
+    if (!this.useMacCal() && !this.useGoogleCal()) return null;
     const key = date.format("YYYY-MM-DD");
     const c = this.cal.cache.get(key);
     if (!c || Date.now() - c.at > 120000) this.loadCalendar(date.clone(), key);
@@ -2672,7 +2980,12 @@ module.exports = class NautilusSpiral extends Plugin {
       const skip = new Set(splitList(cfg.calendarSkip));
       const items = [], allDay = [];
       const seen = new Set();   // 同一件事出现在好几个日历里（比如两份节假日日历）：只留一份
-      for (const e of await this.cal.call([mid + cfg.dayStart * 60e3 * 60, mid + cfg.dayEnd * 60e3 * 60])) {
+      const from = mid + cfg.dayStart * 60e3 * 60, to = mid + cfg.dayEnd * 60e3 * 60;
+      // 两个来源各读各的，一个读不出来不耽误另一个；同一件事两边都有（比如 Google 日历也同步进了 macOS「日历」）只留一份
+      const raw = [], errors = [];
+      if (this.useMacCal()) try { raw.push(...await this.cal.call([from, to])); } catch (e) { errors.push(String(e.message || e)); }
+      if (this.useGoogleCal()) try { raw.push(...await this.gcal.events(from, to, skip)); } catch (e) { errors.push(String(e.message || e)); }
+      for (const e of raw) {
         if (skip.has(e.calendar)) continue;
         const sig = `${e.title}|${e.allDay ? "" : e.start + "-" + e.end}`;
         if (seen.has(sig)) continue;
@@ -2683,7 +2996,7 @@ module.exports = class NautilusSpiral extends Plugin {
         if (end <= start) continue;
         items.push({ kind: "event", state: "none", label: e.title || "（无标题）", start, end, line: -1, indent: 0, prio: false, cal: e });
       }
-      next = { at: Date.now(), items, allDay };
+      next = { at: Date.now(), items, allDay, ...(errors.length ? { error: errors.join("；") } : {}) };
     } catch (e) {
       console.error("[螺旋日程] 读取日历失败", e);
       next = { at: Date.now(), items: [], allDay: [], error: String(e.message || e) };
@@ -2707,7 +3020,8 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   openItem(file, item) {
-    if (item.cal) require("child_process").execFile("/usr/bin/open", ["-b", "com.apple.iCal"], () => {});   // 日历事件：打开「日历」App
+    if (item.cal && item.cal.url) window.open(item.cal.url);   // Google 日历的事件：在浏览器里打开它
+    else if (item.cal) require("child_process").execFile("/usr/bin/open", ["-b", "com.apple.iCal"], () => {});   // macOS 日历的事件：打开「日历」App
     else this.openLine(file, item.line);
   }
 
@@ -3680,7 +3994,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // 让小模型看这几个会话：各起一个短名字、对上日记里已有的哪一行、归哪个大方向；停了的再看是不是其实做完了、有没有要你做的后续。
   // 返回 Map(会话号 → { label, matchKey, done, dir, todos, skip })；模型没回或者回得不对，返回空 Map，下一轮再问
-  async autoAsk(ask, open) {
+  async autoAsk(ask, open, fallback = false) {
     const cfg = this.settings;
     const dirs = this.knownDirs();
     const tails = await Promise.all(ask.map(({ x }) => this.sessionTail(x).catch(() => ({ prompts: [], last: "" }))));
@@ -3716,7 +4030,18 @@ module.exports = class NautilusSpiral extends Plugin {
     ].join("\n");
     let raw;
     try { raw = await runJudge(prompt, cfg); }
-    catch (e) { console.error("[螺旋日程] 自动记日记：问模型失败", e); this._autoErr = String(e.message || e); return new Map(); }
+    catch (e) {
+      console.error("[螺旋日程] 自动记日记：问模型失败", e);
+      this._autoErr = String(e.message || e);
+      const out = new Map();
+      // 手动整理时模型问不到（没登录、额度用完…）：先用会话自己的标题当名字记上，不去对日记里已有的行、也不分方向。总比不记强；
+      // 自动的那种不这么做，等下一轮模型回来了再问
+      if (fallback) for (const { x } of ask) {
+        const label = safeLabel(x.title || (x.text || "").split(" / ")[0], cfg).slice(0, 40);
+        if (label) out.set(x.sid, { label, matchKey: null, done: false, dir: "", todos: [], skip: false });
+      }
+      return out;
+    }
     const out = new Map();
     try {
       const arr = JSON.parse(raw.slice(raw.indexOf("["), raw.lastIndexOf("]") + 1));
@@ -3737,6 +4062,23 @@ module.exports = class NautilusSpiral extends Plugin {
     return out;
   }
 
+  // 手动整理一次（⌃⌥L、螺旋上「人机协作」旁边的按钮、⌃⌥V 面板里的按钮）：和自动记日记是同一套，不用开着自动、也不用等间隔。
+  // 自动的那种一轮最多问 8 个会话，剩下的等下一轮；手动的接着问到问完为止
+  async logNow() {
+    const changes = [];
+    let error = "";
+    for (let round = 0; round < 5; round++) {
+      const r = await this.autoLogRun({ fallback: true });
+      changes.push(...r.changes);
+      error = r.error || "";
+      if (error || r.asked < 8) break;
+    }
+    this._autoAt = Date.now();
+    if (changes.length) this.sound("log");
+    new OB.Notice(error && !changes.length ? `没整理成：${error}` : changes.length ? `整理进日记了：\n${changes.join("\n")}${error ? `\n（模型没问到，新会话先用它自己的标题记的：${error}）` : ""}` : "没有要改的：会话都已经记过了，或者还太短（不到 3 分钟）", 9000);
+    this.refresh();
+    return { changes, error };
+  }
   // 这一行现在是什么状态：done / doing / suspended / open（TODO、PAUSED）；找不到返回 null
   autoFind(text, key) {
     const hits = parseJournal(text, this.settings).filter((i) => i.kind === "task" && workKey(i.label) === key);
@@ -3835,7 +4177,8 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // dry = 只算不写，返回打算怎么改（report.diff）
-  async autoLogRun({ dry = false } = {}) {
+  // fallback = 模型问不到时用会话标题先记上（手动整理时用）
+  async autoLogRun({ dry = false, fallback = false } = {}) {
     const cfg = this.settings;
     const report = { asked: 0, changes: [], error: "" };
     if (this._autoBusy || !(OB.Platform && OB.Platform.isDesktopApp)) return report;
@@ -3878,7 +4221,7 @@ module.exports = class NautilusSpiral extends Plugin {
       if (ask.length) {
         // 能接上去的行：还没做完的任务。带子任务的大项不算，自己记的「要你做的后续」也不算
         const open = parseJournal(await this.readJournal(file), cfg).filter((i) => i.kind === "task" && i.state === "open" && !i.container && !(i.label.startsWith(AUTO_MARK.trim()) && !i.doing && !i.suspended)).slice(0, 60);
-        ans = await this.autoAsk(ask, open);
+        ans = await this.autoAsk(ask, open, fallback);
         report.asked = ask.length;
         report.error = this._autoErr || "";
       }
@@ -3969,6 +4312,7 @@ module.exports = class NautilusSpiral extends Plugin {
       for (const [k, segs] of byKey) merged.set(k, unionSegs([...(work[k] || []).filter((s) => s[1] != null), ...segs].map(([a, b]) => [a, b])));
       for (const k of clocks) if (merged.has(k)) text = this.autoClock(text, k, merged.get(k), [...who.get(k)].join(" / "));
       report.diff = diffLines(base, text);
+      if (!dry) this._muteUntil = Date.now() + 4000;
       if (dry) { await this.autoArchivePast(arch, dayKey, true, report); cfg.autoLogState[dayKey] = JSON.parse(snap); return report; }
       if (!(await this.writeJournal(file, base, text))) {
         cfg.autoLogState[dayKey] = JSON.parse(snap);   // 日记正好被改了：这一轮不算，下一轮重来
@@ -4089,7 +4433,6 @@ module.exports = class NautilusSpiral extends Plugin {
     const now = normalize(nowM.hours() * 60 + nowM.minutes(), this.settings);
     const isToday = file.basename === this.today().format(this.settings.format);
     let changed = false;
-    let cue = "";   // 这一回要不要响一声：start / pause / done
 
     if (isToday) {
       const auto = this.autoKeys(file.basename);   // 自动记录管着的行：用时按会话在动的时段另记，这里不给它开计时
@@ -4124,9 +4467,9 @@ module.exports = class NautilusSpiral extends Plugin {
         }
         for (const [label, c] of cur) {
           const k = workKey(label), p = prev.get(label);
-          if (c.doing && !openSeg(k) && !auto.has(k) && !(renamed && renamed[1] === k && work[k])) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; cue = "start"; }
+          if (c.doing && !openSeg(k) && !auto.has(k) && !(renamed && renamed[1] === k && work[k])) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; }
           if (c.doing && c.startedAt != null && openSeg(k) && openSeg(k)[0] !== c.startedAt && (!p || p.startedAt !== c.startedAt)) { openSeg(k)[0] = c.startedAt; changed = true; }
-          if (!c.doing && p && p.doing) { stop(k, c.state === "done" && c.doneAt != null ? c.doneAt : now); if (c.state !== "done" && !auto.has(k)) cue ||= "pause"; }
+          if (!c.doing && p && p.doing) stop(k, c.state === "done" && c.doneAt != null ? c.doneAt : now);
         }
         // 进行中的任务行没了（删了 / 挪去明天）：收掉。隔了 6 小时以上多半是睡了一觉才挪的，按预估时长封顶
         if (!renamed) for (const l of gone) {
@@ -4148,12 +4491,32 @@ module.exports = class NautilusSpiral extends Plugin {
     if (record && prev) {
       const day = (this.settings.doneTimes[file.basename] ||= {});
       for (const [label, c] of cur) {
-        if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = now; changed = true; if (isToday && !label.startsWith(AUTO_MARK.trim())) cue = "done"; }
+        if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = now; changed = true; }
         if (c.state === "open" && day[label] != null) { delete day[label]; changed = true; }
       }
     }
     if (changed) this.saveSoon();
-    if (cue && record) this.sound(cue);
+  }
+
+  // 任务状态变了响一声（规则见 kwSnapshot）。头一回见到这篇笔记只记下来不响；一下子变了一片的是同步、批量整理，不是你在点，也不响；
+  // 机器自己整理日记（自动记日记）的那几秒不响
+  watchKeywords(file, content) {
+    const cur = kwSnapshot(content), prev = this.kw.get(file.path);
+    this.kw.delete(file.path);
+    this.kw.set(file.path, cur);
+    if (this.kw.size > 80) this.kw.delete(this.kw.keys().next().value);   // 只留最近碰过的几十篇
+    if (!prev || Date.now() < (this._muteUntil || 0)) return;
+    const changes = kwChanges(prev, cur);
+    if (changes.length && changes.length <= 3) this.sound(kwCue(changes));
+  }
+  async onAnyModify(f) {
+    if (!(f instanceof TFile) || f.extension !== "md" || this.settings.uiSound === false) return;
+    try { this.watchKeywords(f, await this.app.vault.cachedRead(f)); } catch (e) { /* 读不到就算了 */ }
+  }
+  // 打开一篇笔记时先记下它每一行的状态，之后在里面切换才有得比
+  async kwBaseline(f) {
+    if (!(f instanceof TFile) || f.extension !== "md" || this.kw.has(f.path) || this.settings.uiSound === false) return;
+    try { this.kw.set(f.path, kwSnapshot(await this.app.vault.cachedRead(f))); } catch (e) { /* 读不到就算了 */ }
   }
 
   // 界面上的小音效（设置里可以关）。Obsidian 不在最前面时不响：那时候日记多半是别的东西在改
@@ -4224,6 +4587,32 @@ class SpiralSettings extends PluginSettingTab {
       }));
     }
     this.skipWas = s.calendarSkip;
+
+    containerEl.createEl("h3", { text: "Google 日历" });
+    containerEl.createEl("p", { cls: "setting-item-description", text: "把 Google 日历里的事件当固定事件排进螺旋（只读，不改日历），和 macOS 日历可以同时开，同一件事只留一份。要用你自己在 Google Cloud 里建的 OAuth 客户端：新建项目 → 启用 Google Calendar API → 「凭据」里新建 OAuth 客户端 ID，应用类型选「桌面应用」→ 把客户端 ID 和密钥填到下面 → 点「连接」。申请的权限只有读日历；密钥和令牌存在系统钥匙串里，不写进插件的 data.json。" });
+    new Setting(containerEl).setName("读 Google 日历").setDesc("只读界面里勾着显示的日历；上面「不读这些日历」对它也管用")
+      .addToggle((t) => t.setValue(!!s.googleCal).onChange(async (v) => { s.googleCal = v; this.plugin.cal.cache.clear(); await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
+    if (s.googleCal) {
+      const g = this.plugin.gcal;
+      new Setting(containerEl).setName("客户端 ID").setDesc("形如 1234567890-xxxx.apps.googleusercontent.com")
+        .addText((t) => t.setValue(s.googleClientId || "").onChange(async (v) => { s.googleClientId = v.trim(); await this.plugin.saveData(s); }));
+      new Setting(containerEl).setName("客户端密钥").setDesc(this.plugin.secret("google-secret") ? "已经存好了。要换就重新填" : "填了以后存进系统钥匙串，这里不再显示")
+        .addText((t) => { t.inputEl.type = "password"; t.setPlaceholder(this.plugin.secret("google-secret") ? "••••••••" : "GOCSPX-…").onChange((v) => { if (v.trim()) this.plugin.secret("google-secret", v.trim()); }); });
+      const conn = new Setting(containerEl).setName(g.connected() ? "已连接" : "还没连接").setDesc(g.connected() ? "授权存在系统钥匙串里。想换账号或者不用了，点「断开」" : "点「连接」会打开浏览器，登录 Google 并同意读日历，然后自动回到这里");
+      if (g.connected()) {
+        conn.addButton((b) => b.setButtonText("列出日历").onClick(async () => {
+          try { conn.setDesc((await g.calendars()).map((c) => `${c.title}${c.shown ? "" : "（界面里没勾，不读）"}`).join("、") || "一个日历也没有"); } catch (e) { conn.setDesc(String(e.message || e)); }
+        }));
+        conn.addButton((b) => b.setButtonText("断开").onClick(() => { g.disconnect(); this.plugin.cal.cache.clear(); this.plugin.refresh(); this.display(); }));
+      } else {
+        conn.addButton((b) => b.setCta().setButtonText("连接").onClick(async () => {
+          b.setDisabled(true).setButtonText("等浏览器里授权…");
+          try { await g.connect(); new OB.Notice("Google 日历连上了"); this.plugin.cal.cache.clear(); this.plugin.refresh(); }
+          catch (e) { new OB.Notice("没连上：" + String(e.message || e), 8000); }
+          this.display();
+        }));
+      }
+    }
 
     containerEl.createEl("h3", { text: "▶ 开始做 · 番茄钟 · Raycast Focus" });
     containerEl.createEl("p", { cls: "setting-item-description", text: "螺旋上点 ▶，或在任务那一行按 ⌘⇧↵：这一行改成 DOING HH:MM，按条目上写的时长（10min、15分钟）专注一轮；到点问你做完没有，做完了就改成 DONE 开始-结束。" });
@@ -4316,4 +4705,4 @@ class SpiralSettings extends PluginSettingTab {
   }
 }
 
-module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock };
+module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, SOUNDS };
