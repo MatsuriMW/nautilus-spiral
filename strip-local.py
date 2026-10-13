@@ -77,11 +77,11 @@ def main():
         if r.returncode:
             sys.exit("✗ 公开版 main.js 语法不对（去掉 @local 的部分以后）：\n" + r.stderr[:800])
     # 说明文档也查一遍
-    for readme in sorted(dst.glob("README*.md")):
+    for readme in sorted([*dst.glob("README*.md"), *dst.glob("docs/*.md")]):
         for no, line in enumerate(readme.read_text(encoding="utf8").split("\n"), 1):
             m = LEFTOVER.search(line)
             if m:
-                sys.exit(f"✗ {readme.name}:{no} 还留着「{m.group(0)}」")
+                sys.exit(f"✗ {readme.relative_to(dst)}:{no} 还留着「{m.group(0)}」")
     for name, text in built.items():
         (dst / name).write_text(text, encoding="utf8")
     print("公开版已生成：main.js、styles.css（只留本机的部分已去掉）")
