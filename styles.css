@@ -20,6 +20,12 @@
 .naut-date { flex: 1; text-align: center; font-weight: 600; }
 .naut-head .naut-bounds-btn { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .naut-head .naut-bounds-btn.is-set { color: var(--text-normal); }
+/* 回放一整天 */
+.naut-head .naut-playback { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--text-muted); transition: color .16s ease-out, transform .12s var(--naut-ease); }
+.naut-head .naut-playback:hover:not(:disabled) { color: var(--naut-task); }
+.naut-head .naut-playback:active:not(:disabled) { transform: scale(.9); }
+.naut-head .naut-playback:disabled { color: var(--naut-task); opacity: 1; }
+.naut-head .naut-playback svg { width: 14px; height: 14px; }
 /* 起床 / 收工弹窗 */
 .naut-bounds-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .naut-bounds-name { width: 5em; }
@@ -36,6 +42,14 @@
 .naut-bar-over { background: var(--naut-prio); }
 .naut-cap-text { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 5px; font-variant-numeric: tabular-nums; }
 .naut-over-text { color: var(--naut-prio); font-weight: 600; }
+/* 第一行：已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几；第二行：可安排和事件两笔预算，正在流逝的那一笔前面有一朵小火苗 */
+.naut-cap-text > span { transition: color .3s ease; }
+.naut-left.is-positive { color: var(--color-green); }
+.naut-left.is-warning { color: var(--naut-prio); font-weight: 600; }
+.naut-cap-budget { margin-top: 1px; color: var(--text-faint); }
+.naut-burn { display: inline-block; margin-right: 2px; font-size: .9em; transform-origin: 50% 90%; animation: naut-flicker 1.9s ease-in-out infinite; cursor: help; }
+/* 📝 已过去多久、有记录多少、没记录多少 */
+.naut-rec-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; font-variant-numeric: tabular-nums; }
 .naut-muted { color: var(--text-faint); }
 
 /* 容量条下面的几行汇总：字用正文的灰，前面的小色块对应螺旋上的颜色（细线 = 内圈的线，方块 = 主带上的段） */
@@ -61,6 +75,15 @@
 /* 螺旋 */
 .naut-svg { width: 100%; max-width: 340px; display: block; margin: 0 auto; overflow: visible; }
 .naut-track { fill: none; stroke: var(--background-modifier-border); stroke-width: 14; stroke-linecap: round; }
+/* 没有记录的过去：斜纹（图案在螺旋自己的 <defs> 里，颜色跟着这里的 stripe） */
+.naut-gap { fill: none; stroke-width: 14; stroke-linecap: butt; opacity: .85; transition: opacity .16s ease-out, stroke-width .16s var(--naut-ease); }
+.naut-gap:hover { opacity: 1; stroke-width: 17; }
+.naut-hatch-stripe { stroke: var(--text-faint); stroke-width: 2.4; }
+.naut-has-hot .naut-gap { opacity: .3; }
+/* 还空着的时段：平时看不见，鼠标划过去亮一下；「现在」正落在里面的那一段更亮一点 */
+.naut-slot { fill: none; stroke: var(--naut-task); stroke-opacity: 0; stroke-width: 14; stroke-linecap: butt; pointer-events: stroke; transition: stroke-opacity .16s ease-out, stroke-width .16s var(--naut-ease); }
+.naut-slot:hover { stroke-opacity: .14; stroke-width: 17; }
+.naut-slot.is-now:hover { stroke-opacity: .24; }
 .naut-seg { fill: none; stroke-width: 14; stroke-linecap: butt; cursor: pointer; transition: stroke-width .16s var(--naut-ease), opacity .16s ease-out; }
 .naut-event { stroke: var(--naut-event); }
 .naut-task { stroke: var(--naut-task); }
@@ -161,6 +184,17 @@
 
 /* 📏 预估 vs 实际 */
 .naut-review-row { border-left-color: var(--text-faint); }
+/* 📋 当日复盘：一件一行，左边的色条是状态。多用了的偏差用橙色提一下，少用的不特别标（省下时间不算功，多花时间也不算过） */
+.naut-dayrev { border-left-color: var(--background-modifier-border); }
+.naut-dayrev .naut-time { min-width: 4.2em; }
+.naut-dayrev.is-compared { border-left-color: var(--naut-task); }
+.naut-dayrev.is-compared .naut-time { color: var(--text-normal); font-weight: 600; }
+.naut-dayrev.is-over-est .naut-time { color: var(--color-orange); }
+.naut-dayrev.is-live { border-left-color: var(--naut-task); }
+.naut-dayrev.is-live .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
+.naut-dayrev.is-paused { border-left-color: color-mix(in srgb, var(--naut-task) 45%, transparent); }
+.naut-dayrev.is-no-estimate { border-left-color: var(--naut-ai); }
+.naut-dayrev.is-not-started .naut-label, .naut-dayrev.is-not-tracked .naut-label { color: var(--text-muted); }
 .naut-calib { cursor: help; }
 
 /* 快捷操作 */
@@ -173,9 +207,10 @@
 
 /* ---------------- 动效 ---------------- */
 
-/* 一直在动的只有两处：「现在」圆点往外散的一圈，和正在做的那件（螺旋上从现在排起的那一段、列表里的小圆点）慢慢呼吸 */
+/* 一直在动的只有三处：「现在」圆点往外散的一圈；正在做的那件（螺旋上从现在排起的那一段、列表里的小圆点）慢慢呼吸；容量条上正在流逝的那一笔前面的小火苗 */
 @keyframes naut-pulse { from { transform: scale(1); opacity: 0.32; } to { transform: scale(3.4); opacity: 0; } }
 @keyframes naut-breathe { 50% { opacity: 0.5; } }
+@keyframes naut-flicker { 30% { transform: scale(1.1, 1.16) rotate(-3deg); } 60% { transform: scale(.96, 1.04) rotate(3deg); opacity: .82; } }
 .naut-seg.naut-live { animation: naut-breathe 2.8s ease-in-out infinite; }
 .naut-has-hot .naut-seg.naut-live:not(.is-hot) { animation: none; }
 
@@ -191,6 +226,7 @@
 
 .naut-enter .naut-track { animation: naut-draw .85s cubic-bezier(.3, .2, .2, 1) backwards; }
 .naut-enter .naut-off { animation: naut-fade .5s ease-out .5s backwards; }
+.naut-enter .naut-gap { animation: naut-fade .6s ease-out .55s backwards; }
 .naut-enter .naut-seg { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards; }
 .naut-enter .naut-seg.naut-live { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards, naut-breathe 2.8s ease-in-out 1.4s infinite; }
 .naut-enter .naut-ai, .naut-enter .naut-game { animation: naut-draw-soft .5s var(--naut-ease) calc(var(--naut-d, 0ms) + 120ms) backwards; }
@@ -207,6 +243,11 @@
 .naut-enter .naut-ai-col:nth-child(5) .naut-ai-bar { animation-delay: 160ms; }
 .naut-enter .naut-ai-col:nth-child(6) .naut-ai-bar { animation-delay: 200ms; }
 .naut-enter .naut-ai-col:nth-child(7) .naut-ai-bar { animation-delay: 240ms; }
+
+/* 回放：指针和中间的时刻跟着模拟的时间走，中间的字换成强调色；呼吸先停，免得和扫过去的动作打架 */
+.naut-playing .naut-center { fill: var(--naut-task); font-weight: 700; }
+.naut-playing .naut-seg.naut-live { animation: none; }
+.naut-playing .naut-now-halo { animation-duration: .9s; }
 
 /* 截成 PNG 发 Telegram 的那份离屏副本：不动。系统设了「减弱动态效果」的也不动 */
 .naut-snap *, .naut-snap *::before { animation: none !important; transition: none !important; }
@@ -250,4 +291,14 @@
 @keyframes naut-fm-in { from { opacity: 0; transform: translateY(8px) scale(.97); } }
 @media (prefers-reduced-motion: reduce) {
   .naut-focus-modal *, .naut-focus-modal { animation: none !important; transition: none !important; }
+}
+
+/* ---------------- 状态栏 ---------------- */
+/* 在做事：计时；连着做过了番茄钟阈值变红，开太久像是忘了关就提醒检查。没在做：今天的容量，超载 / 空档不足时变橙 */
+.status-bar-item.naut-status { font-variant-numeric: tabular-nums; transition: color .3s ease; }
+.status-bar-item.naut-status.is-warning { color: var(--color-orange); }
+.status-bar-item.naut-status.is-overdue { color: var(--text-error); }
+.status-bar-item.naut-status.is-forgotten { color: var(--text-error); font-weight: 600; animation: naut-breathe 2.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .status-bar-item.naut-status { animation: none !important; transition: none !important; }
 }

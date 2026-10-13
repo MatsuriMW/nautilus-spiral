@@ -18,7 +18,11 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 
 - **A 12-hour dial that winds inward.** The outer end is the start of your day, the inner end is the end. Fixed events, planned to-dos, finished tasks and "now" are all on it. Hover any segment and the line above the spiral shows what it is, instantly.
 - **Plans itself from your list.** Write `14:00-15:30 meeting` for an event and `TODO reply to mail 20m` for a to-do. Chinese time and duration phrases are understood too (`3点到5点`, `半小时`). The plugin re-plans every minute; you never drag blocks around.
-- **Tracks actual time.** A task counts while it is `DOING` and stops when it becomes `DONE`, `PAUSED` or `TODO` again. Interrupted work becomes several spans. An "estimated vs actual" review shows how far off your estimates usually are.
+- **Tracks actual time.** A task counts while it is `DOING` and stops when it becomes `DONE`, `PAUSED` or `TODO` again. Interrupted work becomes several spans. A daily review compares planned and actual task by task, and a 30-day review shows how far off your estimates usually are.
+- **The time record lives in the note.** Actual spans are written under the task as one line, `⏱ 14:05–14:40, 15:10–15:32 · 57m total`, by the machine for agent sessions and, if you switch it on, for your own tasks too. That line is the source of truth: edit it and the spiral follows.
+- **Shows what was not recorded.** Past time with no record of any kind, neither yours nor the machine's, is hatched on the spiral, and one line tells you how much of the day so far is accounted for.
+- **Capacity at a glance.** Planned, then remaining / overload / no fitting slot, then the percentage of the day's flexible time still free; below that, flexible and event time as "left now / whole day". A status bar item shows the running timer, or the same capacity summary when nothing is running.
+- **Play back the day.** One button sweeps "now" from the start of the day to its end in six seconds and re-plans as it goes. Nothing in the note is changed.
 - **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
 - **macOS Calendar, read-only.** Calendar events can be laid onto the spiral as fixed events.
 - **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI) and WorkBuddy, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one produced. You pick which of the three you actually use.
@@ -84,7 +88,7 @@ This plugin takes one more step along that line. Part of the "record" book is ha
 
 [Nautilus](https://github.com/tombarys/roam-depot-nautilus) by Tomáš Baránek, and its descendants [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) and [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), for the spiral day planner and "give every minute a job". The time-budget idea goes back to the [YNAB Method](https://www.ynab.com/the-four-rules/); this plugin is not affiliated with YNAB. Obsidian already has two ports of the Nautilus line: [Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) and [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger).
 
-This plugin shares the idea, not the code. It was written separately for a different workflow: the daily note itself is the data source, written as a plain list with Logseq-style task keywords, and agent session logs are used as evidence of what actually happened.
+This plugin shares the ideas, not the code. The capacity figures, the hatched unrecorded time, the daily review, free-slot hover, the status bar timer and playback follow the rules of Nautilus Log (MIT) so that the numbers mean the same thing; they were written again here for Obsidian, and checked against its `log-core.js` and `timing-core.js`. It was written separately for a different workflow: the daily note itself is the data source, written as a plain list with Logseq-style task keywords, and agent session logs are used as evidence of what actually happened.
 
 MIT licensed.
 
@@ -106,8 +110,8 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 
 记账软件 YNAB 的方法是「给每一块钱安排一份工作」：钱进来先分到各个用途上，花的时候心里有底。螺旋日程把同样的办法用在时间上：
 
-- **一天是一笔预算。** 从现在到收工的时间，扣掉已经定死的事件（吃饭、开会、通勤），剩下的就是今天能自由分配的分钟数，也就是容量条上的「可用」。
-- **每件待办都要先报价。** 写上预计时长（`30m`、`2h`），没写的按 15 分钟算。所有待办的报价加起来是「待办」，和「可用」一比，今天是富余还是超支一眼就清楚。
+- **一天是一笔预算。** 从现在到收工的时间，扣掉已经定死的事件（吃饭、开会、通勤），剩下的就是今天能自由分配的分钟数，也就是容量条上的「可安排」。
+- **每件待办都要先报价。** 写上预计时长（`30m`、`2h`），没写的按 15 分钟算。所有待办的报价加起来是「已计划」，和「可安排」一比，今天是有余量还是超载一眼就清楚。
 - **时间是一条往前流的河。** 螺旋上的「现在」指针一直往前走，没做完的任务被它推着往后挪；遇到固定事件放不下，就整块跳到下一个空档，后面放得下的小任务自动往前补位。你不用手动改计划，插件每分钟重排一次。
 - **规则简单，不靠 AI。** 事件先占位，正在做的排最前，其余按列表顺序依次找最早放得下的空档。想调整先后，在日记里上下挪一下那一行就行。
 
@@ -200,7 +204,7 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 | 16:00–16:15 | 打电话给妈妈 | 写了时刻的待办当事件处理，钉在 16:00 |
 | — | 等合同回来 | WAITING：挂起，不排、不占容量 |
 
-容量条显示「可用 11h45m · 待办 3h17m · 富余 8h28m · 事件占 2h15m」（一天按 24 点结束算）。
+容量条显示两行：「已计划 3h17m · 余量 8h28m · 剩余 64%」和「🔥可安排 11h45m / 13h15m · 事件 2h15m / 2h45m」（一天按 8 点到 24 点算）。每个数字的意思见「容量条上的数字」。
 
 ### 每一行会被认成什么
 
@@ -257,7 +261,23 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
    - 「最短一段」在设置里改，设成 0 就回到从最早的空档起切开填满的老办法。
 5. **还剩多少**：写了进度按进度算；没写但做过，按「预估 − 已经做掉的」算（包括前几天做掉的），至少留 5 分钟。
 6. **父任务不重复算**：父任务下面挂着子任务、自己又没写时长，时间只算在子任务上。
-7. **排到一天结束还没排完的**，进「排不下」，容量条变红，显示超出多少。
+7. **排到一天结束还没排完的**，进「排不下」，容量条变红。
+
+### 容量条上的数字
+
+口径和 Roam 上的 Nautilus Log 一致，两行：
+
+| 数字 | 意思 |
+|---|---|
+| 已计划 | 没做完的待办一共还要多久 |
+| 余量 | 排完已计划的以后还空着多少 |
+| 超载 | 已计划的比可安排的时间多出多少。出现它就不显示余量 |
+| 空档不足 | 总时间够，但没有一段连续的空档放得下某件任务，这么多分钟没排进去。只在没有超载时显示 |
+| 剩余 n% | 余量 ÷ 全天可安排的时间。有一点余量就至少显示 1%，正好排满是 0% |
+| 可安排 a / b | 从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间 |
+| 事件 a / b | 还没过去的事件时间 / 全天的事件时间。重叠的事件按并集算，同一分钟不重复算 |
+
+🔥 标在「可安排」或「事件」前面，表示现在这一分钟流掉的是哪一笔。过去的日子可安排是 0，没做完的全算超载。攒够 10 件做完的任务以后，如果你的预估整体偏差超过 15%，第一行后面会多一句「按以往约 4h10m」。
 
 ## 螺旋怎么读
 
@@ -266,6 +286,9 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 - **深灰色的指针**是现在，指针上的圆点往外散着一圈，中间写着当前时刻。
 - **鼠标划过哪一段**，螺旋上方固定的那一行立刻用粗体显示这一段做的是什么，前面是起止时刻和时长，不用停下来等提示。同时这件事的几段和下面列表里的那一行一起亮起来，其余的线段淡下去；反过来停在列表的一行上也一样。
 - **点任意一段**，跳到日记里那一行（日历事件则打开「日历」App）。
+- **斜纹**是已经过去、没有任何记录的时间：既没有事件、做完的任务、做过的时段，也没有 Agent 会话和游戏记录。容量条下面的「📝 已过去 9h20m · 有记录 6h05m（65%）· 没记录 3h15m」是同一件事的数字，悬停能看到其中你记的多少、只有机器记的多少。它只是排程上的事实，不代表那段时间被浪费了。今天算到现在，过去的日子算整天。设置里的「显示没记录的时间」可以关。
+- **还空着的时段**平时看不出来，鼠标划过去会亮一下，上方那一行显示「可用空档」和它几点到几点、多长；「现在」正落在里面的那一段写的是「当前可用」。过去的日子没有空档可用，不显示。
+- **回放一整天**：点顶部的 ▷，6 秒里「现在」从这天的开头扫到结尾，待办跟着往后流、斜纹一路长出来，放完回到真实的现在。只是重画，不改日记。过去的日子也能放。
 - **两个空心圆把手**是这一天实际的开始和结束。沿着螺旋拖动可以改（5 分钟一格），双击恢复默认。比如今天 10 点才起，把开始拖到 10:00，前面那段画成虚线，容量也跟着重算。
 - **直接填时间**：点顶部的「☀️10:00–🌙--:--」，或者按 ⌃⌥T，在弹窗里写起床和收工的时刻（`10:30`、`1030`、`10点半` 都行；凌晨收工写 `2:30`，算到当天夜里）。两项都可以空着，空着的那项按原来的默认算，所以早上只填起床、收工等真收工了再填（或者 Telegram 发「睡了」）就行。「现在」一键填当前时刻，「默认」清空。
 
@@ -380,14 +403,35 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 - **要你点按钮的**（做完了吗、要不要切回 DOING）照旧在本机弹，Discord 里只留一行记录。Webhook 只能发、收不到你点了什么，所以按钮没法放到 Discord 里。
 - 发过去的内容里有任务名，也就是日记里那一行的文字。
 
+## 📋 当日复盘
+
+列表里的「📋 今日复盘」回答一个问题：今天哪几件事和预计的不一样，差了多少。默认收着，标题上带结论（已完成几件、偏差多少），点开是逐件的对照，按日记里的顺序列。翻到过去的日子看的是那一天的。
+
+| 状态 | 是什么情况 |
+|---|---|
+| 已对比 | 做完了，也记到了实际用时。这一行显示偏差：实际 − 预计，`+12m` 是多用了 |
+| 未计时 | 做完了，但没记到实际用时。写的是「未计时」，不写 0 |
+| 进行中 | 没做完，正在做 |
+| 已暂停 | 没做完，没在做，之前做过一阵 |
+| 未开始 | 还没有用时 |
+| 未预估 | 这一行从来没进过计划：自动记的 🤖 行，或者 `DONE 18:02 写稿 2h` 这种直接记做了多久的。只列实际，不进对比 |
+
+- 汇总只算「已对比」的那几件：预计一共多少、实际一共多少、偏差多少。两边是同一批任务，在做的、停着的不影响偏差。
+- 预计按行上写的时长，没写的按默认任务时长，因为排程也是按它排的。
+- 固定事件不算（时间段是约定，不是预估），带子任务的大项和复习卡片也不算。
+- 多用了的偏差用橙色提一下，少用的不特别标：省下时间不算功，多花时间也不算过。
+- Telegram 发「睡了」的回执和 ⌃⌥V 里也带这一行汇总。
+
+前五种状态和汇总的算法照 Nautilus Log 的每日回顾；「未预估」是这里加的，因为机器记的行没有预估，拿默认的 15 分钟去比没有意义。
+
 ## 📏 预估 vs 实际
 
-列表底部的「📏 预估 vs 实际 · 近 30 天」，看你写的时长准不准：
+列表底部的「📏 预估 vs 实际 · 近 30 天」，看你写的时长长期来看准不准：
 
 - 整体：做完的几件里，预估一共多少、实际一共多少、整体多用或少用了百分之几，估短、估长、差不多（±20% 以内）的各几件，一件一般是预估的几倍。
 - 按标签 / 链接分：行里有 `#口播`、`[[某个项目]]` 的，按它们分组，列出偏差最大的几组，比如「×1.6 #口播 5 件」。
 - 估得最短的几件：点一下跳到那天日记里的那一行。
-- 容量条上的校准：攒够 10 件以后，如果整体偏差超过 15%，「待办」后面会多一句「按以往约 4h10m」，也就是按你的习惯，这些待办实际大概要多久。
+- 容量条上的校准：攒够 10 件以后，如果整体偏差超过 15%，第一行后面会多一句「按以往约 4h10m」，也就是按你的习惯，这些待办实际大概要多久。
 
 只算这样的任务：做完了，写了预估时长，也记到了实际用时。实际用时来自 `DONE 开始-结束`，或者 DOING 时插件记下的那几段。用 ▶ / ⌘⇧↵ 开始、回答「做完了」的任务，天然满足这几条。`DONE 18:02 写稿 2h` 这种只写了做了多久的不算，因为那个 2h 是实际，不是预估。计时记录保留 45 天，所以最多看 45 天。
 
@@ -417,7 +461,7 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 
 ## 计时：实际做了多久
 
-插件看着日记的变化自己记，计时不往日记里写任何东西：
+插件看着日记的变化自己记：
 
 - 任务改成 DOING：开始一段计时。改回 TODO 或改成 DONE：这一段结束。中断再继续，就是好几段。
 - 进行中的任务改了名字，计时跟着挪到新名字下面，算同一件事。
@@ -426,7 +470,35 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 - 做完的任务，完成时刻按「DONE 后面手写的时间 > `**07:37**` 时间戳 > 插件看到它变成 DONE 的时刻」取。
 - 没写时长、但记到了做的时段的任务，做完后时长按实际做的算。
 
-计时记录保存在插件的 `data.json` 里，保留 45 天。
+计时记录保存在插件的 `data.json` 里，保留 45 天。这份是底稿，正本是日记里的 `⏱` 那一行，见下一节。
+
+### ⏱ 那一行：写在日记里的实际时段
+
+```
+- DONE 🤖 给螺旋日程加悬停文字
+	- ⏱ 09:59–10:18、10:33–10:34、20:10–20:40 · 共 50m · Claude
+```
+
+任务下面以 `⏱` 开头的子项是这件事实际做的时段。它不是任务也不是事件，排程不看它；螺旋、列表、当日复盘和预估复盘用它算实际用时。
+
+- **谁来写**：自动记日记管着的行，机器在搁置、做完时写，最后是哪个 Agent 记的。打开设置里的「实际时段写回日记」之后，你手动做的任务也写：不再是 DOING（做完、暂停、改回 TODO）时写一行，写法一样，后面没有 Agent 的名字。默认关着，因为它会多改日记。
+- **以它为准**：任务没在做的时候，实际用时按这一行算。觉得机器记得不对，直接在这一行改，螺旋跟着变。过了 45 天、或者换了一台电脑，插件自己的计时记录没有了，靠的也是它，所以「复盘看最近几天」可以设到 365。
+- **三种情况不按它**：正在做的任务（还在往下记，这一行是上次停下时写的）；段数太多只写了最后 8 段、开头带 `…` 的（计时记录还在就用计时记录）；行尾带 `← 2026_09_30` 的（从别的日子挪过来的，它带着的 `⏱` 说的是原来那天）。
+- **怎么写都认**：时段之间用顿号、逗号、分号都行，起止之间用 `–` `-` `~` `到` 都行，合计写 `共 57m` 或 `共 1小时21分` 都行。合计写了就按合计算，因为挨得近的几段（隔不到 10 分钟）写的时候并成了一段，照段落加会把中间的空隙也算进去。
+
+### 状态栏
+
+右下角常驻一格，不用把螺旋开在眼前：
+
+- **在做事**：`▶ 12:34 · 写周报 · 2 件`，最近开始的那件做了多久、一共几件在做。连着做了 45 分钟，计时变红；开了 2 小时，变成「⚠ 检查计时」。这两样都只是提示，不替你停，阈值在设置里改，填 0 关掉。
+- **只选了方向的一轮专注**：`⏱ 12:34 · 专注`，正计时。
+- **没在做**：今天的容量，`🌀 已计划 2h10m · 余量 45m · 剩余 23%`，超载或空档不足时变橙。
+- 自动记着的行里有 Agent 正在做，后面多一个 `🤖2`。
+- **点它**：单击打开螺旋日程，⌥ 单击到日记里正在做的那一行，⇧ 单击在旁边分栏打开今天的日记。
+
+### 界面音效
+
+开始做、做完、停下、回放的开始和结束，各有一声很轻的合成音，不带声音文件。Obsidian 不在最前面时不响。设置里的「界面音效」可以关；提醒用的系统提示音另外设。
 
 ## 翻看其它日子
 
@@ -468,7 +540,12 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 | 吃饭 / 锻炼的词 / 回来了的判断 | `吃饭, 锻炼` / Obsidian、Claude、终端 | 见「硬规则：暂停」 |
 | 吃饭 / 锻炼至少多久 | 20 分钟 | 这么久以内不判断「回来了」 |
 | DOING 并行排 | 开 | 几件 DOING 重叠在同一段时间里 |
-| 预估 vs 实际 / 复盘看最近几天 | 开 / 30 | 见「📏 预估 vs 实际」 |
+| 预估 vs 实际 / 复盘看最近几天 | 开 / 30 | 见「📏 预估 vs 实际」；最多 365 天，超过 45 天的部分靠日记里的 `⏱` |
+| 当日复盘 | 开 | 见「📋 当日复盘」 |
+| 显示没记录的时间 | 开 | 螺旋上的斜纹和「📝 已过去 / 有记录 / 没记录」那一行 |
+| 实际时段写回日记 | 关 | 你手动做的任务也在下面写一行 `⏱`，见「⏱ 那一行」 |
+| 状态栏 / 番茄钟阈值 / 忘了关计时的提醒 | 开 / 45 分钟 / 120 分钟 | 见「状态栏」；两个阈值都只提示不打断，填 0 关掉 |
+| 界面音效 | 开 | 开始做、做完、停下、回放起止的轻提示音 |
 | 启动时打开今天的日记 | 开 | 按日期分界算「今天」，没有这篇就新建 |
 | 启动时左侧栏显示螺旋日程 | 开 | |
 | 显示人机协作 / 记录游戏时间 | 开 | 见上一节 |

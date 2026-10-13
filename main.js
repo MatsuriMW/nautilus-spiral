@@ -14,6 +14,14 @@ const DEFAULTS = {
   autoOpened: false,
   showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
   aiAgents: { claude: true, codex: true, workbuddy: true },   // 主力 AI 工具：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  showUnrecorded: true,   // 过去没有任何记录的时间在螺旋上画成斜纹，容量条下面给一行「有记录 / 没记录」
+  showDayReview: true,    // 列表里的「📋 当日复盘」：这一天每件任务的预计和实际，逐件对照
+  dayReviewFolded: true,  // 当日复盘默认收着，标题上带结论
+  statusBar: true,        // 状态栏常驻：正在做什么、做了多久；没在做时显示今天的容量
+  pomoMinutes: 45,        // 一件事连着做了这么久，状态栏的计时变红（只提示，不打断）。0 = 不提示
+  forgottenMinutes: 120,  // 计时开了这么久，状态栏提醒「检查计时」（不替你停）。0 = 不提醒
+  clockToNote: false,     // 你手动做的时段也写回日记：任务不再是 DOING 时，在它下面写一行「⏱ 实际时段」
+  uiSound: true,          // 界面上的小音效：开始做、做完、停下、回放起止各一声很轻的合成音（Obsidian 不在最前面时不响）
   workLog: {},          // { "2026_09_30": { "任务文字": [[开始, 结束 | null]] } }：任务每一段「进行中」的时间（null = 还在做），中断再续就是好几段
   dayBounds: {},        // { "2026_09_30": { start: 610, end: 1650 } }：在螺旋上拖出来的这天实际开始 / 结束时间（分钟，凌晨 > 1440）
   trackGames: true,     // 记录游戏时间（每分钟看一眼有没有在玩）
@@ -148,6 +156,26 @@ function cleanLabel(s) {
     .trim();
 }
 
+// 任务下面那一行「⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · Claude」读回来：
+//   { segs: [[开始, 结束]…], total: 合计分钟（没写就是 null）, who: 谁记的（"Claude" / "Claude / Codex"，你自己做的没有）, partial: 段数太多只写了后面几段 }
+// 机器写的是上面这个样子；你自己改、自己写的也认：时段之间用顿号、逗号、分号、空格都行，起止之间用 – - ~ 到 都行，合计写「共 57m」「共 1小时21分」都行
+function parseClock(s, cfg) {
+  const segs = [];
+  for (const m of s.matchAll(/(\d{1,2})[:：](\d{2})\s*(?:[–—~～-]|到|至)\s*(\d{1,2})[:：](\d{2})/g)) {
+    const a = normalize(+m[1] * 60 + +m[2], cfg);
+    let b = normalize(+m[3] * 60 + +m[4], cfg);
+    if (b < a) b += 1440;
+    if (b > a) segs.push([a, b]);
+  }
+  if (!segs.length) return null;
+  const tm = /共\s*(?:(\d+)\s*(?:h|小时))?\s*(?:(\d+)\s*(?:m|min|分钟?))?/.exec(s);
+  const total = tm && (tm[1] || tm[2]) ? (+tm[1] || 0) * 60 + (+tm[2] || 0) : null;
+  // 最后一个「·」后面要是没有数字，就是谁记的
+  const tail = s.split(/\s[·•]\s/).pop().trim();
+  const who = /\d/.test(tail) || tail.startsWith("⏱") ? "" : tail;
+  return { segs: unionSegs(segs), total, who, partial: /^⏱\uFE0F?\s*…/.test(s) };
+}
+
 function parseJournal(content, cfg) {
   const prio = cfg.priorityMarkers.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
   const items = [];
@@ -159,7 +187,12 @@ function parseJournal(content, cfg) {
     const lm = LIST_RE.exec(raw);
     if (!lm) return;
     let s = lm[2];
-    if (s.startsWith("⏱")) return;   // 自动记日记写在任务下面的「⏱ 实际时段」，是记录，不是事件也不是任务
+    if (s.startsWith("⏱")) {
+      // 任务下面的「⏱ 实际时段」是记录，不是事件也不是任务。读出来挂到它上面那件任务上（往上找缩进更浅的第一行）
+      const c = parseClock(s, cfg), ind = lm[1].replace(/\t/g, "    ").length;
+      if (c) for (let j = items.length - 1; j >= 0; j--) if (items[j].indent < ind) { if (items[j].kind === "task" && !items[j].clock) items[j].clock = c; break; }
+      return;
+    }
     let stamp = null, state = "none", cb = null, kw = null;
     // 时间戳、复选框、关键词三者前后顺序不固定（「**07:37** DONE …」「[x] **01:44** …」都有）
     for (let i = 0; i < 3; i++) {
@@ -295,8 +328,15 @@ function applyWork(items, cfg, dayKey, now, dayRel, bounds = {}) {
     let segs = close(today[k] || [], t.dur);
     // 手写了「DOING 14:05」但没被记到（比如那会儿 Obsidian 没开）：按写的算
     if (!segs.length && t.startedAt != null && t.state === "open") segs = close([[t.startedAt, null]], t.dur);
+    // 日记里这件任务下面那一行 ⏱ 是正本：机器记的实际时段写在那儿，你觉得不对也是在那儿改。
+    // 任务没在做的时候就按那一行写的算，插件自己的计时记录只当它的底稿（那份只留 45 天，换台电脑也没有）。
+    // 三种情况不按它：正在做的（还在往下记，那一行是上次停下时写的）；段数太多只写了后面几段、而计时记录还在的；
+    // 带「← 日期」的（从别的日子挪过来的，它带着的 ⏱ 说的是原来那天）
+    const noted = t.clock && !(t.doing && t.state === "open") && !(t.clock.partial && segs.length) && !/←\s*\S+\s*$/.test(t.label) ? t.clock : null;
+    if (noted) segs = noted.segs.map(([a, b]) => [a, b]);
     t.worked = segs;
-    t.spentToday = sum(segs);
+    // 合计按那一行写的「共 …」：写的时候挨得近的几段并成了一段，照段落加会多出中间的空隙
+    t.spentToday = noted && noted.total != null ? noted.total : sum(segs);
     t.spentBefore = 0;
     for (const d in log) if (d < dayKey && log[d][k]) t.spentBefore += sum(log[d][k].filter(([, b]) => b != null));
   }
@@ -380,11 +420,116 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
     // 进行中的从现在接着做，照旧切开填；其余的每段至少 minChunk 分钟
     t.overflow = fill(free, t.remaining, t.doing ? 0 : cfg.minChunk ?? 0, t.segments);
   }
-  const eventLeft = busy.reduce((s, [a, b]) => s + b - a, 0);
+  const eventLeft = unionSegs(busy).reduce((s, [a, b]) => s + b - a, 0);   // 重叠的事件按并集算，同一分钟不重复算
+  // 没排进去的分钟。总量超了是一回事（overflow），总量够、但没有一段连续空档放得下是另一回事，容量条上分开报
+  const unplaced = (parallel ? Math.max(...doing.map((t) => t.overflow)) : 0) + queue.filter((t) => !(parallel && t.doing)).reduce((n, t) => n + t.overflow, 0);
   const suspended = items.filter((i) => i.kind === "task" && i.state === "open" && i.suspended);
   for (const t of suspended) t.remaining = t.progress != null ? t.dur * (1 - t.progress) : Math.max(5, t.dur - ((t.spentToday || 0) + (t.spentBefore || 0)));
-  return { from, available, demand, overflow: Math.max(0, demand - available), eventLeft, queue, suspended };
+  // free = 排完以后还空着的时段（螺旋上悬停能看到每段空档多长）
+  return { from, available, demand, overflow: Math.max(0, demand - available), unplaced, free: free.map(([a, b]) => [a, b]), eventLeft, queue, suspended };
 }
+
+// ---------------- 界面上的小音效 ----------------
+// 现合成的短音，不带声音文件：[频率, 几秒后响, 响多久]。音量很小，是「手感」，不是提醒（提醒另有系统提示音）
+const SOUNDS = {
+  start: [[587, 0, 0.07], [880, 0.05, 0.11]],                     // 开始做：轻轻往上一跳
+  done: [[784, 0, 0.12], [988, 0.08, 0.12], [1319, 0.16, 0.3]],   // 做完：三个上行的音
+  pause: [[659, 0, 0.1], [494, 0.07, 0.18]],                      // 停下：往下落一步
+  play: [[392, 0, 0.09], [523, 0.06, 0.09], [784, 0.12, 0.2]],    // 回放开始
+  stop: [[784, 0, 0.09], [523, 0.07, 0.24]],                      // 回放结束，回到现在
+};
+let audioCtx = null;
+function blip(name, vol = 0.045) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx || !SOUNDS[name]) return;
+    audioCtx ||= new Ctx();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const t0 = audioCtx.currentTime + 0.01;
+    for (const [freq, at, len] of SOUNDS[name]) {
+      const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, t0 + at);
+      gain.gain.setValueAtTime(0.0001, t0 + at);
+      gain.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + len);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(t0 + at);
+      osc.stop(t0 + at + len + 0.03);
+    }
+  } catch (e) { /* 没有声音设备就不响 */ }
+}
+// ---------------- 容量 · 没记录的时间 · 当日复盘 ----------------
+// 这三样的判定规则照 Roam 上的 Nautilus Log（MIT，github.com/404KSG/roam-nautilus-log 的 log-core.js / timing-core.js），数字的口径和它一致。
+
+// 容量：
+//   已计划 demand = 没做完的待办还要多久
+//   可安排 available / totalAvailable = 从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间
+//   事件 fixed / totalFixed = 还没过去的事件时间 / 全天的事件时间（重叠的按并集算）
+//   状态三选一：超载 overload（已计划 > 可安排）→ 空档不足 unplaced（总量够，没有连续空档放得下）→ 余量 free
+//   剩余 left = 余量 ÷ 全天可安排的时间，百分数；有余量就至少 1%，不会把一点点余量显示成 0
+//   burning = 现在这一分钟流掉的是事件时间还是可安排的时间（只有今天、在时段里才有）
+function capacity(items, plan, cfg, now, dayRel, bounds = {}) {
+  const S = bounds.start ?? cfg.dayStart * 60, E = bounds.end ?? cfg.dayEnd * 60;
+  const events = items.filter((i) => i.kind === "event");
+  const totalFixed = unionSegs(events.map((e) => [Math.max(e.start, S), Math.min(e.end, E)]).filter(([a, b]) => b > a)).reduce((n, [a, b]) => n + b - a, 0);
+  const totalAvailable = Math.max(0, E - S - totalFixed);
+  const available = plan.available, demand = plan.demand;
+  const overload = Math.max(0, demand - available), free = Math.max(0, available - demand);
+  const unplaced = Math.round(plan.unplaced || 0);
+  const whole = totalAvailable > 0 ? totalAvailable : available;
+  const left = Math.min(100, free > 0 ? Math.max(1, whole > 0 ? Math.round(free / whole * 100) : 0) : 0);
+  const status = overload > 0 ? { key: "overload", label: "超载", value: overload }
+    : unplaced > 0 ? { key: "fragmented", label: "空档不足", value: unplaced }
+    : { key: "remaining", label: "余量", value: free };
+  const tone = overload > 0 || unplaced > 0 ? "warning" : free > 0 ? "positive" : "neutral";
+  const burning = dayRel === 0 && now >= S && now < E ? (events.some((e) => e.state !== "done" && now >= e.start && now < e.end) ? "events" : "available") : null;
+  return { available, totalAvailable, fixed: plan.eventLeft, totalFixed, demand, overload, free, unplaced, left, status, tone, burning };
+}
+const capSummary = (c) => `已计划 ${dur(c.demand)} · ${c.status.label} ${dur(c.status.value)} · 剩余 ${c.left}%`;
+
+// 已经过去的时间里没有任何记录的那几段：[S, min(E, upto)] 减去有记录的区间的并集。
+// 它只是排程上的事实，不等于那段时间被浪费了
+function pastGaps(S, E, upto, occupied) {
+  const end = Math.min(E, upto);
+  if (!(end > S)) return [];
+  return subtract([[S, end]], unionSegs(occupied.map(([a, b]) => [Math.max(a, S), Math.min(b, end)]).filter(([a, b]) => b > a)));
+}
+
+// 当日复盘：这一天每件任务的预计和实际，按日记里的顺序逐件列。
+//   已对比 compared   = 做完了，也记到了实际用时 → 偏差 = 实际 − 预计（正数 = 比预计多用）
+//   未计时 not-tracked = 做完了，没记到实际用时（写「未计时」，不写 0）
+//   进行中 live        = 没做完，正在做，已经有用时
+//   已暂停 paused      = 没做完，没在做，做过一阵
+//   未开始 not-started = 没做完，还没有用时
+//   未预估 no-estimate = 这一行从来没进过计划（自动记的 🤖 行，或者「DONE 18:02 写稿 2h」这种直接记做了多久的），只列实际，不拿默认时长去比
+// 汇总只算「已对比」的那几件，两边是同一批任务；在做的、停着的不影响偏差。预计 = 行上写的时长，没写按默认任务时长（排程也是按它排的）
+// 固定事件不算（时间段是约定，不是预估）；带子任务的大项、复习卡片不算。live = 这一天是不是今天
+function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
+  const rows = [];
+  for (const t of items) {
+    if (t.kind !== "task" || t.container || isReview(t)) continue;
+    const done = t.state === "done";
+    const worked = t.worked || [];
+    const noPlan = auto.has(workKey(t.label)) || t.label.startsWith(AUTO_MARK.trim()) || (done && !(t.est > 0) && t.explicitDur === true && !t.actual);
+    const planned = noPlan ? null : done ? (t.est > 0 ? t.est : cfg.defaultDur) : t.dur;
+    // 实际：记下来的那几段和 DONE 后面写的时段合起来（重叠只算一次）；直接写了做多久的按写的
+    let actual = Math.floor(unionMin([...worked, ...(done && t.actual ? [t.actual] : [])]));
+    if (!actual && noPlan && done && t.explicitDur === true && !t.actual && !auto.has(workKey(t.label))) actual = Math.round(t.dur);
+    const state = done ? (actual > 0 ? (planned == null ? "no-estimate" : "compared") : "not-tracked")
+      : live && t.doing && actual > 0 ? "live" : actual > 0 ? "paused" : "not-started";
+    rows.push({ item: t, label: t.label, done, state, plannedMinutes: planned, actualMinutes: actual, varianceMinutes: state === "compared" ? actual - planned : null });
+  }
+  const compared = rows.filter((r) => r.state === "compared");
+  const plannedMinutes = compared.reduce((n, r) => n + r.plannedMinutes, 0), actualMinutes = compared.reduce((n, r) => n + r.actualMinutes, 0);
+  return { rows, summary: { totalCount: rows.length, completedCount: rows.filter((r) => r.done).length, comparedCount: compared.length, plannedMinutes, actualMinutes, varianceMinutes: actualMinutes - plannedMinutes } };
+}
+const signed = (m) => (m > 0 ? `+${dur(m)}` : m < 0 ? `−${dur(-m)}` : "±0");
+const reviewLine = (s) => `已完成 ${s.completedCount}/${s.totalCount} · 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`;
+// 状态栏上的计时：分:秒，过了一小时是 时:分:秒
+const elapsedText = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600); return h ? `${h}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+let hatchSeq = 0;   // 每个螺旋的斜纹图案一个号，几个视图同时开着不串
 
 // ---------------- 工具 ----------------
 
@@ -1497,7 +1642,34 @@ class SpiralView extends ItemView {
   }
 
   // 换到相对今天第 n 天：重画，并放一次入场动效
-  go(n) { this.offset = n; this._enter = true; return this.render(); }
+  go(n) { this.stopPlay(); this.offset = n; this._enter = true; return this.render(); }
+
+  // 回放一整天：6 秒里把「现在」从这天的开头扫到结尾，螺旋和列表按那个时刻重排，放完回到真实的现在。只是重画，不改日记
+  play() {
+    if (this._play != null) return;
+    const cfg = this.plugin.settings;
+    const b = (cfg.dayBounds || {})[this.date().format(cfg.format)] || {};
+    const S = b.start ?? cfg.dayStart * 60, E = b.end ?? cfg.dayEnd * 60;
+    const t0 = performance.now();
+    let busy = false;
+    const tick = (ts) => {
+      const p = Math.min(1, (ts - t0) / 6000);
+      if (p >= 1) { this.stopPlay(); this.plugin.sound("stop"); this._enter = true; this.render(); return; }   // 放完回到现在，再放一次入场
+      const m = Math.floor(S + p * (E - S));
+      if (m !== this._play && !busy) { this._play = m; busy = true; this.render().finally(() => { busy = false; }); }
+      this._playRaf = window.requestAnimationFrame(tick);
+    };
+    this._play = S;
+    this._playRaf = window.requestAnimationFrame(tick);
+    this.plugin.sound("play");
+    this.render();
+  }
+  stopPlay() {
+    if (this._playRaf) window.cancelAnimationFrame(this._playRaf);
+    this._playRaf = 0;
+    this._play = null;
+  }
+  async onClose() { this.stopPlay(); }
 
   date() { return this.plugin.today().add(this.offset, "days"); }
   path() { return this.plugin.journalPath(this.date()); }
@@ -1514,6 +1686,7 @@ class SpiralView extends ItemView {
     const enter = !!this._enter;
     this._enter = false;
     root.toggleClass("naut-enter", enter);
+    root.toggleClass("naut-playing", this._play != null);
     root.removeClass("naut-has-hot");
 
     const head = root.createDiv({ cls: "naut-head" });
@@ -1539,15 +1712,26 @@ class SpiralView extends ItemView {
       return;
     }
     const content = await this.app.vault.cachedRead(file);
+    {
+      const pb = head.createEl("button", { cls: "naut-playback", attr: { "aria-label": "回放一整天（只是重画，不改日记）" } });
+      if (OB.setIcon) OB.setIcon(pb, "play"); else pb.setText("⏵");
+      pb.disabled = this._play != null;
+      pb.onclick = () => this.play();
+    }
     const items = parseJournal(content, cfg);
     const cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
     const dayKey = date.format(cfg.format);
     const done = cfg.doneTimes[dayKey] || {};
     const nowM = moment();
-    const now = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
-    const dayRel = this.offset === 0 ? 0 : this.offset < 0 ? -1 : 1;
+    // 回放时 this._play 是模拟的「现在」：这一天按那个时刻重排、重画，像它就是今天一样
+    const playing = this._play != null;
+    const now = playing ? this._play : normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
+    const realRel = this.offset === 0 ? 0 : this.offset < 0 ? -1 : 1;
+    const dayRel = playing ? 0 : realRel;
     const bounds = (cfg.dayBounds || {})[dayKey] || {};
     const orphans = applyWork(items, cfg, dayKey, now, dayRel, bounds);   // 这天做过、但任务行已经挪走的
+    // 回放：模拟的时刻以后才做的那些段先不算
+    if (playing) for (const t of items) if (t.worked) { t.worked = t.worked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
     const plan = schedule(items, cfg, now, dayRel, bounds);
     const S = cfg.dayStart * 60, E = cfg.dayEnd * 60;
     const S1 = bounds.start ?? S, E1 = bounds.end ?? E;   // 这天实际的开始 / 结束
@@ -1579,11 +1763,19 @@ class SpiralView extends ItemView {
     bar.createDiv({ cls: "naut-bar-task", attr: { style: `width:${(fit / total) * 100}%` } });
     bar.createDiv({ cls: "naut-bar-free", attr: { style: `width:${((plan.available - fit) / total) * 100}%` } });
     if (plan.overflow) bar.createDiv({ cls: "naut-bar-over", attr: { style: `width:${(plan.overflow / total) * 100}%` } });
+    // 第一行回答「排得下吗」：已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几；第二行是它背后的两笔预算：可安排的时间和事件时间，各是 现在还剩 / 全天
+    const C = capacity(items, plan, cfg, now, dayRel, bounds);
     const info = cap.createDiv({ cls: "naut-cap-text" });
-    info.createSpan({ text: `可用 ${dur(plan.available)} · 待办 ${dur(plan.demand)}` });
-    if (plan.overflow) info.createSpan({ cls: "naut-over-text", text: ` · 超出 ${dur(plan.overflow)}` });
-    else info.createSpan({ text: ` · 富余 ${dur(plan.available - plan.demand)}` });
-    if (plan.eventLeft) info.createSpan({ cls: "naut-muted", text: ` · 事件占 ${dur(plan.eventLeft)}` });
+    info.createSpan({ text: `已计划 ${dur(C.demand)} · ` });
+    info.createSpan({ cls: C.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text", text: `${C.status.label} ${dur(C.status.value)}`,
+      attr: { title: C.status.key === "overload" ? "已计划的比可安排的时间多出这么多" : C.status.key === "fragmented" ? "总时间够，但没有一段连续的空档放得下，这么多分钟没排进去" : "排完已计划的以后还空着这么多" } });
+    info.createSpan({ cls: `naut-left is-${C.tone}`, text: ` · 剩余 ${C.left}%`, attr: { title: "余量 ÷ 全天可安排的时间" } });
+    const budget = cap.createDiv({ cls: "naut-cap-text naut-cap-budget" });
+    if (C.burning === "available") budget.createSpan({ cls: "naut-burn", text: "🔥", attr: { title: "可安排的时间正在流逝" } });
+    budget.createSpan({ text: `可安排 ${dur(C.available)} / ${dur(C.totalAvailable)}`, attr: { title: "从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间" } });
+    budget.createSpan({ text: " · " });
+    if (C.burning === "events") budget.createSpan({ cls: "naut-burn", text: "🔥", attr: { title: "事件时间正在流逝" } });
+    budget.createSpan({ text: `事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}`, attr: { title: "还没过去的事件时间 / 全天的事件时间（重叠的只算一次）" } });
     // 按以往预估的准头校准一下：近 30 天整体多用 / 少用了多少
     const rv = cfg.showReview !== false && dayRel >= 0 ? this.plugin.reviewData() : null;
     if (rv && rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15 && plan.demand >= 15) {
@@ -1636,9 +1828,21 @@ class SpiralView extends ItemView {
         attr: { title: "开着 Hearthstone / Steam 里的游戏，或者 Steam 在最前面的时间（螺旋内圈的绿线）。只在 Obsidian 开着时记录。" } });
     }
 
+    // 📝 已经过去、没有任何记录的时间。你记的 = 事件、做完的任务、做过的时段；机器记的 = Agent 会话、游戏。今天算到现在，过去的日子算整天
+    const upto = dayRel === 0 ? Math.min(Math.max(now, S1), E1) : dayRel < 0 ? E1 : S1;
+    const mine = [...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
+      ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => t.segments || []),
+      ...plan.queue.flatMap((t) => t.segments.slice(0, t.workedN)), ...plan.suspended.flatMap((t) => t.worked || []), ...orphans.flatMap((o) => o.segs)];
+    const gaps = cfg.showUnrecorded !== false ? pastGaps(S1, E1, upto, [...mine, ...(ai ? ai.segs : []), ...games.map(([a, b]) => [a, b])]) : [];
+    if (cfg.showUnrecorded !== false && upto - S1 >= 10) {
+      const past = upto - S1, len = (segs) => segs.reduce((k, [a, b]) => k + b - a, 0);
+      const none = len(gaps), byMe = past - len(pastGaps(S1, E1, upto, mine));
+      cap.createDiv({ cls: "naut-rec-line", text: `📝 已过去 ${dur(past)} · 有记录 ${dur(past - none)}（${Math.round((past - none) / past * 100)}%）· 没记录 ${dur(none)}`,
+        attr: { title: [`你记的 ${dur(byMe)}：事件、做完的任务、做过的时段`, `只有机器记的 ${dur(past - none - byMe)}：Agent 会话、游戏`, "没记录的时间在螺旋上画成斜纹。它只是排程上的事实，不代表那段时间被浪费了"].join("\n") } });
+    }
     // ⏱ 正在专注的这一轮
     const fs = this.plugin.session();
-    if (fs && dayRel === 0) {
+    if (fs && realRel === 0 && !playing) {
       const line = cap.createDiv({ cls: "naut-focus-line" });
       const leftOf = (t) => Math.max(0, Math.ceil((t.end - Date.now()) / 60e3));
       const one = (t) => `${t.label} ${leftOf(t) ? `还剩 ${dur(leftOf(t))}` : "到点了"}${fs.tasks.length === 1 ? ` / ${dur(t.minutes)}` : ""}${t.round > 1 ? `（第 ${t.round} 轮）` : ""}`;
@@ -1648,7 +1852,7 @@ class SpiralView extends ItemView {
     }
     // 🍚 吃饭 / 锻炼中
     const bk = cfg.breakState;
-    if (bk && dayRel === 0) {
+    if (bk && realRel === 0 && !playing) {
       const line = cap.createDiv({ cls: "naut-focus-line naut-break-line" });
       line.createSpan({ text: `${breakIcon(bk.word)} ${bk.word}中 · ${moment(bk.since).format("HH:mm")} 起 · ${dur(Math.max(1, Math.round((Date.now() - bk.since) / 60e3)))}${bk.keys.length ? ` · 暂停了 ${bk.keys.length} 件` : ""}`, attr: { title: bk.labels.map((l) => "· " + l).join("\n") } });
       const back = line.createEl("button", { cls: "naut-focus-stop", text: "回来了", attr: { title: "现在就问要不要切回 DOING" } });
@@ -1712,6 +1916,22 @@ class SpiralView extends ItemView {
     svgEl("path", { d: arc(S1, E1), class: "naut-track", pathLength: 1 }, svg);
     if (S1 > S) svgEl("path", { d: arc(S, S1), class: "naut-off" }, svg);
     if (E1 < E) svgEl("path", { d: arc(E1, E), class: "naut-off" }, svg);
+    // 没有记录的过去：斜纹
+    if (gaps.length) {
+      const pid = `naut-hatch-${++hatchSeq}`;
+      const pat = svgEl("pattern", { id: pid, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, svgEl("defs", {}, svg));
+      svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 7, class: "naut-hatch-stripe" }, pat);
+      for (const [a, b] of gaps) {
+        const d = arc(a, b);
+        if (d) hov(svgEl("path", { d, class: "naut-gap", stroke: `url(#${pid})` }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, "没有记录");
+      }
+    }
+    // 排完以后还空着的时段：鼠标划过去显示这段空档几点到几点、多长。过去的日子没有空档可用，不画
+    if (dayRel >= 0) for (const [a, b] of plan.free) {
+      const d = b - a >= 1 ? arc(a, b) : null;
+      const cur = dayRel === 0 && a <= now && now < b;
+      if (d) hov(svgEl("path", { d, class: "naut-slot" + (cur ? " is-now" : "") }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, cur ? "当前可用" : "可用空档");
+    }
     for (let h = Math.ceil(S / 60); h <= E / 60; h++) {
       const [x, y] = pt(h * 60, 13);
       const tx = late(svgEl("text", { x, y, class: "naut-hour" }, svg), h * 60);
@@ -1757,7 +1977,8 @@ class SpiralView extends ItemView {
       link(item, p);
       if (item.cal && item.cal.color) p.style.stroke = item.cal.color;   // 日历事件用日历自己的颜色
       const rel = aiOf(item).filter((x) => x.related);
-      hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join("、")}` : ""].filter(Boolean).join(" · "));
+      // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
+      hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join("、")}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
       p.addEventListener("click", () => this.plugin.openItem(file, item));
     };
     for (const e of items.filter((i) => i.kind === "event")) drawSeg(e.start, e.end, e.state === "done" ? "naut-event naut-done-event" : e.prio ? "naut-prio" : "naut-event", e);
@@ -1861,7 +2082,7 @@ class SpiralView extends ItemView {
     section("接下来", placed.map((t) => ({
       item: t, cls: (t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
       time: t.doing && dayRel === 0 ? "进行中" : clock(t.segments[t.workedN][0]) + (t.overflow ? " 起" : ""),
-      dur: durText(t), tip: tipOf(t), play: dayRel === 0,
+      dur: durText(t), tip: tipOf(t), play: realRel === 0 && !playing,
     })));
     const over = plan.queue.filter((t) => t.overflow);
     section(dayRel < 0 ? "没做完" : "排不下", over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: t.segments.length > t.workedN ? `缺 ${dur(t.overflow)}` : durText(t), tip: tipOf(t) })));
@@ -1874,8 +2095,9 @@ class SpiralView extends ItemView {
       dur: dur(t.dur),
     })));
 
-    if (ai || aiStore && dayRel === 0) this.renderAi(list, aiStore, date, ai);
-    if (cfg.showReview !== false && dayRel === 0) this.renderReview(list);
+    if (ai || aiStore && realRel === 0) this.renderAi(list, aiStore, date, ai);
+    if (cfg.showDayReview !== false && realRel <= 0 && !playing) this.renderDayReview(list, items, file, dayKey, realRel === 0);
+    if (cfg.showReview !== false && realRel === 0) this.renderReview(list);
 
     // 入场时列表一行行浮上来（--naut-i = 第几行，最多错开到第 18 行）
     const stagger = () => { if (enter) Array.from(list.children).forEach((el, i) => { if (!el.style.getPropertyValue("--naut-i")) el.style.setProperty("--naut-i", String(Math.min(i, 18))); }); };
@@ -1915,6 +2137,26 @@ class SpiralView extends ItemView {
     list.createDiv({ cls: "naut-proj-note", text: had.length ? `近 7 天：${had.length} 天在用 · 协作 ${dur(sum("wall"))} · 产出 ${fmtTok(sum("out"))} tok · 日均 ${dur(sum("wall") / 7)}` : "近 7 天还没有 Agent 会话记录" });
   }
 
+  // 📋 当日复盘：这一天每件任务的预计和实际，逐件对照（规则见 dayReview）。默认收着，标题上带结论
+  renderDayReview(list, items, file, dayKey, live) {
+    const cfg = this.plugin.settings;
+    const r = dayReview(items, cfg, { live, auto: this.plugin.autoKeys(dayKey) });
+    if (!r.rows.length) return;
+    const s = r.summary, open = cfg.dayReviewFolded === false;
+    const head = list.createDiv({ cls: "naut-sec naut-proj-head naut-dayrev-head", text: `${open ? "▾" : "▸"} 📋 ${live ? "今日" : "当日"}复盘 · 已完成 ${s.completedCount}/${s.totalCount}${s.comparedCount ? ` · 偏差 ${signed(s.varianceMinutes)}` : ""}` });
+    head.onclick = () => { cfg.dayReviewFolded = open; this.plugin.saveSoon(); this.render(); };
+    if (!open) return;
+    list.createDiv({ cls: "naut-proj-note", text: s.comparedCount ? `已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}` : "还没有能对比的：做完了、也记到了实际用时的才算",
+      attr: { title: "偏差 = 实际 − 预计，只算做完了、也记到了实际用时的任务，两边是同一批。在做的、停着的照样列在下面，但不影响偏差。预计没写的按默认任务时长" } });
+    const NAME = { compared: "已对比", live: "进行中", paused: "已暂停", "not-tracked": "未计时", "not-started": "未开始", "no-estimate": "未预估" };
+    for (const x of r.rows) {
+      const row = list.createDiv({ cls: `naut-row naut-dayrev is-${x.state}` + (x.varianceMinutes > 0 ? " is-over-est" : "") });
+      row.createSpan({ cls: "naut-time", text: x.state === "compared" ? signed(x.varianceMinutes) : NAME[x.state] });
+      row.createSpan({ cls: "naut-label", text: x.label });
+      row.createSpan({ cls: "naut-dur", text: [x.plannedMinutes != null ? `预计 ${dur(x.plannedMinutes)}` : "", x.actualMinutes > 0 ? `实际 ${dur(x.actualMinutes)}` : x.state === "not-tracked" ? "未计时" : ""].filter(Boolean).join(" · ") });
+      row.onclick = () => this.plugin.openItem(file, x.item);
+    }
+  }
   // 📏 预估 vs 实际：近 30 天做完的、写了预估、也记到了实际用时的任务
   renderReview(list) {
     const r = this.plugin.reviewData();
@@ -1980,6 +2222,7 @@ module.exports = class NautilusSpiral extends Plugin {
     //   open -g "obsidian://nautilus-focus?app=Obsidian&stay=300"
     this.registerObsidianProtocolHandler("nautilus-focus", (p) => this.suggestFocus(p.app || "", +p.stay || 0).catch((e) => console.error("[螺旋日程] 专注提议失败", e)));
     this.addSettingTab(new SpiralSettings(this.app, this));
+    this.setupStatusBar();
 
     // 在日历里点某一天（或打开任何一篇日记），螺旋跟着切到那一天
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
@@ -2029,8 +2272,8 @@ module.exports = class NautilusSpiral extends Plugin {
     const bounds = (cfg.dayBounds || {})[dayKey] || {};
     applyWork(items, cfg, dayKey, now, 0, bounds);
     const plan = schedule(items, cfg, now, 0, bounds);
-    const head = `可用 ${dur(plan.available)} · 待办 ${dur(plan.demand)}`;
-    const lines = [plan.overflow ? `${head} · ⚠️ 超出 ${dur(plan.overflow)}` : `${head} · 富余 ${dur(plan.available - plan.demand)}`];
+    const C = capacity(items, plan, cfg, now, 0, bounds);
+    const lines = [`${C.tone === "warning" ? "⚠️ " : ""}${capSummary(C)}`, `可安排 ${dur(C.available)} / ${dur(C.totalAvailable)} · 事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}`];
     const next = plan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).slice(0, 5);
     if (next.length) lines.push("", "接下来：", ...next.map((t) => `${t.doing ? "进行中" : clock(t.segments[t.workedN][0])}  ${t.label}（${t.remaining < t.dur - 1 ? "剩 " + dur(t.remaining) : dur(t.dur)}）`));
     const over = plan.queue.filter((t) => t.overflow);
@@ -2074,8 +2317,9 @@ module.exports = class NautilusSpiral extends Plugin {
 
     const lines = [head, "━━━━━━━━━━━━━━━"];
     lines.push(`🕰 ${clock(S)} → ${E >= 1440 ? "次日 " : ""}${clock(E)}  ${bar((now - S) / (E - S))}  今天已过 ${pct((now - S) / (E - S))}`);
-    lines.push(`⏳ 可用 <b>${dur(plan.available)}</b> · 📋 待办 <b>${dur(plan.demand)}</b> · ` +
-      (plan.overflow ? `🔴 超出 <b>${dur(plan.overflow)}</b>` : `🟢 富余 <b>${dur(plan.available - plan.demand)}</b>`));
+    const C = capacity(items, plan, cfg, now, 0, bounds);
+    lines.push(`⏳ 可安排 <b>${dur(C.available)}</b> · 📋 已计划 <b>${dur(C.demand)}</b> · ` +
+      `${C.status.key === "overload" ? "🔴" : C.status.key === "fragmented" ? "🟠" : "🟢"} ${C.status.label} <b>${dur(C.status.value)}</b> · 剩余 ${C.left}%`);
     const tasks = items.filter((i) => i.kind === "task" && !i.container);
     const done = tasks.filter((i) => i.state === "done");
     const openN = tasks.filter((i) => i.state === "open").length;
@@ -2139,7 +2383,7 @@ module.exports = class NautilusSpiral extends Plugin {
       await v.render();
       const svg = host.querySelector("svg.naut-svg");
       if (!svg) return null;
-      const props = ["fill", "stroke", "stroke-width", "stroke-linecap", "stroke-dasharray", "opacity", "font-size", "font-weight", "font-family", "text-anchor", "dominant-baseline"];
+      const props = ["fill", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-dasharray", "opacity", "font-size", "font-weight", "font-family", "text-anchor", "dominant-baseline"];
       for (const el of [svg, ...svg.querySelectorAll("*")]) {
         if (el.tagName === "title") continue;
         const cs = getComputedStyle(el);
@@ -2198,6 +2442,13 @@ module.exports = class NautilusSpiral extends Plugin {
     const done = items.filter((i) => i.kind === "task" && i.state === "done").length;
     const open = items.filter((i) => i.kind === "task" && i.state === "open" && !i.container).length;
     out.push(`✅ 做完 ${done} 件 · 还有 ${open} 件没做完`);
+    // 当日复盘：预计和实际差多少（只算做完、也记到了用时的）
+    if (this.settings.showDayReview !== false) {
+      const isToday = dayKey === this.today().format(this.settings.format);
+      if (items.some((i) => i.kind === "task" && i.worked === undefined)) { const m = moment(); applyWork(items, this.settings, dayKey, normalize(m.hours() * 60 + m.minutes(), this.settings), isToday ? 0 : -1, (this.settings.dayBounds || {})[dayKey] || {}); }
+      const s = dayReview(items, this.settings, { live: isToday, auto: this.autoKeys(dayKey) }).summary;
+      if (s.comparedCount) out.push(`📋 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`);
+    }
     const ai = this.settings.showAi !== false && aiPick((await this.aiUsage()).days[dayKey], this.settings);
     if (ai) out.push(`🤖 协作 ${dur(ai.wall)} · Agent 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok`);
     const games = this.settings.trackGames !== false && (await this.gameLog()).days[dayKey];
@@ -3080,6 +3331,114 @@ module.exports = class NautilusSpiral extends Plugin {
     }
   }
 
+  // ---------------- 状态栏 ----------------
+  // 照 Nautilus Log 的顶栏：在做事时显示最近开始的那件做了多久、几件在做；连着做过了番茄钟的阈值，计时变红；
+  // 开了太久像是忘了关，提醒检查。这两样都只是提示，不替你停。没在做时显示今天的容量。每秒只换文字，不读日记
+  setupStatusBar() {
+    if (typeof this.addStatusBarItem !== "function") return;
+    const el = (this.statusEl = this.addStatusBarItem());
+    el.addClass("naut-status", "mod-clickable");
+    el.setAttr("aria-label", "单击：打开螺旋日程 · ⌥ 单击：到日记里正在做的那一行 · ⇧ 单击：在旁边分栏打开今天的日记");
+    el.setAttr("data-tooltip-position", "top");
+    el.addEventListener("click", (ev) => this.statusClick(ev).catch((e) => console.error("[螺旋日程] 状态栏", e)));
+    this.registerInterval(window.setInterval(() => this.tickStatus(), 1000));
+    this.registerInterval(window.setInterval(() => this.refreshCapacity(), 60 * 1000));
+    this.app.workspace.onLayoutReady(() => this.refreshCapacity());
+  }
+
+  tickStatus() {
+    const el = this.statusEl, cfg = this.settings;
+    if (!el) return;
+    el.toggle(cfg.statusBar !== false);
+    if (cfg.statusBar === false) return;
+    const dayKey = this.today().format(cfg.format);
+    const base = moment(dayKey, cfg.format).valueOf();   // 这篇日记那天的 0 点；计时记录里的分钟数从这儿起算
+    const over = (ms, min) => min > 0 && ms >= min * 60e3;
+    // 开着的计时：最近开始的那件排最前
+    const open = Object.entries((cfg.workLog || {})[dayKey] || {}).map(([k, segs]) => [k, (segs.find((s) => s[1] == null) || [])[0]]).filter(([, a]) => a != null).sort((x, y) => y[1] - x[1]);
+    const fs = this.session();
+    let text, overdue = false, forgotten = false, warning = false;
+    this._statusKey = open.length ? open[0][0] : null;
+    if (open.length) {
+      const ms = Date.now() - (base + open[0][1] * 60e3);
+      overdue = over(ms, cfg.pomoMinutes ?? 45);
+      forgotten = over(ms, cfg.forgottenMinutes ?? 120);
+      const name = open[0][0].replace(/\[\[(?:[^\]|]*\|)?([^\]]+)\]\]/g, "$1");
+      text = `${forgotten ? "⚠ 检查计时 · " : "▶ "}${elapsedText(ms)} · ${[...name].length > 16 ? [...name].slice(0, 16).join("") + "…" : name}${open.length > 1 ? ` · ${open.length} 件` : ""}`;
+    } else if (fs) {
+      // 只选了方向的一轮专注：正计时
+      const ms = Date.now() - Math.min(...fs.tasks.map((t) => t.start || fs.start || Date.now()));
+      overdue = over(ms, cfg.pomoMinutes ?? 45);
+      text = `⏱ ${elapsedText(ms)} · 专注`;
+    } else {
+      text = this._capText ? `🌀 ${this._capText}` : "🌀";
+      warning = !!this._capWarn;
+    }
+    // 自动记着的行里，这会儿有几件 Agent 在做
+    const st = this.states.get(this.journalPath(this.today()));
+    if (st) {
+      const auto = this.autoKeys(dayKey);
+      const k = auto.size ? [...st].filter(([l, c]) => c.doing && auto.has(workKey(l))).length : 0;
+      if (k) text += ` · 🤖${k}`;
+    }
+    if (el.getText() !== text) el.setText(text);
+    el.toggleClass("is-overdue", overdue);
+    el.toggleClass("is-forgotten", forgotten);
+    el.toggleClass("is-warning", warning);
+  }
+
+  // 没在做事时状态栏显示的那句容量：一分钟算一次，日记改了也算一次
+  async refreshCapacity() {
+    try {
+      const cfg = this.settings;
+      const file = this.todayFile();
+      if (!file || cfg.statusBar === false) { this._capText = ""; this._capWarn = false; return; }
+      const dayKey = file.basename;
+      const items = parseJournal(await this.app.vault.cachedRead(file), cfg);
+      this.withCalendar(items, this.today());
+      const m = moment(), now = normalize(m.hours() * 60 + m.minutes(), cfg), bounds = (cfg.dayBounds || {})[dayKey] || {};
+      applyWork(items, cfg, dayKey, now, 0, bounds);
+      const C = capacity(items, schedule(items, cfg, now, 0, bounds), cfg, now, 0, bounds);
+      this._capText = capSummary(C);
+      this._capWarn = C.tone === "warning";
+    } catch (e) { console.error("[螺旋日程] 状态栏容量", e); }
+  }
+
+  async statusClick(ev) {
+    if (!ev.altKey && !ev.shiftKey) return this.activate();
+    const file = this.todayFile();
+    if (!file) { new OB.Notice("今天还没有日记"); return; }
+    let line = 0;
+    if (this._statusKey) {
+      const it = parseJournal(await this.app.vault.cachedRead(file), this.settings).find((i) => i.kind === "task" && i.state === "open" && workKey(i.label) === this._statusKey);
+      if (it) line = it.line;
+    }
+    if (ev.shiftKey) await this.app.workspace.getLeaf("split").openFile(file, { eState: { line } });
+    else await this.openLine(file, line);
+  }
+
+  // ---------------- 你手动做的时段写回日记 ----------------
+  // 设置里打开才写。一件任务不再是 DOING（做完、暂停、改回 TODO）时，把它今天做过的几段写在它下面那一行 ⏱ 里，
+  // 和自动记的行同一种写法。这样实际用时就留在日记正文里，不靠插件自己的计时记录（那份只留 45 天）
+  queueClock(file, keys) {
+    this._clockKeys = new Set([...(this._clockKeys || []), ...keys]);
+    window.clearTimeout(this._clockTimer);
+    this._clockTimer = window.setTimeout(() => this.flushClock(file).catch((e) => console.error("[螺旋日程] 写回实际时段失败", e)), 1500);
+  }
+  async flushClock(file, tries = 0) {
+    const keys = [...(this._clockKeys || [])];
+    if (!keys.length) return;
+    const work = (this.settings.workLog || {})[file.basename] || {};
+    const auto = this.autoKeys(file.basename);   // 自动记着的行由自动记日记自己写
+    const base = await this.readJournal(file);
+    let text = base;
+    for (const k of keys) {
+      const segs = auto.has(k) ? [] : (work[k] || []).filter((s) => s[1] != null);
+      if (segs.length) text = this.autoClock(text, k, segs, "");
+    }
+    if (await this.writeJournal(file, base, text)) this._clockKeys = new Set();
+    else if (tries < 3) this._clockTimer = window.setTimeout(() => this.flushClock(file, tries + 1).catch(() => {}), 2000);   // 你正好在改日记：等一下再写
+  }
   // ---------------- 带按钮的系统通知 ----------------
 
   // 发一条带按钮的系统通知，等你点。返回点的按钮；"__click__" = 点了通知本身；"" = 没理；
@@ -3712,6 +4071,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const prev = this.states.get(f.path);
     this.observe(f, content, true);
     this.enforce(f, content, prev).catch((e) => console.error("[螺旋日程] 规则执行失败", e));
+    if (this.statusEl && f.path === this.journalPath(this.today())) this.refreshCapacity();
     if (this.views().some((v) => v.path() === f.path)) this.refresh();
   }
 
@@ -3729,12 +4089,14 @@ module.exports = class NautilusSpiral extends Plugin {
     const now = normalize(nowM.hours() * 60 + nowM.minutes(), this.settings);
     const isToday = file.basename === this.today().format(this.settings.format);
     let changed = false;
+    let cue = "";   // 这一回要不要响一声：start / pause / done
 
     if (isToday) {
       const auto = this.autoKeys(file.basename);   // 自动记录管着的行：用时按会话在动的时段另记，这里不给它开计时
       const log = (this.settings.workLog ||= {});
       const work = (log[file.basename] ||= {});
       const openSeg = (k) => (work[k] || []).find((x) => x[1] == null);
+      const closed = new Set();   // 这一回收掉了哪几件的时段
       const stop = (k, at) => {
         const seg = openSeg(k);
         if (!seg) return;
@@ -3742,6 +4104,7 @@ module.exports = class NautilusSpiral extends Plugin {
         if (seg[1] - seg[0] < 1) work[k].splice(work[k].indexOf(seg), 1);   // 不到一分钟的不记
         if (!work[k].length) delete work[k];
         changed = true;
+        closed.add(k);
       };
       if (!record || !prev) {
         // 刚启动：上次没收尾的时段，对应的任务已经不在做了，按半小时封顶收掉
@@ -3761,9 +4124,9 @@ module.exports = class NautilusSpiral extends Plugin {
         }
         for (const [label, c] of cur) {
           const k = workKey(label), p = prev.get(label);
-          if (c.doing && !openSeg(k) && !auto.has(k) && !(renamed && renamed[1] === k && work[k])) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; }
+          if (c.doing && !openSeg(k) && !auto.has(k) && !(renamed && renamed[1] === k && work[k])) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; cue = "start"; }
           if (c.doing && c.startedAt != null && openSeg(k) && openSeg(k)[0] !== c.startedAt && (!p || p.startedAt !== c.startedAt)) { openSeg(k)[0] = c.startedAt; changed = true; }
-          if (!c.doing && p && p.doing) stop(k, c.state === "done" && c.doneAt != null ? c.doneAt : now);
+          if (!c.doing && p && p.doing) { stop(k, c.state === "done" && c.doneAt != null ? c.doneAt : now); if (c.state !== "done" && !auto.has(k)) cue ||= "pause"; }
         }
         // 进行中的任务行没了（删了 / 挪去明天）：收掉。隔了 6 小时以上多半是睡了一觉才挪的，按预估时长封顶
         if (!renamed) for (const l of gone) {
@@ -3778,17 +4141,24 @@ module.exports = class NautilusSpiral extends Plugin {
           if (off.length) window.setTimeout(() => this.dropFromSession(off.map((t) => t.key)), 0);
         }
       }
+      if (closed.size && record && this.settings.clockToNote) this.queueClock(file, [...closed]);
       if (!Object.keys(work).length) delete log[file.basename];
     }
 
     if (record && prev) {
       const day = (this.settings.doneTimes[file.basename] ||= {});
       for (const [label, c] of cur) {
-        if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = now; changed = true; }
+        if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = now; changed = true; if (isToday && !label.startsWith(AUTO_MARK.trim())) cue = "done"; }
         if (c.state === "open" && day[label] != null) { delete day[label]; changed = true; }
       }
     }
     if (changed) this.saveSoon();
+    if (cue && record) this.sound(cue);
+  }
+
+  // 界面上的小音效（设置里可以关）。Obsidian 不在最前面时不响：那时候日记多半是别的东西在改
+  sound(name) {
+    if (this.settings.uiSound !== false && document.hasFocus()) blip(name);
   }
 
   pruneDoneTimes() {
@@ -3902,7 +4272,19 @@ class SpiralSettings extends PluginSettingTab {
     containerEl.createEl("h3", { text: "其它" });
     new Setting(containerEl).setName("预估 vs 实际").setDesc("列表底部显示近一段时间预估准不准（按标签 / 链接分），容量条上按这个比例给一个「按以往约多久」")
       .addToggle((t) => t.setValue(s.showReview !== false).onChange(async (v) => { s.showReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    num("复盘看最近几天", "", "reviewDays", 7, 45);
+    num("复盘看最近几天", "插件自己的计时记录留 45 天；再往前的日子，靠日记里任务下面那一行 ⏱ 算实际用时", "reviewDays", 7, 365);
+    new Setting(containerEl).setName("当日复盘").setDesc("列表里的「📋 今日复盘」：这一天每件任务的预计和实际，逐件对照。只有做完、也记到了实际用时的才算进偏差")
+      .addToggle((t) => t.setValue(s.showDayReview !== false).onChange(async (v) => { s.showDayReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
+    new Setting(containerEl).setName("显示没记录的时间").setDesc("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条下面给一行「有记录 / 没记录」")
+      .addToggle((t) => t.setValue(s.showUnrecorded !== false).onChange(async (v) => { s.showUnrecorded = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
+    new Setting(containerEl).setName("实际时段写回日记").setDesc("你手动做的任务不再是 DOING 时，在它下面写一行「⏱ 14:05–14:40、15:10–15:32 · 共 57m」，和自动记的行同一种写法。实际用时就留在日记正文里，不只存在插件的计时记录里")
+      .addToggle((t) => t.setValue(!!s.clockToNote).onChange(async (v) => { s.clockToNote = v; await this.plugin.saveData(s); }));
+    new Setting(containerEl).setName("状态栏").setDesc("右下角常驻一格：在做事时显示最近开始的那件做了多久，没在做时显示今天的容量。单击打开螺旋日程，⌥ 单击到日记里那一行，⇧ 单击在旁边分栏打开今天的日记")
+      .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); }));
+    new Setting(containerEl).setName("界面音效").setDesc("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在上面单独设")
+      .addToggle((t) => t.setValue(s.uiSound !== false).onChange(async (v) => { s.uiSound = v; await this.plugin.saveData(s); if (v) this.plugin.sound("done"); }));
+    num("番茄钟阈值（分钟）", "一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "pomoMinutes", 0, 600);
+    num("忘了关计时的提醒（分钟）", "计时开了这么久，状态栏提醒「检查计时」。不会替你停。0 = 不提醒", "forgottenMinutes", 0, 1440);
     new Setting(containerEl).setName("启动时打开今天的日记").setDesc("按上面的「日记日期分界」算今天：已经开着就切过去，没开就开一个新标签，还没有这篇就新建")
       .addToggle((t) => t.setValue(s.openTodayOnStartup !== false).onChange(async (v) => { s.openTodayOnStartup = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName("启动时左侧栏显示螺旋日程").setDesc("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）")
@@ -3934,4 +4316,4 @@ class SpiralSettings extends PluginSettingTab {
   }
 }
 
-module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin };
+module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock };
