@@ -15,6 +15,7 @@
 用法：strip-local.py <源码目录> <输出目录>
 """
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,17 @@ def strip(text, name):
     return "\n".join(out)
 
 
+def find_node():
+    """sync.sh 是非交互的 zsh，nvm 装的 node 不在它的 PATH 里：PATH 里没有就到常见位置找。"""
+    hit = shutil.which("node")
+    if hit:
+        return hit
+    home = Path.home()
+    spots = sorted((home / ".nvm/versions/node").glob("*/bin/node"), reverse=True) if (home / ".nvm/versions/node").is_dir() else []
+    spots += [Path("/opt/homebrew/bin/node"), Path("/usr/local/bin/node"), home / ".volta/bin/node"]
+    return next((str(p) for p in spots if p.exists()), None)
+
+
 def main():
     src, dst = Path(sys.argv[1]), Path(sys.argv[2])
     built = {}
@@ -58,20 +70,20 @@ def main():
     with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf8") as f:
         f.write(built["main.js"])
         f.flush()
-        try:
-            r = subprocess.run(["node", "--check", f.name], capture_output=True, text=True)
-            if r.returncode:
-                sys.exit("✗ 公开版 main.js 语法不对（去掉 @local 的部分以后）：\n" + r.stderr[:800])
-        except FileNotFoundError:
-            print("（没找到 node，跳过语法检查）")
-    for name, text in built.items():
-        (dst / name).write_text(text, encoding="utf8")
+        node = find_node()
+        if not node:
+            sys.exit("✗ 没找到 node，没法检查公开版的语法。装一个，或者把它所在的目录加进 PATH 再跑")
+        r = subprocess.run([node, "--check", f.name], capture_output=True, text=True)
+        if r.returncode:
+            sys.exit("✗ 公开版 main.js 语法不对（去掉 @local 的部分以后）：\n" + r.stderr[:800])
     # 说明文档也查一遍
     for readme in sorted(dst.glob("README*.md")):
         for no, line in enumerate(readme.read_text(encoding="utf8").split("\n"), 1):
             m = LEFTOVER.search(line)
             if m:
                 sys.exit(f"✗ {readme.name}:{no} 还留着「{m.group(0)}」")
+    for name, text in built.items():
+        (dst / name).write_text(text, encoding="utf8")
     print("公开版已生成：main.js、styles.css（只留本机的部分已去掉）")
 
 
