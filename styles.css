@@ -120,14 +120,10 @@
 .naut-row.is-doing .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
 .naut-row.is-doing.is-prio .naut-time::before { background: var(--naut-prio); }
 
-/* 长期项目 · 该推一把 */
+/* 列表里能折叠的小节标题、小字说明 */
 .naut-proj-head { cursor: pointer; user-select: none; }
 .naut-proj-note { font-size: .78em; color: var(--text-muted); padding: 2px 4px 4px; }
 .naut-link { cursor: pointer; color: var(--text-accent); }
-.naut-proj .naut-proj-why { width: auto; min-width: 5.5em; font-size: .85em; color: var(--text-muted); }
-.naut-proj .naut-proj-why.is-late { color: var(--naut-prio); }
-.naut-proj .naut-proj-why.is-soon { color: var(--color-orange); }
-.naut-proj-add { flex: none; font-size: .8em; padding: 0 7px; height: 20px; margin-left: 4px; }
 
 /* 🤖 人机协作：近 7 天 */
 .naut-ai-week { display: flex; gap: 4px; height: 44px; margin: 6px 4px 2px; }

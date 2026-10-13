@@ -1,6 +1,5 @@
 const OB = require("obsidian");
 const { Plugin, ItemView, PluginSettingTab, Setting, TFile, moment, debounce } = OB;
-const LP_SCRIPT = "scripts/long-projects.js";   // 长期项目的数据层，和「长期项目」看板共用
 
 const VIEW_TYPE = "nautilus-spiral";
 const DEFAULTS = {
@@ -13,8 +12,8 @@ const DEFAULTS = {
   priorityMarkers: "[[important]], [[重要]], ⭐, ‼️",
   doneTimes: {},        // { "2026_09_29": { "任务文字": 872 } }，在 Bike 里改成 DONE 时记下的完成时间（分钟）
   autoOpened: false,
-  showProjects: true,   // 底部显示「🧭 长期项目 · 该推一把」
-  showAi: true,         // 显示人机协作（Claude Code 的协作时长和 token）
+  showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
+  aiAgents: { claude: true, codex: true, workbuddy: true },   // 主力 AI 工具：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
   workLog: {},          // { "2026_09_30": { "任务文字": [[开始, 结束 | null]] } }：任务每一段「进行中」的时间（null = 还在做），中断再续就是好几段
   dayBounds: {},        // { "2026_09_30": { start: 610, end: 1650 } }：在螺旋上拖出来的这天实际开始 / 结束时间（分钟，凌晨 > 1440）
   trackGames: true,     // 记录游戏时间（每分钟看一眼有没有在玩）
@@ -53,8 +52,11 @@ const DEFAULTS = {
   dirLog: {},           // { "2026_10_11": { "Obsidian 改造": 133, "": 20 } }：每天各个大方向的分钟数（"" = 没归方向的）
   autoLog: false,       // 自动把 Claude / Codex / WorkBuddy 会话按 DOING / DONE / SUSPENDED 记进今天的日记，用时按会话真正在动的时段算
   autoLogEvery: 20,     // 每隔几分钟整理一次
+  autoLogCli: "auto",             // 判断用哪个命令行：auto = 本机有 claude 就用 claude，没有就用 codex
   autoLogModel: "haiku",          // 判断「做的是什么事、做完没有」用哪个模型（claude 命令行的 --model）
   claudePath: "~/.local/bin/claude",
+  codexPath: "codex",             // codex 命令行在哪：只写名字就到登录 shell 的 PATH 里找
+  autoLogCodexModel: "",          // 用 codex 判断时的模型（codex exec 的 -m）；空 = Codex 自己的默认
   autoLogNotify: true,  // 自动记成 DONE / SUSPENDED 时发一条带按钮的通知，不对可以在通知上改
   autoLogArchiveDone: true,   // 在 Claude 桌面 app 里归档了的会话，它那一行记成 DONE
   autoLogSince: 0,      // 开启自动记录的时刻（毫秒）：这之前就停了的会话不补记
@@ -186,8 +188,7 @@ function parseJournal(content, cfg) {
     for (const p of prio) label = label.split(p).join("");
     label = cleanLabel(label) || s.trim();
     const indent = lm[1].replace(/\t/g, "    ").length;
-    const pr = /\[\[[^\]|#]+#\^([\w-]+)/.exec(s);   // [[长期计划#^lp-xxxx|简称]] = 挂在某个长期项目上
-    const base = { line, indent, label, state, doing: !!doing, suspended, paused, progress, prio: prio.some((p) => s.includes(p)), stamp, projRef: pr ? pr[1] : null };
+    const base = { line, indent, label, state, doing: !!doing, suspended, paused, progress, prio: prio.some((p) => s.includes(p)), stamp };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
@@ -665,6 +666,68 @@ function runClaude(prompt, { bin = "~/.local/bin/claude", model = "haiku", syste
   });
 }
 
+// 主力是 Codex、本机没有 claude 的：用 codex exec 问同一个问题。--ephemeral 不留会话文件（不然它自己也会被当成一个会话记进来），
+// 沙箱只读；回答让它写到一个临时文件里再读回来。用的是 codex 命令行自己的登录
+let codexBin = null;   // 找到过的 codex 路径
+function findCodex(bin) {
+  const os = require("os");
+  const b = String(bin || "codex").replace(/^~(?=\/)/, os.homedir());
+  if (b.includes("/")) return Promise.resolve(b);
+  if (codexBin) return Promise.resolve(codexBin);
+  // 从访达启动的 Obsidian 拿不到终端里的 PATH：先看几个常见的安装位置（Homebrew、npm 全局、nvm），再问登录 shell
+  const fs = require("fs"), path = require("path"), home = os.homedir();
+  const spots = [path.join(home, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", path.join(home, ".npm-global/bin"), path.join(home, ".volta/bin"), path.join(home, ".bun/bin")];
+  try { for (const v of fs.readdirSync(path.join(home, ".nvm/versions/node")).sort().reverse()) spots.push(path.join(home, ".nvm/versions/node", v, "bin")); } catch (e) { /* 没装 nvm */ }
+  for (const d of spots) { const p = path.join(d, b); if (fs.existsSync(p)) return Promise.resolve(codexBin = p); }
+  return new Promise((resolve) => {
+    require("child_process").execFile(process.env.SHELL || "/bin/zsh", ["-lic", `command -v ${shq(b)}`], { timeout: 15000 }, (e, out) => {
+      const hit = String(out || "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("/")).pop();
+      resolve(hit ? (codexBin = hit) : b);
+    });
+  });
+}
+async function runCodex(prompt, { bin = "codex", model = "", system = "", timeout = 180 } = {}) {
+  const os = require("os"), path = require("path"), fs = require("fs");
+  const exe = await findCodex(bin);
+  const cwd = path.join(os.homedir(), "Library/Caches/nautilus-spiral/autolog");
+  try { fs.mkdirSync(cwd, { recursive: true }); } catch (e) { /* 建不出来就让下面 spawn 报错 */ }
+  const outFile = path.join(cwd, `codex-${Date.now()}.txt`);
+  const args = ["exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never", "-o", outFile];
+  if (model) args.push("-m", model);
+  args.push("-");   // 问题从标准输入给
+  // codex 是个 node 脚本，node 多半和它装在同一个目录里
+  const env = { ...process.env, PATH: [path.dirname(exe), path.join(os.homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", process.env.PATH || ""].join(":") };
+  return new Promise((resolve, reject) => {
+    let child;
+    try { child = require("child_process").spawn(exe, args, { cwd, env }); }
+    catch (e) { return reject(new Error(`启动 codex 失败：${e.message}`)); }
+    let err = "";
+    child.stdout.on("data", () => {});
+    child.stderr.on("data", (d) => { err += d; });
+    const clean = () => fs.promises.unlink(outFile).catch(() => {});
+    const timer = setTimeout(() => { child.kill(); clean(); reject(new Error(`codex 等了 ${timeout} 秒没回来`)); }, timeout * 1000);
+    child.on("error", (e) => { clearTimeout(timer); reject(new Error(`启动 codex 失败：${e.message}`)); });
+    child.on("close", async (code) => {
+      clearTimeout(timer);
+      let text = "";
+      try { text = await fs.promises.readFile(outFile, "utf8"); } catch (e) { /* 没写出来 = 出错了 */ }
+      clean();
+      if (!text.trim()) return reject(new Error((err.trim().split("\n").pop() || `codex 退出码 ${code}`).slice(0, 300)));
+      resolve(text);
+    });
+    child.stdin.write((system || "你是一个只输出 JSON 的整理助手。") + "\n\n" + prompt);
+    child.stdin.end();
+  });
+}
+// 自动记日记问哪个命令行：设置里指定了就用指定的；auto = 本机有 claude 就用 claude，没有就用 codex
+function runJudge(prompt, cfg) {
+  const os = require("os"), fs = require("fs");
+  const claude = cfg.claudePath || "~/.local/bin/claude";
+  const which = cfg.autoLogCli === "claude" || cfg.autoLogCli === "codex" ? cfg.autoLogCli : fs.existsSync(claude.replace(/^~(?=\/)/, os.homedir())) ? "claude" : "codex";
+  return which === "codex" ? runCodex(prompt, { bin: cfg.codexPath || "codex", model: cfg.autoLogCodexModel || "" })
+    : runClaude(prompt, { bin: claude, model: cfg.autoLogModel || "haiku" });
+}
+
 // 两篇文字前后不一样的那一段，换成编辑器的一次改动（光标和滚动位置不乱，⌘Z 一步撤销）。一样就返回 null
 function diffLines(before, after) {
   const a = before.split("\n"), b = after.split("\n");
@@ -831,6 +894,41 @@ function aiDay(ms, cfg) {
 // 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 绿
 const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy" };
 const aiAgent = (x) => (x && AI_AGENTS[x.agent] ? x.agent : "claude");   // 旧记录没写来源的都是 Claude
+// 设置里开着的那几个（主力 AI 工具），没设过就是全开
+const aiOn = (cfg) => Object.keys(AI_AGENTS).filter((k) => !(cfg && cfg.aiAgents) || cfg.aiAgents[k] !== false);
+const codexHome = () => process.env.CODEX_HOME || require("path").join(require("os").homedir(), ".codex");
+// 这个会话是在哪开的
+const aiWhere = (x) => {
+  const a = aiAgent(x), app = x.app || "";
+  if (a === "claude") return app === "cli" ? "终端" : "Claude 桌面版";   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
+  if (a === "codex") return /desktop/i.test(app) ? "Codex 桌面版" : /tui|cli|exec/i.test(app) ? "Codex 终端" : "Codex";
+  return AI_AGENTS[a];
+};
+
+// 存下的一天汇总里只留开着的那几个 Agent。存的那份不动，用的时候再筛：关掉一个再打开，它的历史还在
+function aiPick(day, cfg) {
+  if (!day) return null;
+  const on = new Set(aiOn(cfg));
+  const by = day.by || { claude: { wall: day.wall, agent: day.agent, out: day.out, segs: day.segs } };   // 旧记录没分 Agent，都是 Claude
+  const keep = Object.keys(by).filter((k) => on.has(k));
+  if (keep.length === Object.keys(by).length) return day;
+  if (!keep.length) return null;
+  const list = (day.list || []).filter((x) => on.has(aiAgent(x)));
+  const segs = unionSegs(keep.flatMap((k) => by[k].segs.map(([a, b]) => [a, b])));
+  // 分 Agent 记了的数就按 Agent 加，早先没分开记的（调用次数、读入、指令数）只能照整天的给
+  const sum = (f) => (keep.every((k) => by[k][f] != null) ? keep.reduce((n, k) => n + by[k][f], 0) : day[f]);
+  const proj = {};
+  for (const [name, p] of Object.entries(day.proj || {})) {
+    const agents = Object.fromEntries(Object.entries(p.agents || {}).filter(([k]) => on.has(k)));
+    const min = Object.values(agents).reduce((n, m) => n + m, 0), out = list.filter((x) => x.dir === name).reduce((n, x) => n + x.out, 0);
+    if (min || out) proj[name] = { min, out, agents };
+  }
+  const models = {};
+  if (keep.every((k) => by[k].models)) for (const k of keep) for (const [m, v] of Object.entries(by[k].models)) models[m] = (models[m] || 0) + v;
+  return { ...day, by: Object.fromEntries(keep.map((k) => [k, by[k]])), list, segs, proj, sessions: list.length,
+    wall: Math.round(segs.reduce((n, [a, b]) => n + b - a, 0)), agent: sum("agent"), out: sum("out"), calls: sum("calls"), fresh: sum("fresh"), cached: sum("cached"), prompts: sum("prompts"),
+    models: keep.every((k) => by[k].models) ? models : day.models };
+}
 
 function aiProject(cwd) {
   if (!cwd) return "?";
@@ -851,17 +949,42 @@ class AiUsage {
   constructor(cfg) {
     this.cfg = cfg;
     this.files = new Map();   // path -> { size, offset, days: Map(key -> { sess: Map(sid -> {proj, ts[], text}), prompts }), msgs: Map(id -> 用量), titles: Map(sid -> 标题) }
+    this.titles = new Map();  // Codex 的会话标题（不在会话文件里，另外读）
   }
 
-  // [目录, 哪个 Agent]
-  static roots() {
+  // [目录, 哪个 Agent]；只给设置里开着的那几个 Agent 的目录，关掉的不读
+  static roots(cfg) {
     const os = require("os"), path = require("path");
     const home = os.homedir();
     const r = [[path.join(home, ".claude/projects"), "claude"], [path.join(home, ".config/claude/projects"), "claude"]];
     for (const d of (process.env.CLAUDE_CONFIG_DIR || "").split(",").filter(Boolean)) r.push([path.join(d, "projects"), "claude"]);
-    r.push([path.join(home, ".codex/sessions"), "codex"], [path.join(home, ".workbuddy/projects"), "workbuddy"]);
-    const seen = new Set();
-    return r.filter(([d]) => !seen.has(d) && seen.add(d));
+    // Codex 归档一个会话，是把它的文件从 sessions 挪进 archived_sessions：两边都读，归档了的会话历史才不会断
+    r.push([path.join(codexHome(), "sessions"), "codex"], [path.join(codexHome(), "archived_sessions"), "codex"], [path.join(home, ".workbuddy/projects"), "workbuddy"]);
+    const on = new Set(aiOn(cfg)), seen = new Set();
+    return r.filter(([d, a]) => on.has(a) && !seen.has(d) && seen.add(d));
+  }
+
+  // 在 Codex 里归档了哪些会话：archived_sessions 里的文件名带着会话号
+  static async codexArchived() {
+    const out = new Set();
+    let names = [];
+    try { names = await require("fs").promises.readdir(require("path").join(codexHome(), "archived_sessions")); } catch (e) { /* 没归档过 */ }
+    for (const f of names) { const m = /([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/.exec(f); if (m) out.add(m[1]); }
+    return out;
+  }
+
+  // Codex 的会话标题在 ~/.codex/session_index.jsonl：一行一个 { id, thread_name }，改名就再追加一行。没起过名的会话这里没有
+  async codexTitles() {
+    const fs = require("fs"), p = require("path").join(codexHome(), "session_index.jsonl");
+    try {
+      const st = await fs.promises.stat(p);
+      if (st.mtimeMs === this._idxAt) return;
+      this._idxAt = st.mtimeMs;
+      for (const line of (await fs.promises.readFile(p, "utf8")).split("\n")) {
+        if (!line) continue;
+        try { const d = JSON.parse(line); if (d.id && d.thread_name) this.titles.set(d.id, String(d.thread_name)); } catch (e) { /* 正在写的半截行 */ }
+      }
+    } catch (e) { /* 没有这个文件 */ }
   }
 
   // 读 mtime >= since 的日志；读过的文件只读新追加的部分。返回这次碰到的日记日
@@ -879,7 +1002,8 @@ class AiUsage {
       }
       return out;
     };
-    for (const [root, agent] of AiUsage.roots()) {
+    if (aiOn(this.cfg).includes("codex")) await this.codexTitles();
+    for (const [root, agent] of AiUsage.roots(this.cfg)) {
       for (const p of await walk(root, 0)) {
         let st;
         try { st = await fs.promises.stat(p); } catch (e) { continue; }
@@ -887,8 +1011,13 @@ class AiUsage {
         if (!fc && st.mtimeMs < since) continue;
         if (fc && st.size === fc.size) continue;
         // Codex / WorkBuddy 一个文件就是一个会话，文件名里带会话号
-        if (!fc || st.size < fc.size) this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent,
-          sid: (/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/.exec(p) || [])[1] || path.basename(p, ".jsonl") });
+        if (!fc || st.size < fc.size) {
+          this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent,
+            sid: (/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/.exec(p) || [])[1] || path.basename(p, ".jsonl") });
+          fc.id = fc.sid;   // 这个文件自己的会话号（Codex 的子线程会把 sid 换成主线程的）
+          // Codex 归档时文件换了位置：原来那个位置读过的那份不要了，免得同一个会话算两遍
+          if (agent === "codex") for (const [q, o] of this.files) if (q !== p && o.agent === "codex" && o.id === fc.id) this.files.delete(q);
+        }
         const fh = await fs.promises.open(p, "r");
         try {
           const buf = Buffer.alloc(st.size - fc.offset);
@@ -953,7 +1082,12 @@ class AiUsage {
     let d;
     try { d = JSON.parse(line); } catch (e) { return; }
     const p = d.payload || {};
-    if (d.type === "session_meta") { fc.cwd = p.cwd || ""; fc.app = p.originator || "codex"; return; }
+    if (d.type === "session_meta") {
+      fc.cwd = p.cwd || ""; fc.app = p.originator || "codex";
+      // 子线程（自动审查之类）不单算一个会话：它的时间和 token 记在主线程名下
+      if (p.thread_source === "subagent" && p.parent_thread_id) fc.sid = String(p.parent_thread_id);
+      return;
+    }
     if (d.type === "turn_context") { if (p.model) fc.model = p.model; return; }
     const ms = Date.parse(d.timestamp);
     if (!ms || (d.type !== "event_msg" && d.type !== "response_item")) return;
@@ -967,7 +1101,7 @@ class AiUsage {
       const prev = fc.tot || { out: 0, fresh: 0, cached: 0 };
       const cur = { out: t.output_tokens || 0, fresh: Math.max(0, (t.input_tokens || 0) - (t.cached_input_tokens || 0)), cached: t.cached_input_tokens || 0 };
       const m = { key, sid: fc.sid, proj: s.proj, model: fc.model, out: Math.max(0, cur.out - prev.out), fresh: Math.max(0, cur.fresh - prev.fresh), cached: Math.max(0, cur.cached - prev.cached) };
-      if (m.out || m.fresh || m.cached) fc.msgs.set(`codex:${fc.sid}:${fc.msgs.size}`, m);
+      if (m.out || m.fresh || m.cached) fc.msgs.set(`codex:${fc.id || fc.sid}:${fc.msgs.size}`, m);
       fc.tot = cur;
     }
   }
@@ -995,7 +1129,7 @@ class AiUsage {
       const text = aiIsPrompt(d);
       if (text) {
         day.prompts++;
-        // 留一点你发的原话，长期项目拿它和会话标题去匹配「归类：」词
+        // 留一点你发的原话：把会话对上任务、自动记日记起名字时用
         if (s.text.length < 300) s.text += (s.text ? " / " : "") + text.replace(/\s+/g, " ").slice(0, 300 - s.text.length);
       }
       return;
@@ -1008,13 +1142,14 @@ class AiUsage {
   }
 
   summary(key) {
-    const sess = new Map(), titles = new Map();
+    const sess = new Map(), titles = new Map(this.titles), asked = {};
     let prompts = 0;
     for (const fc of this.files.values()) {
       for (const [sid, t] of fc.titles) titles.set(sid, t);
       const day = fc.days.get(key);
       if (!day) continue;
       prompts += day.prompts;
+      asked[fc.agent || "claude"] = (asked[fc.agent || "claude"] || 0) + day.prompts;
       for (const [sid, s] of day.sess) {
         const cur = sess.get(sid);
         if (cur) { cur.ts.push(...s.ts); if (cur.text.length < 300 && s.text) cur.text += " / " + s.text; }
@@ -1033,7 +1168,7 @@ class AiUsage {
     for (const s of sess.values()) {
       s.ts.sort((a, b) => a - b);
       let a = s.ts[0], b = a + 1;
-      const g = (res.by[s.agent] ||= { wall: 0, agent: 0, out: 0, segs: [] });
+      const g = (res.by[s.agent] ||= { wall: 0, agent: 0, out: 0, segs: [], calls: 0, fresh: 0, cached: 0, prompts: asked[s.agent] || 0, models: {} });
       const push = () => {
         spans.push([a, b]); s.segs.push([a, b]); s.min += b - a; res.agent += b - a; g.agent += b - a; g.segs.push([a, b]);
         const pj = (res.proj[s.proj] ||= { min: 0, out: 0 });
@@ -1058,8 +1193,13 @@ class AiUsage {
       seen.add(id);
       res.calls++; res.out += m.out; res.fresh += m.fresh; res.cached += m.cached;
       (res.proj[m.proj] ||= { min: 0, out: 0 }).out += m.out;
-      if (sess.has(m.sid)) { sess.get(m.sid).out += m.out; res.by[sess.get(m.sid).agent].out += m.out; }
-      if (m.model && m.model !== "<synthetic>") res.models[m.model] = (res.models[m.model] || 0) + m.out;
+      const live = m.model && m.model !== "<synthetic>";
+      if (sess.has(m.sid)) {
+        const g = res.by[sess.get(m.sid).agent];
+        sess.get(m.sid).out += m.out; g.out += m.out; g.calls++; g.fresh += m.fresh; g.cached += m.cached;
+        if (live) g.models[m.model] = (g.models[m.model] || 0) + m.out;
+      }
+      if (live) res.models[m.model] = (res.models[m.model] || 0) + m.out;
     }
     res.wall = Math.round(res.wall); res.agent = Math.round(res.agent);
     res.segs = res.segs.map(([a, b]) => [Math.round(a), Math.round(b)]);
@@ -1069,7 +1209,7 @@ class AiUsage {
       g.wall = g.segs.reduce((k, [a, b]) => k + b - a, 0);
       g.agent = Math.round(g.agent);
     }
-    // 每个会话一行：长期项目按标题 / 指令 / 目录把它归到项目上（scripts/long-projects.js）
+    // 每个会话一行：标题、开头说的话、目录、活跃的时段
     for (const [sid, s] of sess) res.list.push({ sid, agent: s.agent, dir: s.proj, cwd: s.cwd || "", app: s.app || "", title: titles.get(sid) || "", text: s.text.slice(0, 300),
       min: Math.round(s.min), out: s.out, segs: s.segs.map(([a, b]) => [Math.round(a), Math.round(b)]) });
     return res;
@@ -1127,7 +1267,7 @@ class AiSessionsModal extends OB.Modal {
     const { contentEl } = this;
     contentEl.addClass("naut-ai-modal");
     contentEl.createEl("h3", { text: this.title });
-    contentEl.createDiv({ cls: "naut-proj-note", text: "「在 Claude 里打开」用 claude://resume 在 Claude 桌面版里打开那个会话；终端里开的会话，「在终端里继续」在它的工作目录里运行 claude --resume。" });
+    contentEl.createDiv({ cls: "naut-proj-note", text: "「在 Claude 里打开」用 claude://resume 在 Claude 桌面版里打开那个会话；「在终端里继续」在会话的工作目录里运行 claude --resume（Codex 的会话是 codex resume）。WorkBuddy 的会话要回它自己的窗口里找。" });
     for (const g of this.groups) {
       if (g.name) {
         const h = contentEl.createDiv({ cls: "naut-ai-group" });
@@ -1135,7 +1275,7 @@ class AiSessionsModal extends OB.Modal {
         if (g.sub) h.createSpan({ cls: "naut-muted", text: ` · ${g.sub}` });
       }
       const rel = g.list.filter((x) => x.related), weak = g.list.filter((x) => !x.related);
-      if (!rel.length) contentEl.createDiv({ cls: "naut-proj-note", text: weak.length ? "没有看起来相关的会话（标题和你发的话里都没有任务名里的词）" : "这段时间里没有 Claude 会话" });
+      if (!rel.length) contentEl.createDiv({ cls: "naut-proj-note", text: weak.length ? "没有看起来相关的会话（标题和你发的话里都没有任务名里的词）" : "这段时间里没有 Agent 会话" });
       for (const x of rel) this.session(contentEl, x);
       // 只是时间重叠的会话收起来，要看再点开
       if (weak.length) {
@@ -1151,14 +1291,16 @@ class AiSessionsModal extends OB.Modal {
     const first = (x.text || "").split(" / ")[0];
     box.createDiv({ cls: "naut-ai-sess-title", text: x.title || first.slice(0, 120) || "（没有标题）" });
     if (x.title && first) box.createDiv({ cls: "naut-ai-sess-text", text: first.slice(0, 200) });
-    const cli = x.app === "cli";   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
+    const cli = agent === "codex" || x.app === "cli";   // 默认按钮给哪个：Codex 和终端里的 Claude Code 回终端，其余回 Claude 桌面版
     const when = x.overlap != null ? `和这件重叠 ${dur(x.overlap)}` : `${clock(x.lastAt)} 还在动`;
-    box.createDiv({ cls: "naut-ai-sess-meta", text: `${agent !== "claude" ? AI_AGENTS[agent] : cli ? "终端" : "Claude 桌面版"} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 产出 ${fmtTok(x.out)} tok` });
-    if (agent !== "claude") return;
-    const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + `claude --resume ${x.sid}`;
+    box.createDiv({ cls: "naut-ai-sess-meta", text: `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 产出 ${fmtTok(x.out)} tok` });
+    if (agent === "workbuddy") return;
+    const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
     const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
-    const desk = bar.createEl("button", { cls: cli ? "" : "mod-cta", text: "在 Claude 里打开" });
-    desk.onclick = () => { require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${x.sid}`], () => {}); this.close(); };
+    if (agent === "claude") {
+      const desk = bar.createEl("button", { cls: cli ? "" : "mod-cta", text: "在 Claude 里打开" });
+      desk.onclick = () => { require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${x.sid}`], () => {}); this.close(); };
+    }
     const term = bar.createEl("button", { cls: cli ? "mod-cta" : "", text: "在终端里继续" });
     term.onclick = () => { run("/usr/bin/osascript", ["-e", `tell application "Terminal"\nactivate\ndo script ${asStr(cmd)}\nend tell`]); this.close(); };
     bar.createEl("button", { text: "复制命令" }).onclick = async () => { await navigator.clipboard.writeText(cmd); new OB.Notice("已复制：" + cmd); };
@@ -1399,12 +1541,6 @@ class SpiralView extends ItemView {
     const content = await this.app.vault.cachedRead(file);
     const items = parseJournal(content, cfg);
     const cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
-    // 自动归类到长期项目的行（long-projects.js 按项目的「归类：」词算的）：行号 → 项目
-    const projOf = new Map();
-    if (cfg.showProjects) {
-      const lp = await this.plugin.projects();
-      for (const it of lp?.data.items || []) for (const a of it.activity) if (a.file.path === file.path && a.kind !== "提及") projOf.set(a.line, it);
-    }
     const dayKey = date.format(cfg.format);
     const done = cfg.doneTimes[dayKey] || {};
     const nowM = moment();
@@ -1456,16 +1592,16 @@ class SpiralView extends ItemView {
     }
 
     // 人机协作：这一天 Claude 干了多少（数据见上面「人机协作」一节的口径）
-    const ai = aiStore && aiStore.days[dayKey];
+    const ai = aiStore && aiPick(aiStore.days[dayKey], cfg);
     // 这天用了哪几个 Agent（按 Claude / Codex / WorkBuddy 的固定顺序）；旧记录没分 Agent 的都算 Claude
     const agents = !ai ? [] : ai.by ? Object.keys(AI_AGENTS).filter((k) => ai.by[k] && ai.by[k].segs.length).map((k) => [k, ai.by[k]]) : [["claude", { segs: ai.segs, wall: ai.wall, out: ai.out }]];
     if (ai) {
       const models = Object.entries(ai.models).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${fmtTok(n)}`).join("、");
       const only = agents.length === 1 ? AI_AGENTS[agents[0][0]] : "";
       const line = cap.createDiv({ cls: "naut-ai-line", attr: { title: [
-        `协作 ${dur(ai.wall)}：有 Claude 在干活的时间，几个窗口同时开只算一次（螺旋内圈的紫线）`,
-        `Claude 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`,
-        `产出 ${fmtTok(ai.out)}：Claude 写出来的 token（含思考），${ai.calls} 次调用`,
+        `协作 ${dur(ai.wall)}：有 ${only || "Agent"} 在干活的时间，几个窗口同时开只算一次（螺旋内圈的细线，一个 Agent 一种颜色）`,
+        `${only || "Agent"} 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`,
+        `产出 ${fmtTok(ai.out)}：${only || "Agent"} 写出来的 token（含思考），${ai.calls} 次调用`,
         `读入 ${fmtTok(ai.fresh)}：新读进来的文件、命令输出`,
         `缓存命中 ${fmtTok(ai.cached)}：每轮重读上下文，不算工作量`,
         `指令 ${ai.prompts}：你亲手发的消息`,
@@ -1692,15 +1828,14 @@ class SpiralView extends ItemView {
         link(r.item, row);
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
         row.createSpan({ cls: "naut-time", text: r.time });
-        const proj = projOf.get(r.item.line);
-        row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.cal ? "📅 " : r.item.projRef || proj ? "🧭 " : "") + r.item.label,
-          attr: proj ? { title: "算进长期项目：" + proj.short } : r.item.cal ? { title: `日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}` } : {} });
+        const lab = row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
+          attr: r.item.cal ? { title: `日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}` } : {} });
         const sess = aiOf(r.item);
         if (sess.length) {
           const rel = sess.filter((x) => x.related).length;
           const badge = row.createSpan({ cls: "naut-ai-badge" + (rel ? "" : " is-weak"), text: `🤖${rel || sess.length}`,
-            attr: { title: `这件做的时候 Claude 在：\n${sess.map((x) => `${x.related ? "· " : "  （同时段）"}${aiName(x)}（${dur(x.overlap)}）`).join("\n")}\n点开看详情、接着那个会话做` } });
-          badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.app, `「${r.item.label}」期间的 Claude 会话`, [{ list: sess }]).open(); };
+            attr: { title: `这件做的时候 Agent 在：\n${sess.map((x) => `${x.related ? "· " : "  （同时段）"}${aiName(x)}（${dur(x.overlap)}）`).join("\n")}\n点开看详情、接着那个会话做` } });
+          badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.app, `「${r.item.label}」期间的 Agent 会话`, [{ list: sess }]).open(); };
         }
         row.createSpan({ cls: "naut-dur", text: r.dur, attr: r.tip ? { title: r.tip } : {} });
         if (r.play) {
@@ -1742,11 +1877,9 @@ class SpiralView extends ItemView {
     if (ai || aiStore && dayRel === 0) this.renderAi(list, aiStore, date, ai);
     if (cfg.showReview !== false && dayRel === 0) this.renderReview(list);
 
-    // 长期项目：该推一把（数据来自 scripts/long-projects.js，和「长期项目」看板同一份）
-    // 入场时列表一行行浮上来（--naut-i = 第几行，最多错开到第 18 行）；长期项目那一节是等数据回来才画的，画完再补一次
+    // 入场时列表一行行浮上来（--naut-i = 第几行，最多错开到第 18 行）
     const stagger = () => { if (enter) Array.from(list.children).forEach((el, i) => { if (!el.style.getPropertyValue("--naut-i")) el.style.setProperty("--naut-i", String(Math.min(i, 18))); }); };
     stagger();
-    if (cfg.showProjects && dayRel === 0) { await this.renderProjects(list, file); stagger(); }
   }
 
   // 🤖 人机协作：按项目分 + 近 7 天
@@ -1766,7 +1899,7 @@ class SpiralView extends ItemView {
     const days = [];
     for (let i = 6; i >= 0; i--) {
       const d = date.clone().subtract(i, "days");
-      days.push({ d, s: store.days[d.format(cfg.format)] });
+      days.push({ d, s: aiPick(store.days[d.format(cfg.format)], cfg) });
     }
     const max = Math.max(60, ...days.map((x) => (x.s ? x.s.wall : 0)));
     const had = days.filter((x) => x.s);
@@ -1779,7 +1912,7 @@ class SpiralView extends ItemView {
       col.createDiv({ cls: "naut-ai-day", text: d.format("dd") });
     }
     const sum = (k) => had.reduce((n, x) => n + x.s[k], 0);
-    list.createDiv({ cls: "naut-proj-note", text: had.length ? `近 7 天：${had.length} 天在用 · 协作 ${dur(sum("wall"))} · 产出 ${fmtTok(sum("out"))} tok · 日均 ${dur(sum("wall") / 7)}` : "近 7 天还没有 Claude Code 记录" });
+    list.createDiv({ cls: "naut-proj-note", text: had.length ? `近 7 天：${had.length} 天在用 · 协作 ${dur(sum("wall"))} · 产出 ${fmtTok(sum("out"))} tok · 日均 ${dur(sum("wall") / 7)}` : "近 7 天还没有 Agent 会话记录" });
   }
 
   // 📏 预估 vs 实际：近 30 天做完的、写了预估、也记到了实际用时的任务
@@ -1809,41 +1942,6 @@ class SpiralView extends ItemView {
       () => { const f = this.app.vault.getAbstractFileByPath(w.path); if (f instanceof TFile) this.plugin.openLine(f, w.line); });
   }
 
-  async renderProjects(list, file) {
-    const lp = await this.plugin.projects();
-    if (!lp) return;
-    const { LP, data } = lp;
-    const open = !this.plugin.settings.projFolded;
-    const head = list.createDiv({ cls: "naut-sec naut-proj-head", text: `${open ? "▾" : "▸"} 🧭 长期项目 · 该推一把` });
-    head.onclick = () => { this.plugin.settings.projFolded = open; this.plugin.saveSoon(); this.render(); };
-    if (!open) return;
-    const todayIds = new Set(data.items.filter((i) => i.todayActs.length).map((i) => i.key));
-    const doneToday = data.items.filter((i) => i.todayActs.some((a) => a.state === "done")).length;
-    // 今天日记里归到各个项目的投入（写了时长按写的，没写的按 long-projects.js 的估算）
-    const todays = (i) => i.activity.filter((a) => file && a.file.path === file.path && a.kind !== "提及");
-    const spent = data.items.map((i) => ({ i, m: todays(i).reduce((s, a) => s + (a.spent || 0), 0), est: todays(i).some((a) => a.estimated) })).filter((x) => x.m).sort((a, b) => b.m - a.m);
-    if (spent.length) list.createDiv({ cls: "naut-proj-note", text: "今天算进长期项目：" + spent.map((x) => `${x.i.short} ${x.est ? "约 " : ""}${x.m >= 60 ? (x.m / 60).toFixed(1) + "h" : x.m + "m"}`).join(" · "), attr: { title: "日记里命中项目「归类：」词的块；没写时长的每块按 15 分钟估" } });
-    else if (todayIds.size) list.createDiv({ cls: "naut-proj-note", text: `今天挂在项目上的任务涉及 ${todayIds.size} 个项目${doneToday ? `，已推进 ${doneToday} 个` : ""}（上面带 🧭 的）` });
-    // 时长目标（🎯10000h 这种）：累计多少了
-    for (const i of data.items.filter((i) => i.goal && i.goal.kind === "时长" && i.hours)) {
-      const h = i.hours.total;
-      const aiH = i.hours.ai ? `，其中 🤖 Claude 协作 ${i.hours.ai.toFixed(1)}h` : "";
-      list.createDiv({ cls: "naut-proj-note", text: `🎯 ${i.short}：累计 ${h >= 100 ? Math.round(h) : h.toFixed(1)} / ${i.goal.target.toLocaleString()} 小时（${(h / i.goal.target * 100).toFixed(2)}%${aiH}）` });
-    }
-    const rows = data.nudges.filter((n) => n.item.domain !== "外形穿搭").slice(0, 5);
-    if (!rows.length) list.createDiv({ cls: "naut-proj-note", text: "没有逾期、快到期或冷掉的项目 👍" });
-    for (const n of rows) {
-      const i = n.item;
-      const row = list.createDiv({ cls: "naut-row naut-proj" });
-      row.createSpan({ cls: "naut-time naut-proj-why" + (/逾期/.test(n.reason) ? " is-late" : /剩/.test(n.reason) ? " is-soon" : ""), text: n.reason });
-      const lab = row.createSpan({ cls: "naut-label", text: i.short, attr: { title: i.title } });
-      lab.onclick = () => this.plugin.openLine(i.file, i.line);
-      const add = row.createEl("button", { cls: "naut-proj-add", text: "＋" , attr: { title: "今天推进它：在今天日记里加一条带项目链接的 TODO" } });
-      add.onclick = (e) => { e.stopPropagation(); LP.pushTodayModal(i, OB); };
-    }
-    const more = list.createDiv({ cls: "naut-proj-note naut-link", text: "打开长期项目看板 →" });
-    more.onclick = () => { const f = this.app.metadataCache.getFirstLinkpathDest("长期项目", ""); if (f) this.app.workspace.getLeaf(false).openFile(f); };
-  }
 }
 
 // ---------------- 插件 ----------------
@@ -1914,40 +2012,6 @@ module.exports = class NautilusSpiral extends Plugin {
     });
   }
 
-  // 长期项目数据：载入共用脚本，结果缓存 20 秒（日记每次保存都会重绘，不必每次全库扫）
-  async projects() {
-    try {
-      const f = this.app.vault.getAbstractFileByPath(LP_SCRIPT);
-      if (!(f instanceof TFile)) return null;
-      if (!this._lp || this._lpMtime !== f.stat.mtime) {
-        this._lp = new Function("app", "require", await this.app.vault.adapter.read(LP_SCRIPT))(this.app, require);
-        this._lpMtime = f.stat.mtime;
-        this._lpData = null;
-      }
-      // 第一次同步算；之后日记一改只标记「过期」，先用旧数据画，等你停手几秒再在空闲时重算（全库扫一遍要几百毫秒，
-      // 以前每次保存都同步重算，会把编辑器卡住 —— ⌘/ 连按不动就是这个原因）
-      if (!this._lpData) await this.recomputeProjects();
-      else if (this._lpStale || Date.now() - this._lpAt > 120000) this.scheduleProjects();
-      return { LP: this._lp, data: this._lpData };
-    } catch (e) {
-      console.error("[螺旋日程] 长期项目读取失败", e);
-      return null;
-    }
-  }
-
-  async recomputeProjects() {
-    if (!this._lp) return;
-    this._lpData = await this._lp.collect({ exclude: [] });
-    this._lpAt = Date.now();
-    this._lpStale = false;
-  }
-  scheduleProjects(delay = 4000) {
-    window.clearTimeout(this._lpTimer);
-    this._lpTimer = window.setTimeout(() => {
-      const run = async () => { try { await this.recomputeProjects(); this.refresh(); } catch (e) { console.error("[螺旋日程] 长期项目重算失败", e); } };
-      window.requestIdleCallback ? window.requestIdleCallback(run, { timeout: 3000 }) : run();
-    }, delay);
-  }
 
   // ---- 给 Telegram Inbox（自用版）用的：手机上问「现在该干嘛」、报「睡了 / 起了」 ----
 
@@ -2134,8 +2198,8 @@ module.exports = class NautilusSpiral extends Plugin {
     const done = items.filter((i) => i.kind === "task" && i.state === "done").length;
     const open = items.filter((i) => i.kind === "task" && i.state === "open" && !i.container).length;
     out.push(`✅ 做完 ${done} 件 · 还有 ${open} 件没做完`);
-    const ai = this.settings.showAi !== false && (await this.aiUsage()).days[dayKey];
-    if (ai) out.push(`🤖 协作 ${dur(ai.wall)} · Claude 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok`);
+    const ai = this.settings.showAi !== false && aiPick((await this.aiUsage()).days[dayKey], this.settings);
+    if (ai) out.push(`🤖 协作 ${dur(ai.wall)} · Agent 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok`);
     const games = this.settings.trackGames !== false && (await this.gameLog()).days[dayKey];
     if (games && games.length) out.push(`🎮 游戏 ${dur(unionMin(games))}`);
     return out;
@@ -2175,7 +2239,7 @@ module.exports = class NautilusSpiral extends Plugin {
     return [
       { id: "quick-panel", name: "快捷面板（螺旋日程的所有操作）", key: ca("S"), run: () => new QuickPanel(this.app, this).open(), hidden: true },
       { id: "status", name: "现在怎样：专注、在做的、容量、接下来", key: ca("V"), run: () => this.showStatus() },
-      { id: "doing-ai", name: "正在做的事的 Claude 会话", key: ca("C"), run: () => this.showDoingAi() },
+      { id: "doing-ai", name: "正在做的事的 Agent 会话", key: ca("C"), run: () => this.showDoingAi() },
       { id: "start-here", name: "开始光标所在的任务（改成 DOING + 专注）", key: { modifiers: ["Mod", "Shift"], key: "Enter" }, editor: true, run: (editor, view) => this.startAtCursor(editor, view) },
       { id: "start-next", name: "开始下一件（改成 DOING + 专注）", key: ca("N"), run: () => this.startNext() },
       { id: "suggest-focus", name: "开一轮专注（选一个大方向）", key: ca("F"), run: () => this.suggestFocus("", 0) },
@@ -2229,7 +2293,7 @@ module.exports = class NautilusSpiral extends Plugin {
     }
     lines.push(await this.capacityText());
     new TextModal(this.app, `现在 · ${moment().format("HH:mm")}`, lines.join("\n"), [
-      ["正在做的事的 Claude 会话", () => this.showDoingAi()],
+      ["正在做的事的 Agent 会话", () => this.showDoingAi()],
       ["打开螺旋日程", () => this.activate()],
     ]).open();
   }
@@ -2241,7 +2305,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!file) { new OB.Notice("今天还没有日记"); return; }
     if (OB.Platform?.isDesktopApp && !this._aiBusy) await this.scanAi();   // 先读一遍最新的会话日志
     const key = this.today().format(cfg.format);
-    const ai = (await this.aiUsage()).days[key];
+    const ai = aiPick((await this.aiUsage()).days[key], cfg);
     const items = parseJournal(await this.app.vault.read(file), cfg);
     const m = moment();
     const now = normalize(m.hours() * 60 + m.minutes(), cfg);
@@ -2262,8 +2326,8 @@ module.exports = class NautilusSpiral extends Plugin {
       for (const g of groups) g.list = g.list.filter((x) => x.related || !ids.has(x.sid));
       groups.push({ name: "🟢 现在还在跑、没对上哪件的会话", list: live });
     }
-    if (!doing.length && !live.length) { new OB.Notice("现在没有在做的事，也没有在跑的 Claude 会话"); return; }
-    new AiSessionsModal(this.app, "正在做的事 · Claude 会话", groups).open();
+    if (!doing.length && !live.length) { new OB.Notice("现在没有在做的事，也没有在跑的 Agent 会话"); return; }
+    new AiSessionsModal(this.app, "正在做的事 · Agent 会话", groups).open();
   }
 
   // ⌃⌥R 打开螺旋，展开并滚到「📏 预估 vs 实际」
@@ -2996,12 +3060,12 @@ module.exports = class NautilusSpiral extends Plugin {
   async scanAi() {
     this._aiBusy = true;
     try {
-      this._ai ||= new AiUsage(this.settings);
+      const ai = (this._ai ||= new AiUsage(this.settings));
       // 头一回（或汇总格式升级后）把现存日志全读一遍补历史；之后重启只读最近改过的
       const upgrade = this.aiStore.v !== AI_STORE_V;
       const since = this.aiStore.backfilled && !upgrade ? Date.now() - (AI_FRESH_DAYS + 2) * 864e5 : 0;
-      const touched = await this._ai.scan(this._ai.files.size ? Date.now() - 2 * 864e5 : since);
-      const changed = this._ai.merge(this.aiStore, touched, upgrade) || !this.aiStore.backfilled || upgrade;
+      const touched = await ai.scan(ai.files.size ? Date.now() - 2 * 864e5 : since);
+      const changed = ai.merge(this.aiStore, touched, upgrade) || !this.aiStore.backfilled || upgrade;
       this.aiStore.backfilled = true;
       this.aiStore.v = AI_STORE_V;
       if (changed) {
@@ -3134,7 +3198,7 @@ module.exports = class NautilusSpiral extends Plugin {
   // 这一天各个大方向花了多久（分钟）：自动记进日记的会话各归到哪个方向，同一方向几个会话同时开只算一次
   dirStats(dayKey = this.today().format(this.settings.format)) {
     const st = (this.settings.autoLogState || {})[dayKey] || {};
-    const day = this.aiStore && this.aiStore.days[dayKey];
+    const day = this.aiStore && aiPick(this.aiStore.days[dayKey], this.settings);
     const by = {};
     for (const x of (day && day.list) || []) {
       const rec = st[x.sid];
@@ -3292,7 +3356,7 @@ module.exports = class NautilusSpiral extends Plugin {
       "- skip：一两句闲聊或问答、没有实际做事的会话填 true。",
     ].join("\n");
     let raw;
-    try { raw = await runClaude(prompt, { bin: cfg.claudePath || "~/.local/bin/claude", model: cfg.autoLogModel || "haiku" }); }
+    try { raw = await runJudge(prompt, cfg); }
     catch (e) { console.error("[螺旋日程] 自动记日记：问模型失败", e); this._autoErr = String(e.message || e); return new Map(); }
     const out = new Map();
     try {
@@ -3388,7 +3452,7 @@ module.exports = class NautilusSpiral extends Plugin {
       if (!(file instanceof TFile)) continue;
       const base = await this.readJournal(file);
       let text = base;
-      const list = (this.aiStore && this.aiStore.days[dayKey] && this.aiStore.days[dayKey].list) || [];
+      const list = (this.aiStore && aiPick(this.aiStore.days[dayKey], cfg) || {}).list || [];
       const work = (cfg.workLog || {})[dayKey] || {};
       const after = [];
       for (const [sid, rec] of hits) {
@@ -3424,7 +3488,7 @@ module.exports = class NautilusSpiral extends Plugin {
       await this.aiUsage();
       if (!this._aiBusy) await this.scanAi();
       dayKey = file.basename;
-      const day = this.aiStore && this.aiStore.days[dayKey];
+      const day = this.aiStore && aiPick(this.aiStore.days[dayKey], cfg);
       if (!day || !day.list) return report;
       const nowM = moment();
       const now = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
@@ -3433,8 +3497,9 @@ module.exports = class NautilusSpiral extends Plugin {
       snap = JSON.stringify(st);
       const since = cfg.autoLogSince ? aiDay(cfg.autoLogSince, cfg) : null;
       const lastOf = (x) => x.segs[x.segs.length - 1][1];
-      // 你在 Claude 桌面 app 里归档了的会话 = 做完了
+      // 你在 Claude 桌面 app 或 Codex 里归档了的会话 = 做完了
       const arch = cfg.autoLogArchiveDone !== false ? await archivedSessions(this._archCache ||= new Map()).catch(() => new Set()) : new Set();
+      if (cfg.autoLogArchiveDone !== false && aiOn(cfg).includes("codex")) for (const sid of await AiUsage.codexArchived()) arch.add(sid);
       const todo = [], live = [];
       for (const x of day.list) {
         if (!x.segs || !x.segs.length) continue;
@@ -3647,8 +3712,6 @@ module.exports = class NautilusSpiral extends Plugin {
     const prev = this.states.get(f.path);
     this.observe(f, content, true);
     this.enforce(f, content, prev).catch((e) => console.error("[螺旋日程] 规则执行失败", e));
-    this._lpStale = true;
-    this.scheduleProjects();
     if (this.views().some((v) => v.path() === f.path)) this.refresh();
   }
 
@@ -3816,13 +3879,18 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(!!s.autoLog).onChange(async (v) => { s.autoLog = v; if (v) s.autoLogSince = Date.now(); await this.plugin.saveData(s); }));
     num("每隔几分钟整理一次", "", "autoLogEvery", 5, 240);
     num("多久没动算停了（分钟）", "会话这么久没有动静，就把它那一行从 DOING 改成 SUSPENDED，并把实际做的时段写在这一行下面（⏱ 开头的子项）；又动了改回 DOING", "autoLogIdle", 5, 600);
-    new Setting(containerEl).setName("归档的会话记成 DONE").setDesc("在 Claude 桌面 app 里把一个会话归档，就当这件事做完了：它那一行改成 DONE，完成时刻取会话最后有动静的时候，前几天还挂着的行也一起补上。你自己改回 TODO / PAUSED 的行不动。app 里开了「自动归档」的话，归档不代表做完，把这一项关掉")
+    new Setting(containerEl).setName("归档的会话记成 DONE").setDesc("在 Claude 桌面 app 或 Codex 里把一个会话归档，就当这件事做完了：它那一行改成 DONE，完成时刻取会话最后有动静的时候，前几天还挂着的行也一起补上。你自己改回 TODO / PAUSED 的行不动。app 里开了「自动归档」的话，归档不代表做完，把这一项关掉")
       .addToggle((t) => t.setValue(s.autoLogArchiveDone !== false).onChange(async (v) => { s.autoLogArchiveDone = v; await this.plugin.saveData(s); }));
     text("本机提醒的提示音", "系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "notifySound");
     new Setting(containerEl).setName("每周方向回顾").setDesc("周日晚上 9 点以后发一条：这一周各个大方向花了多久、占多少、和上周比。装了 Telegram Companion 就用它的机器人发，没有就发 Discord")
       .addToggle((t) => t.setValue(s.weeklyDirs !== false).onChange(async (v) => { s.weeklyDirs = v; await this.plugin.saveData(s); }));
-    text("用哪个模型判断", "claude 命令行的 --model，比如 haiku、sonnet。只在出现新会话、或者会话停下来时问一次，一次很短", "autoLogModel");
+    new Setting(containerEl).setName("用哪个命令行判断").setDesc("给会话起名字、对上日记里的行、看有没有要你做的后续，要问一次模型。自动 = 本机有 claude 就用 claude，没有就用 codex；用的是命令行自己的登录。只在出现新会话、或者会话停下来时问一次，一次很短")
+      .addDropdown((d) => d.addOption("auto", "自动").addOption("claude", "claude（Claude Code）").addOption("codex", "codex（Codex CLI）").setValue(s.autoLogCli || "auto")
+        .onChange(async (v) => { s.autoLogCli = v; await this.plugin.saveData(s); }));
+    text("用 claude 判断时的模型", "claude 命令行的 --model，比如 haiku、sonnet", "autoLogModel");
     text("claude 命令路径", "本机 Claude Code 的命令行（要先登录过）", "claudePath");
+    text("用 codex 判断时的模型", "codex exec 的 -m；空着 = Codex 自己的默认模型", "autoLogCodexModel");
+    text("codex 命令路径", "本机 Codex 的命令行（要先登录过）。只写 codex 就到登录 shell 的 PATH 里找，找不到再填完整路径", "codexPath");
     new Setting(containerEl).setName("改了日记就告诉我").setDesc("每次整理把改了什么合成一条发出来（在做的、搁置的、归档后记成做完的、看着像做完了的、记了要你做的，各折成一组）")
       .addToggle((t) => t.setValue(s.autoLogNotify !== false).onChange(async (v) => { s.autoLogNotify = v; await this.plugin.saveData(s); }));
     containerEl.createEl("h3", { text: "硬规则（只管今天的日记）" });
@@ -3839,15 +3907,31 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.openTodayOnStartup !== false).onChange(async (v) => { s.openTodayOnStartup = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName("启动时左侧栏显示螺旋日程").setDesc("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）")
       .addToggle((t) => t.setValue(s.revealOnStartup !== false).onChange(async (v) => { s.revealOnStartup = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("显示人机协作").setDesc("读 Claude Code 的本地会话日志（~/.claude/projects），在容量条下面显示当天协作时长、token 产出，螺旋内圈画出 Claude 在干活的时段；汇总另存在插件目录的 ai-usage.json")
+    new Setting(containerEl).setName("显示人机协作").setDesc("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面显示当天协作时长、token 产出，螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json")
       .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
+    containerEl.createEl("h3", { text: "🤖 主力 AI 工具" });
+    containerEl.createEl("p", { cls: "setting-item-description", text: "平时主要用哪几个，就开哪几个。开着的才会读它的会话日志、画进螺旋、算 token、自动记进日记；关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。" });
+    {
+      const fs = require("fs"), path = require("path"), home = require("os").homedir();
+      const where = { claude: [".claude/projects", "Claude Code 和 Claude 桌面版里的 Code 会话"], codex: [".codex/sessions", "Codex 桌面版和 codex 命令行，时长和 token 都读"], workbuddy: [".workbuddy/projects", "WorkBuddy 桌面版"] };
+      for (const k of Object.keys(AI_AGENTS)) {
+        const [dir, what] = where[k];
+        const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
+        new Setting(containerEl).setName(AI_AGENTS[k]).setDesc(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`)
+          .addToggle((t) => t.setValue(aiOn(s).includes(k)).onChange(async (v) => {
+            s.aiAgents = { ...Object.fromEntries(Object.keys(AI_AGENTS).map((a) => [a, aiOn(s).includes(a)])), [k]: v };
+            await this.plugin.saveData(s);
+            this.plugin._ai = null;   // 换了要读的目录：把最近的日志重读一遍
+            this.plugin._aiAt = 0;
+            this.plugin.refresh();
+          }));
+      }
+    }
     new Setting(containerEl).setName("记录游戏时间").setDesc("每分钟看一眼在不在玩，螺旋最里面一圈画绿线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录")
       .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     text("游戏进程关键词", "进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "gameProcs");
     text("在最前面才算的 App", "这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "gameFrontApps");
-    new Setting(containerEl).setName("显示长期项目提醒").setDesc("在今天的列表底部显示「🧭 长期项目 · 该推一把」，数据和「长期项目」看板同一份（scripts/long-projects.js）")
-      .addToggle((t) => t.setValue(s.showProjects !== false).onChange(async (v) => { s.showProjects = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
   }
 }
 
-module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, fmtTok, unionMin };
+module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin };

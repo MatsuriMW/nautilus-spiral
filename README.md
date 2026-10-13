@@ -21,15 +21,16 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 - **Tracks actual time.** A task counts while it is `DOING` and stops when it becomes `DONE`, `PAUSED` or `TODO` again. Interrupted work becomes several spans. An "estimated vs actual" review shows how far off your estimates usually are.
 - **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
 - **macOS Calendar, read-only.** Calendar events can be laid onto the spiral as fixed events.
-- **Agent time.** Reads the local session logs of Claude Code, Codex and WorkBuddy and draws when each agent was working as thin inner rings, one colour per agent.
-- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `SUSPENDED` and the actual time spans are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app is taken as your explicit signal, and that line is marked `DONE`.
+- **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI) and WorkBuddy, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one produced. You pick which of the three you actually use.
+- **Active and passive recording, together.** You record on purpose: the plan, the estimates, the states you set by hand. The machine records in the background as your assistant: when each agent session was really moving, and for how long. Both end up in the same daily note and on the same spiral.
+- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `SUSPENDED` and the actual time spans are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app or in Codex is taken as your explicit signal, and that line is marked `DONE`.
 - **Weekly direction review.** Each session is filed under a broad direction; on Sunday night you get the week's split.
 
 ## Requirements
 
 - **Desktop only.** Developed and used on macOS. The spiral, planning and time tracking are plain Obsidian; calendar, dialogs, sounds, focus prompts and game tracking are macOS-only. Windows and Linux are untested.
 - **Daily notes written as lists**, one file per day. Folder and file name format are settings (defaults: `日记/`, `YYYY_MM_DD`).
-- Optional: Xcode Command Line Tools (for the calendar helper), Raycast (Focus), the `claude` CLI (co-writing).
+- Optional: Xcode Command Line Tools (for the calendar helper), Raycast (Focus), the `claude` or `codex` CLI (co-writing).
 
 ## Works with Telegram Companion
 
@@ -55,19 +56,33 @@ Nothing leaves your computer unless you turn on one of the optional features bel
 
 | What | When | Where it goes |
 |---|---|---|
-| Session titles, your last few prompts, the end of the last reply, and your open task lines | Only with "co-writing" on, when a new session appears or one goes idle | Your own `claude` CLI, i.e. Anthropic, under your Claude Code login. Runs of 12 or more digits are removed first |
+| Session titles, your last few prompts, the end of the last reply, and your open task lines | Only with "co-writing" on, when a new session appears or one goes idle | One local CLI under its own login: `claude` (Anthropic) if it is installed, otherwise `codex` (OpenAI). You can fix the choice in settings. Runs of 12 or more digits are removed first |
 | The weekly direction review (text); the spiral image when you ask for it from your phone | Only if Telegram Companion is installed and set up | Telegram Bot API, through your own bot. The bot token is read from Telegram Companion's settings and is not stored by this plugin |
 | Reminders, including task names | Only if you set a Discord channel | Your own local `notify-discord` script and the webhook it holds |
 
-Files read outside the vault, all read-only: `~/.claude/projects`, `~/.config/claude/projects`, `~/.codex/sessions`, `~/.workbuddy/projects` (agent session logs; turn the feature off in settings to stop). A daily summary is kept in the plugin folder as `ai-usage.json`.
+Files read outside the vault, all read-only, and only for the agents switched on under 「主力 AI 工具」 in settings: `~/.claude/projects`, `~/.config/claude/projects` and the Claude desktop app's `claude-code-sessions` folder (which sessions are archived); `~/.codex/sessions`, `~/.codex/archived_sessions` and `~/.codex/session_index.jsonl` (session titles); `~/.workbuddy/projects`. A daily summary is kept in the plugin folder as `ai-usage.json`.
 
 Files written outside the vault: `~/Library/Caches/nautilus-spiral/` (small Swift helpers compiled on first use, for the calendar and an experimental notification app).
 
-Local programs it starts: `osascript` (dialogs), `swiftc` and `codesign` (building the helpers), `afplay` (sounds), `open` (Raycast deeplinks and bringing Obsidian forward), `ps` and `sh` (game tracking), and `claude` when co-writing is on.
+Local programs it starts: `osascript` (dialogs), `swiftc` and `codesign` (building the helpers), `afplay` (sounds), `open` (Raycast deeplinks and bringing Obsidian forward), `ps` and `sh` (game tracking), and `claude` or `codex` when co-writing is on (plus your login shell once, to locate `codex` if it is not in a usual place).
+
+## Where the idea comes from
+
+The model is not mine. [Nautilus](https://github.com/tombarys/roam-depot-nautilus) was written for Roam Research by the Czech writer Tomáš Baránek. It reads the day's fixed events and each task's estimated duration, then fills the gaps between events with tasks in list order. As the "now" hand moves, everything unfinished moves back with it; a task that no longer fits before the next event jumps whole to the next free slot, and smaller tasks behind it move up to fill the hole. The rules are deterministic. No AI is involved in the planning.
+
+What makes it work is that every stretch of time gets something assigned to it. The budgeting app YNAB says "give every dollar a job"; [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), a rebuild of Nautilus for Roam, turned that into **"give every minute a job"**:
+
+- **Allocate first, spend second.** Putting a duration on each task spends the day as a budget. However much there is to do, it is arranged inside a budget you can see, and you know at once when you are over.
+- **Tasks come to you.** As time advances, whatever can be done next is pulled up to "now". You do not keep re-deciding what to do, or worrying that an interruption has wrecked the rest of the day: every task that has a budget finds a place on the spiral.
+- **Plan and record are two separate books.** Nautilus Log added an Org-mode-style logbook beside the plan. The spiral is an elastic forecast built from estimates; the logbook is the stricter evidence of where the time really went. They can be used together or apart.
+
+The thought underneath: time is a real river. You cannot hold it, but you can understand it, plan for it, and use it calmly.
+
+This plugin takes one more step along that line. Part of the "record" book is handed to the machine. You still record actively: the plan, the estimates, the states you change by hand. Meanwhile the agents you work with keep their own session logs, and the plugin reads those as a passive record: which minutes were really worked. Statuses and conclusions come from you; time spans and durations come from the machine, which stays an assistant: it never decides that something is done, and it leaves alone any line you have edited yourself.
 
 ## Credits
 
-The idea of a spiral day planner where events are fixed and tasks flow around them, "give every minute a job", comes from [Nautilus](https://github.com/tombarys/roam-depot-nautilus) for Roam Research by Tomáš Baránek, and from its descendants [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) and [Nautilus Log](https://github.com/404KSG/roam-nautilus-log). Obsidian already has two ports of that line: [Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) and [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger).
+[Nautilus](https://github.com/tombarys/roam-depot-nautilus) by Tomáš Baránek, and its descendants [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) and [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), for the spiral day planner and "give every minute a job". The time-budget idea goes back to the [YNAB Method](https://www.ynab.com/the-four-rules/); this plugin is not affiliated with YNAB. Obsidian already has two ports of the Nautilus line: [Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) and [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger).
 
 This plugin shares the idea, not the code. It was written separately for a different workflow: the daily note itself is the data source, written as a plain list with Logseq-style task keywords, and agent session logs are used as evidence of what actually happened.
 
@@ -101,6 +116,27 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 - **预计**是弹性推演：按你写的时长往前排，随时间重算，用来回答「今天还排得下吗、接下来做什么」。
 - **实际**是事后的实证：任务改成 DOING 的那一刻开始计时，改回来或做完时停止，中断再继续就记成好几段。做完的任务按实际做的时段画在螺旋上，和当初的预计放在一起，一天下来哪件事估短了、哪段时间被打断了，都能看到。
 
+「实际」这本账由谁来记，是螺旋日程自己往前做的一步：**人主动记，机器辅助着被动记，两种记录合在一起。**
+
+- **主动记录**是你有意写下的：计划、预计时长、手动改的 DOING / DONE、开的每一轮专注。它带着你的意图和判断，缺点是人会忘，忙起来也懒得记。
+- **被动记录**是机器在旁边替你留的：Claude、Codex、WorkBuddy 的会话日志本来就记着每一刻在不在干活，插件把它读出来画进螺旋，也可以写回日记（见「🤖 自动记日记」）。它不会漏，缺点是不知道这件事对你来说算不算做完。
+
+所以两边各管各擅长的：状态和结论听人的，时段和用时交给机器。机器只做辅助，它不替你判断 DONE，你手动改过的行它也不再动。
+
+## 灵感来源
+
+这套模型不是原创。源头是捷克作家 Tomáš Baránek 给 Roam Research 写的 [Nautilus](https://github.com/tombarys/roam-depot-nautilus)（鹦鹉螺）：先读出当天定死的事件和每件任务的预计时长，再让任务按列表顺序填进事件之间的空档。「现在」的指针往后走，没做完的任务跟着整体后退；碰上固定事件放不下，就整块跳到下一个空档，后面放得下的任务自动往前补位。整套规则是确定的，排程这件事不需要 AI。
+
+它有力量的地方，在于让每一段时间都有了着落。记账软件 YNAB 的口号是 Give every dollar a job，[Nautilus Log](https://github.com/404KSG/roam-nautilus-log)（在 Roam 上对 Nautilus 的一次重构）把它改成了 **Give every minute a job**：
+
+- **先分配，再花。** 给每件事报一个时长，等于把今天的时间当成预算分出去。事情再多，也是在一笔看得见的预算里安排，超支了当场知道。
+- **任务自己走到你面前。** 时间往前推，能做的任务被自动拉到「现在」跟前。你不用反复判断这会儿该做哪件，也不用担心临时插进来的事打乱后面的节奏，分配过预算的任务都会在螺旋上找到自己的位置。
+- **预计和实际是两本账。** Nautilus Log 在规划之外加了 Org mode 式的 Logbook：螺旋是按预计时长做的弹性推演，Logbook 是对实际用时更严格的实证，两者可以并存，也可以只用一个。
+
+背后的想法是：时间是一条真实流动的河。留不住它，但可以理解它、规划它、从容地用它。
+
+螺旋日程沿着这条线又走了一步：把「实际」那本账的一部分交给机器来记（上一节说的主动记录和被动记录），数据源也从专门的组件换成了日记本身。和这几个项目的关系、代码上的区别，见英文部分的 Credits。
+
 ## 从零配置
 
 这个插件是从作者自己的工作流里长出来的，功能多，但大部分是可选的。先把第一层配好就能用，其余的用到哪个开哪个。
@@ -127,13 +163,12 @@ https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
 |---|---|---|---|
 | 把 macOS 日历的事件排进来 | Xcode 命令行工具（`xcode-select --install`）；第一次用时允许 Obsidian 访问日历 | 「读 macOS 日历」 | 关 |
 | ▶ 开始做时顺带开 Raycast Focus | Raycast | 「同时开 Raycast 专注」 | 开 |
-| 螺旋内圈画出 Agent 干活的时段 | 本机用过 Claude Code、Codex 或 WorkBuddy（读它们留在本机的会话日志） | 「显示人机协作」 | 开 |
-| 自动把 Agent 会话记进日记 | 装了 `claude` 命令行并登录过；路径不是 `~/.local/bin/claude` 的话在设置里改。建议同时装 Done To Top，新写的行才会进对应的分区 | 「🤖 自动记日记」 | 关 |
+| 螺旋内圈画出 Agent 干活的时段和 token | 本机用过 Claude Code、Codex 或 WorkBuddy（读它们留在本机的会话日志）。在「🤖 主力 AI 工具」里选你平时用的那几个，没用过的开着也不碍事 | 「显示人机协作」 | 开，三个都开 |
+| 自动把 Agent 会话记进日记 | 装了 `claude` 或 `codex` 命令行并登录过，用来给会话起名字、判断有没有后续：有 claude 就用 claude，没有就用 codex，也可以在设置里指定。建议同时装 Done To Top，新写的行才会进对应的分区 | 「🤖 自动记日记」 | 关 |
 | 每周方向回顾 | 先开「自动记日记」；发到手机要装 Telegram Companion，或者配了 Discord | 「每周方向回顾」 | 开 |
 | 提醒发到 Discord | 你自己有一个发 Discord 的命令行脚本，放在 `~/.local/bin/notify-discord`，调用方式是 `notify-discord --as <显示名> <频道> <内容>` | 「提醒发到 Discord 的哪个频道」 | 空 |
 | 手机上看螺旋、记作息、勾任务 | Telegram Companion，见下面「和 Telegram Companion 联动」 | 不用开，两个插件都启用就行 | — |
 | 记录游戏时间 | macOS；在设置里填你玩的游戏的进程关键词 | 「记录游戏时间」 | 开 |
-| 🧭 长期项目提醒 | 库里有 `scripts/long-projects.js`。这是作者自己库里的脚本，仓库里没有，一般人用不上 | 「显示长期项目提醒」 | 开，没有脚本时不显示 |
 
 macOS 以外的系统只有第一层和「人机协作」能用；日历、对话框、提示音、专注提醒和游戏时间都依赖 macOS。
 
@@ -303,22 +338,22 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 
 ## 🤖 自动记日记：人机共写
 
-你在日记里写任务，是预计；Agent 的会话日志是自己会写的实际记录。打开设置里的「自动把 Agent 会话记进今天的日记」之后，插件每隔一阵（默认 20 分钟）看一眼今天的 Claude / Codex / WorkBuddy 会话，替你把状态和用时补上：
+你在日记里写任务，是预计；Agent 的会话日志是自己会写的实际记录。这就是上面说的被动记录写回日记的那一步。打开设置里的「自动把 Agent 会话记进今天的日记」之后，插件每隔一阵（默认 20 分钟）看一眼今天的 Claude / Codex / WorkBuddy 会话（只看「🤖 主力 AI 工具」里开着的），替你把状态和用时补上：
 
 | 会话的情况 | 日记里怎么改 |
 |---|---|
 | 在动 | 那一行改成 `DOING`；日记里没有对应的行，就新写一行 `- DOING 00:45 🤖 优化螺旋日程的配色` |
 | 40 分钟没动静 | 改成 `SUSPENDED`，并把实际做的时段写在这一行下面：`- ⏱ 00:45–01:20、04:02–04:24 · 共 52m · Claude` |
 | 又动了 | 改回 `DOING` |
-| 你在 Claude 桌面 app 里把会话归档了 | 改成 `DONE 19:20 …`（时刻是会话最后有动静的时候），实际时段照样写在下面 |
+| 你在 Claude 桌面 app 或 Codex 里把会话归档了 | 改成 `DONE 19:20 …`（时刻是会话最后有动静的时候），实际时段照样写在下面 |
 | 回复里明说要你去做的事 | 另记一条 `- TODO 🤖 …`，一个会话最多一条 |
 
 - **机器不自己判断 DONE**。它只在 DOING 和 SUSPENDED 之间来回切，这两个状态可逆、不丢时间。它觉得某件事看着像是整个做完了，只在提醒里说一声，DONE 由你自己改；你改成 DONE 之后，它把完整的时段补在下面，这一行就到此为止。
-- **归档算你说的做完了**。在 Claude 桌面 app 里把一个会话归档，它那一行就记成 DONE，前几天记下、还挂着的行也在当天的日记里补上。你自己改回 TODO / PAUSED 的行不动。归档只是 app 给会话打的标记，会话记录还在，用时照常统计。app 里开了「自动归档」的话，归档不代表做完，在设置里关掉「归档的会话记成 DONE」。只认 Claude 桌面 app 的归档，终端里的 Claude Code、Codex 和 WorkBuddy 没有这个信号。
-- **名字和方向谁来定**：出现新会话、或者某个会话刚停下来时，插件调一次本机的 `claude -p --model haiku`，把会话标题、你说的最后几句、最后一条回复的结尾和日记里没做完的任务行发给它，让它起一个短名字、看它对上日记里哪一行、归到哪个大方向。走的是命令行自己的登录，不留会话记录。一长串数字（卡号之类）会先抹掉。
+- **归档算你说的做完了**。在 Claude 桌面 app 或 Codex 里把一个会话归档，它那一行就记成 DONE，前几天记下、还挂着的行也在当天的日记里补上。你自己改回 TODO / PAUSED 的行不动。归档只是 app 给会话打的标记，会话记录还在，用时照常统计。app 里开了「自动归档」的话，归档不代表做完，在设置里关掉「归档的会话记成 DONE」。认的是 Claude 桌面 app 和 Codex 的归档（Codex 归档时会把会话文件挪进 `~/.codex/archived_sessions`），终端里的 Claude Code 和 WorkBuddy 没有这个信号。
+- **名字和方向谁来定**：出现新会话、或者某个会话刚停下来时，插件调一次本机的命令行，把会话标题、你说的最后几句、最后一条回复的结尾和日记里没做完的任务行发给它，让它起一个短名字、看它对上日记里哪一行、归到哪个大方向。本机有 `claude` 就用 `claude -p --model haiku`，没有就用 `codex exec`，设置里的「用哪个命令行判断」可以指定。走的是命令行自己的登录，不留会话记录。一长串数字（卡号之类）会先抹掉。
 - **接在你写的行上**：会话做的事如果就是日记里已有的某一行，就改那一行，不另写。两条限制：留给你本人做的事（看一眼、拍板、自己跑命令）不会被接上；第一次见到就已经停了的会话不去碰你写的 TODO。
 - **你改的算数**：你手动把它停下，要等会话有了新动静才改回 DOING；你手动改成 DOING，两小时内不会因为会话没动就被搁置。删掉或者改了名字的行，之后不再管。
-- **用时怎么算**：按会话真正在动的时段算，螺旋、列表、长期项目和「预估 vs 实际」都照常统计。自动管着的行不走「改成 DOING 就开始计时」那一套，也不受 DOING 上限、超时暂停和吃饭暂停管。`⏱` 开头的子项是记录，解析日记时会跳过，不会被当成事件。
+- **用时怎么算**：按会话真正在动的时段算，螺旋、列表和「预估 vs 实际」都照常统计。自动管着的行不走「改成 DOING 就开始计时」那一套，也不受 DOING 上限、超时暂停和吃饭暂停管。`⏱` 开头的子项是记录，解析日记时会跳过，不会被当成事件。
 - **改了什么会告诉你**：每次整理合成一条提醒，同一类的折在一起（在做的、搁置的、归档后记成做完的、看着像做完了的、记了要你做的）。
 - 只管得到经过这几个 Agent 做的事。不经过它们做的任务照旧按你自己改的状态和下面的暂停规则走。
 - 命令「现在把 Agent 会话整理进今天的日记」可以手动跑一次。打开开关之前就停了的会话不补记。
@@ -356,15 +391,15 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 
 只算这样的任务：做完了，写了预估时长，也记到了实际用时。实际用时来自 `DONE 开始-结束`，或者 DOING 时插件记下的那几段。用 ▶ / ⌘⇧↵ 开始、回答「做完了」的任务，天然满足这几条。`DONE 18:02 写稿 2h` 这种只写了做了多久的不算，因为那个 2h 是实际，不是预估。计时记录保留 45 天，所以最多看 45 天。
 
-## 🤖 做这件事时 Claude 在干什么
+## 🤖 做这件事时 Agent 在干什么
 
-一件任务做过的那几段时间里，有哪些 Claude Code 会话在干活，就在列表那一行后面显示 🤖2，螺旋上悬停那一段也能看到。
+一件任务做过的那几段时间里，有哪些 Agent 会话在干活，就在列表那一行后面显示 🤖2，螺旋上悬停那一段也能看到。
 
 - **只看时间会把同时开着的无关会话也算进来**，所以还会看内容：会话标题，或者你在会话里发的话，出现了任务名里的词，就算「看起来相关」。🤖 后面的数字是相关的个数。只有时间重叠、看不出相关的，🤖 是淡的。
 - **点 🤖** 打开列表，按「看起来相关」和「同一时段的其它会话」分开，显示每个会话的标题、你发的第一句话、工作目录、和这件任务重叠多久、产出多少 token。
-- **回到那个会话**：Claude 桌面版里开的会话，「在 Claude 里打开」用 `claude://resume?session=…` 直接打开；终端里开的会话，「在终端里继续」在它的工作目录里运行 `claude --resume …`；也可以复制命令自己跑。
+- **回到那个会话**：Claude 桌面版里开的会话，「在 Claude 里打开」用 `claude://resume?session=…` 直接打开；终端里开的会话，「在终端里继续」在它的工作目录里运行 `claude --resume …`；Codex 的会话同样有「在终端里继续」，运行的是 `codex resume …`；也可以复制命令自己跑。WorkBuddy 的会话只列出来，要回它自己的窗口里找。
 
-数据来自人机协作那一块读的 Claude Code 本地会话日志，几条线并行时，同一个会话可能同时挂在几件任务上。
+数据来自人机协作那一块读的本地会话日志，几条线并行时，同一个会话可能同时挂在几件任务上。
 
 ## 📅 macOS 日历
 
@@ -403,10 +438,14 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 
 这几个模块都可以在设置里关掉：
 
-- **🤖 人机协作**：读 Claude Code 的本地会话日志（`~/.claude/projects`），在容量条下面显示当天和 Claude 协作了多久、产出多少 token，螺旋内圈用细线画出 Agent 在干活的时段，列表底部按项目分开并给出近 7 天的柱状图。除了 Claude，也读 Codex（`~/.codex/sessions`）和 WorkBuddy（`~/.workbuddy/projects`）的日志：一个 Agent 一圈、一种颜色，Claude 橙、Codex 淡蓝、WorkBuddy 青绿，列表里的 token 数和柱状图也按这个颜色分。汇总另存在插件目录的 `ai-usage.json`，Claude Code 清掉旧日志后历史还在。
+- **🤖 人机协作**：读 Agent 留在本机的会话日志，在容量条下面显示当天协作了多久、产出多少 token，螺旋内圈用细线画出 Agent 在干活的时段，列表底部按项目分开并给出近 7 天的柱状图。支持三个，在设置的「🤖 主力 AI 工具」里选你平时用的：
+  - **Claude**（`~/.claude/projects`）：Claude Code，以及 Claude 桌面版里的 Code 会话。
+  - **Codex**（`~/.codex/sessions`）：桌面版和 `codex` 命令行都算。token 取的是 Codex 自己记的累计用量，和它界面上的数对得上；会话标题读 `session_index.jsonl`；归档的会话接着读 `archived_sessions`；自动审查这类子线程的时间和 token 记在主会话名下，不单算一个会话。
+  - **WorkBuddy**（`~/.workbuddy/projects`）：桌面版。
+
+  一个 Agent 一圈、一种颜色，Claude 橙、Codex 淡蓝、WorkBuddy 青绿，列表里的 token 数和柱状图也按这个颜色分。关掉的那个不再读，已经汇总进来的历史留着但不显示，重新打开就回来。汇总另存在插件目录的 `ai-usage.json`，Claude Code 清掉旧日志后历史还在。
 - **🃏 复习卡片**：第二大脑的每日回顾会在日记里记「DONE 14:10-14:12 复习卡片 23 张（…）」（每张按 5 秒算），螺旋上这一段画成青色，列表里那一行左边也是青色，顶部汇总当天「🃏 复习 N 张 · 用时」。
 - **🎮 游戏时间**：每分钟看一眼有没有在玩（进程关键词和「在最前面才算」的 App 都可以设置），螺旋最里一圈画紫线，记在 `game-log.json`。只在 Obsidian 开着时记录。
-- **🧭 长期项目**：列表底部显示「该推一把」的长期项目（逾期、快到期、很久没动），点 ＋ 在今天的日记里加一条带项目链接的 TODO。依赖库里的 `scripts/long-projects.js`，没有这个文件就不显示。
 
 ## 设置
 
@@ -432,14 +471,16 @@ macOS 以外的系统只有第一层和「人机协作」能用；日历、对�
 | 预估 vs 实际 / 复盘看最近几天 | 开 / 30 | 见「📏 预估 vs 实际」 |
 | 启动时打开今天的日记 | 开 | 按日期分界算「今天」，没有这篇就新建 |
 | 启动时左侧栏显示螺旋日程 | 开 | |
-| 显示人机协作 / 记录游戏时间 / 显示长期项目提醒 | 开 | 见上一节 |
+| 显示人机协作 / 记录游戏时间 | 开 | 见上一节 |
+| 主力 AI 工具 | Claude、Codex、WorkBuddy 都开 | 开着的才读它的会话日志、画进螺旋、算 token、自动记进日记 |
 | 开一轮专注时的大方向 | 🧩 工具, 🎬 创作, 💼 工作 | 逗号分隔，最多 4 个，开头可以带一个表情 |
 | 到点怎么问 | 系统对话框 | 另有试验选项「带按钮的系统通知」 |
 | 本机提醒的提示音 | Pop | 系统声音的名字或声音文件路径，空着不响 |
 | 多久没动算停了 | 40 分钟 | 自动记日记把 DOING 改成 SUSPENDED 的门槛 |
 | 每周方向回顾 | 开 | 周日晚上发到 Telegram 或 Discord |
 | 提醒发到 Discord 的哪个频道 | 空 | 填了就把不用回答的提醒发到那个频道，见「提醒发到 Discord」 |
-| 自动把 Agent 会话记进今天的日记 | 关 | 见「🤖 自动记日记」；间隔默认 20 分钟，模型默认 haiku |
+| 自动把 Agent 会话记进今天的日记 | 关 | 见「🤖 自动记日记」；间隔默认 20 分钟 |
+| 用哪个命令行判断 | 自动 | 有 `claude` 用 claude（模型默认 haiku），没有就用 `codex`（模型默认用 Codex 自己的）；两边的路径和模型都可以改 |
 
 ## 和 Telegram Companion 联动
 
@@ -474,8 +515,8 @@ Telegram Companion 只在桌面端跑，电脑上的 Obsidian 得开着，手机
 | 快捷键 | 做什么 |
 |---|---|
 | ⌃⌥S | 快捷面板：螺旋日程的所有操作 |
-| ⌃⌥V | 现在怎样：这一轮专注每条线还剩多久、吃饭 / 锻炼中、在做的和暂停的、容量、接下来、今天做完几件和 Claude 协作多久 |
-| ⌃⌥C | 正在做的事的 Claude 会话：每件 DOING（和这一轮专注里的）期间看起来相关的会话；只是时间重叠的收在「同一时段的其它会话」里；最后是现在还在跑、没对上哪件的会话。每个都能一键在 Claude 里打开 |
+| ⌃⌥V | 现在怎样：这一轮专注每条线还剩多久、吃饭 / 锻炼中、在做的和暂停的、容量、接下来、今天做完几件和 Agent 协作多久 |
+| ⌃⌥C | 正在做的事的 Agent 会话：每件 DOING（和这一轮专注里的）期间看起来相关的会话；只是时间重叠的收在「同一时段的其它会话」里；最后是现在还在跑、没对上哪件的会话。Claude 和 Codex 的会话能一键回去 |
 | ⇧⌘↵ | 开始光标所在的任务（改成 DOING + 专注） |
 | ⌃⌥N | 开始下一件 |
 | ⌃⌥F | 开一轮专注（选一个大方向） |
