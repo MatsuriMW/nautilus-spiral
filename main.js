@@ -23,6 +23,10 @@ const DEFAULTS = {
   pomoMinutes: 45,        // 一件事连着做了这么久，状态栏的计时变红（只提示，不打断）。0 = 不提示
   forgottenMinutes: 120,  // 计时开了这么久，状态栏提醒「检查计时」（不替你停）。0 = 不提醒
   clockToNote: false,     // 你手动做的时段也写回日记：任务不再是 DOING 时，在它下面写一行「⏱ 实际时段」
+  lineProgress: true,     // 编辑器里 DOING 的那一行下面显示一行字符进度条（你写的进度 / 监听到的 Agent 会话 / 按预估时长）
+  agentStatus: true,      // 状态栏多一格：挂在大纲上的 Agent 会话几个在跑、几个在等你，点一下跳到等你的那一行
+  resultBack: true,       // 绑着会话的任务（下面有「🔗」行的）：会话答完一轮或者归档了，把它最后说的话写成任务下面的一行「💬」
+  resultMax: 200,         // 「💬」行最多写多少个字，多的截掉
   uiSound: true,          // 界面上的小音效：开始做、做完、停下、回放起止各一声很轻的合成音（Obsidian 不在最前面时不响）
   workLog: {},          // { "2026_09_30": { "任务文字": [[开始, 结束 | null]] } }：任务每一段「进行中」的时间（null = 还在做），中断再续就是好几段
   dayBounds: {},        // { "2026_09_30": { start: 610, end: 1650 } }：在螺旋上拖出来的这天实际开始 / 结束时间（分钟，凌晨 > 1440）
@@ -158,7 +162,110 @@ function cleanLabel(s) {
     .trim();
 }
 
-// 任务下面那一行「⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · Claude」读回来：
+// 任务下面的「🔗」行：这件任务绑在哪个 Agent 会话上。绑定写在日记正文里，这一块挪到哪、发到哪天、改了字都还认；想解除就把这一行删掉。
+//   Claude 的写成链接「- 🔗 [Claude：会话标题](claude://resume?session=会话号)」，点了在 Claude 桌面版里打开那个会话；
+//   别的 Agent 没有这种链接，会话号写在反引号里「- 🔗 Codex：会话标题 `会话号`」
+const LINK_LINE_RE = /^\s*[-*+]\s+🔗/;
+const SID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+const claudeLink = (sid) => `claude://resume?session=${sid}`;
+function linkLine(indent, agent, title, sid) {
+  const name = String(title || "").replace(/[\[\]()`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || "会话";
+  return agent === "claude" ? `${indent}- 🔗 [Claude：${name}](${claudeLink(sid)})` : `${indent}- 🔗 ${agent === "codex" ? "Codex" : agent === "workbuddy" ? "WorkBuddy" : agent}：${name} \`${sid}\``;
+}
+// 读一行「🔗」：{ sid, agent }，不是就返回 null
+function parseLink(line) {
+  if (!LINK_LINE_RE.test(line)) return null;
+  const m = SID_RE.exec(line);
+  if (!m) return null;
+  return { sid: m[0], agent: /🔗\s*\[?\s*Codex/i.test(line) ? "codex" : /🔗\s*\[?\s*WorkBuddy/i.test(line) ? "workbuddy" : "claude" };
+}
+// 第 n 行那一项的直接子项（和它第一个子项同一层缩进的）里，第一个让 pick 返回东西的那一行：{ line, ...pick 返回的 }，没有返回 null
+function childMark(lines, n, pick) {
+  const width = (l) => /^\s*/.exec(l)[0].replace(/\t/g, "    ").length;
+  const base = width(lines[n]);
+  let child = -1;
+  for (let i = n + 1; i < lines.length && i <= n + 40; i++) {
+    if (!lines[i].trim()) continue;
+    const w = width(lines[i]);
+    if (w <= base) break;
+    if (child < 0) child = w;
+    if (w !== child) continue;
+    const l = pick(lines[i]);
+    if (l) return { line: i, ...l };
+  }
+  return null;
+}
+// 第 n 行那一项自己的「🔗」行：只认它的直接子项，子任务下面的 🔗 是子任务的。返回 { line, sid, agent } 或 null
+function linkUnder(lines, n) {
+  return childMark(lines, n, parseLink);
+}
+// 第 i 行（一行记号）挂在哪一项下面：往上找缩进更浅的第一个列表项，返回行号，没有返回 -1
+function markOwner(lines, i) {
+  const width = (l) => /^\s*/.exec(l)[0].replace(/\t/g, "    ").length;
+  const ind = width(lines[i]);
+  for (let j = i - 1; j >= 0; j--) if (lines[j].trim() && LIST_RE.test(lines[j]) && width(lines[j]) < ind) return j;
+  return -1;
+}
+
+// 任务下面的「💬」行：绑着的那个会话最后说的话——做完时的结论，或者它停下来等你回答的那一句。机器写的，会话每答完一轮换成新的一句。
+// 和 🔗 / ⏱ 一样是记号行：解析日记、状态音效都跳过它，发给 Agent 的话里也不带它。你自己想留话，别用 💬 开头
+const RESULT_LINE_RE = /^\s*[-*+]\s+💬/;
+// 正在做的任务行：DOING / NOW / IN-PROGRESS 或者 [/]
+const DOING_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?(?:\[\/\]\s|(?:DOING|NOW|IN-PROGRESS)(?=\s|$))/;
+// 会话的一条回复压成一行能放进日记的字：代码块不要，标题、列表符号、引用符号去掉，连成一行；
+// 会在库里生出东西的写法（#标签、[[双链]]、==高亮==、%%注释%%、$公式$、HTML 标签）都转义掉；太长就在句子结尾处截断
+function resultText(raw, max = 200) {
+  let t = String(raw || "")
+    .replace(/```[\s\S]*?(?:```|$)/g, " ")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/^\s*\|?[\s:|-]{3,}\|?\s*$/gm, " ")
+    .replace(/\d{12,}/g, "…")
+    .replace(/\s+/g, " ").trim();
+  const cap = Math.max(40, +max || 200);
+  if ([...t].length > cap) {
+    const cut = [...t].slice(0, cap).join("");
+    const stop = Math.max(...["。", "！", "？", "；", ". ", "! ", "? "].map((c) => cut.lastIndexOf(c)));
+    t = (stop > cap * 0.5 ? cut.slice(0, stop + 1) : cut).trim() + "…";
+  }
+  return t.replace(/\[\[/g, "\\[\\[").replace(/(^|[^\w&\\])#(?=[^\s#])/g, "$1\\#").replace(/==/g, "\\=\\=").replace(/%%/g, "\\%\\%").replace(/\$/g, "\\$").replace(/</g, "\\<").replace(/\s\^(?=[A-Za-z0-9-]+$)/, " \\^");
+}
+function resultUnder(lines, n) {
+  return childMark(lines, n, (l) => (RESULT_LINE_RE.test(l) ? {} : null));
+}
+// 把会话 sid 最后说的话写到它绑着的那件任务下面：已经有「💬」行就换掉，没有就接在「🔗」行后面。
+// 这篇文字里没有这个会话的「🔗」行、或者写的和原来一样，原样返回
+function resultInto(text, sid, said) {
+  if (!said || !text.includes(sid)) return text;
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => { const k = parseLink(l); return k && k.sid === sid; });
+  const n = at < 0 ? -1 : markOwner(lines, at);
+  if (n < 0) return text;
+  const line = `${/^\s*/.exec(lines[at])[0]}- 💬 ${said}`;
+  const had = resultUnder(lines, n);
+  if (had) { if (lines[had.line] === line) return text; lines[had.line] = line; }
+  else lines.splice(at + 1, 0, line);
+  return lines.join("\n");
+}
+// 一篇日记里所有的「🔗」行：Map(会话号 → 它挂在哪件任务上（任务名）)
+function linkMap(text, cfg) {
+  const lines = text.split("\n"), out = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const l = parseLink(lines[i]);
+    if (!l) continue;
+    const ind = /^\s*/.exec(lines[i])[0].replace(/\t/g, "    ").length;
+    for (let j = i - 1; j >= 0; j--) {
+      if (!lines[j].trim() || !LIST_RE.test(lines[j]) || /^\s*/.exec(lines[j])[0].replace(/\t/g, "    ").length >= ind) continue;
+      const it = parseJournal(lines[j].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task");
+      if (it) out.set(l.sid, workKey(it.label));
+      break;
+    }
+  }
+  return out;
+}
+
+// 任务下面那一行「⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · 48k tok · Claude」读回来（最后的 Claude 可以是指向那个会话的链接）：
 //   { segs: [[开始, 结束]…], total: 合计分钟（没写就是 null）, who: 谁记的（"Claude" / "Claude / Codex"，你自己做的没有）, partial: 段数太多只写了后面几段 }
 // 机器写的是上面这个样子；你自己改、自己写的也认：时段之间用顿号、逗号、分号、空格都行，起止之间用 – - ~ 到 都行，合计写「共 57m」「共 1小时21分」都行
 function parseClock(s, cfg) {
@@ -172,10 +279,14 @@ function parseClock(s, cfg) {
   if (!segs.length) return null;
   const tm = /共\s*(?:(\d+)\s*(?:h|小时))?\s*(?:(\d+)\s*(?:m|min|分钟?))?/.exec(s);
   const total = tm && (tm[1] || tm[2]) ? (+tm[1] || 0) * 60 + (+tm[2] || 0) : null;
-  // 最后一个「·」后面要是没有数字，就是谁记的
-  const tail = s.split(/\s[·•]\s/).pop().trim();
+  // 最后一个「·」后面要是没有数字，就是谁记的。写成链接的（[Claude](claude://resume?session=…)）取链接上的字，会话号另外拿出来
+  const sm = /\]\([^)]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[^)]*\)/.exec(s);
+  const tail = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").split(/\s[·•]\s/).pop().trim();
   const who = /\d/.test(tail) || tail.startsWith("⏱") ? "" : tail;
-  return { segs: unionSegs(segs), total, who, partial: /^⏱\uFE0F?\s*…/.test(s) };
+  // 「· 48k tok」：这几段里 Agent 用掉的 token（产出 + 读入），机器写的
+  const km = /([\d.]+)\s*([kKmM]?)\s*tok\b/.exec(s);
+  const tok = km ? Math.round(+km[1] * ({ k: 1e3, m: 1e6 }[km[2].toLowerCase()] || 1)) : null;
+  return { segs: unionSegs(segs), total, who, tok, sid: sm ? sm[1] : "", partial: /^⏱\uFE0F?\s*…/.test(s) };
 }
 
 function parseJournal(content, cfg) {
@@ -189,6 +300,7 @@ function parseJournal(content, cfg) {
     const lm = LIST_RE.exec(raw);
     if (!lm) return;
     let s = lm[2];
+    if (s.startsWith("🔗") || s.startsWith("💬")) return;   // 任务下面的「🔗 绑定的会话」「💬 会话最后说的话」是记号，不是事件也不是任务（里面带着时间也不算）
     if (s.startsWith("⏱")) {
       // 任务下面的「⏱ 实际时段」是记录，不是事件也不是任务。读出来挂到它上面那件任务上（往上找缩进更浅的第一行）
       const c = parseClock(s, cfg), ind = lm[1].replace(/\t/g, "    ").length;
@@ -432,14 +544,15 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
 }
 
 // ---------------- 界面上的小音效 ----------------
-// 现合成的短音，不带声音文件。type = 波形，notes = [频率, 响多久]，一个接一个响。
+// 现合成的短音，不带声音文件。type = 波形，notes = [频率, 响多久]，一个接一个响；attack = 每个音淡入多久（秒，越长越柔）。
+// 这些音一天要听很多遍：音量压低，最常听的 DONE 不往高处、亮处走。
 // 任务状态各有各的声音，分两种情绪：
-//   往前走的（TODO / DOING / DONE）：正弦、三角波，音往上走，越往后越亮；
+//   往前走的（TODO / DOING / DONE）：正弦、三角波，音往上走；DONE 落在主音上，低一点、软一点；
 //   停下来的、没成的（PAUSED / WAITING / SUSPENDED / CANCELLED / FAILED）：音往下落，越往后越低，波形也越糙（方波、锯齿波）。
 const SOUNDS = {
   TODO:      { type: "triangle", notes: [[523, 0.09]] },                              // 记下一件：干净的一声
   DOING:     { type: "sine",     notes: [[523, 0.08], [784, 0.13]] },                 // 开始做：往上跳五度
-  DONE:      { type: "sine",     notes: [[659, 0.08], [880, 0.08], [1175, 0.20]] },   // 做完：三个上行的音，最后一个拖长
+  DONE:      { type: "sine",     notes: [[392, 0.09], [523, 0.22]], vol: 0.85, attack: 0.03 },   // 做完：轻轻往上落到主音（sol → do），起音慢一点，不刺耳
   PAUSED:    { type: "sine",     notes: [[587, 0.08], [494, 0.14]], vol: 0.8 },       // 停一下：轻轻落一步，还会回来
   WAITING:   { type: "sine",     notes: [[494, 0.09], [494, 0.12]], vol: 0.8 },       // 等别人：同一个音敲两下，悬着
   SUSPENDED: { type: "sine",     notes: [[392, 0.10], [294, 0.18]], vol: 0.8 },       // 搁置：往下落四度
@@ -451,7 +564,7 @@ const SOUNDS = {
   stop:      { type: "sine",     notes: [[784, 0.08], [523, 0.20]] },                 // 回放结束，回到现在
   log:       { type: "sine",     notes: [[523, 0.06], [659, 0.06], [784, 0.14]], vol: 0.8 },   // 把会话整理进日记了
 };
-const SOUND_VOLUME = 0.16;
+const SOUND_VOLUME = 0.10;
 let audioCtx = null;
 function blip(name) {
   const spec = SOUNDS[name];
@@ -459,7 +572,7 @@ function blip(name) {
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;
-    audioCtx ||= new Ctx();
+    audioCtx ||= new Ctx({ latencyHint: "interactive" });
     if (audioCtx.state === "suspended") audioCtx.resume();
     let t = audioCtx.currentTime + 0.005;
     const vol = SOUND_VOLUME * (spec.vol ?? 1);
@@ -468,7 +581,7 @@ function blip(name) {
       osc.type = spec.type;
       osc.frequency.setValueAtTime(freq, t);
       gain.gain.setValueAtTime(0.0001, t);                       // 淡入淡出，不然开头结尾会「啪」一下
-      gain.gain.linearRampToValueAtTime(vol, t + 0.012);
+      gain.gain.linearRampToValueAtTime(vol, t + (spec.attack ?? 0.012));
       gain.gain.exponentialRampToValueAtTime(0.0001, t + len);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
@@ -482,24 +595,42 @@ function blip(name) {
 // 任务状态一变就响一声，不管是谁改的（TODOseq 里点关键词、⌘/、看板、手敲）：只看那一行的关键词从什么变成了什么。
 // kwSnapshot：一篇笔记里每一行的状态，Map(去掉关键词和时间以后的正文 → 关键词)，没有关键词的行是 ""；同样的正文出现两次分不清是哪一行，记成 null 不管
 const KW_SOUND = { TODO: "TODO", LATER: "TODO", DOING: "DOING", NOW: "DOING", "IN-PROGRESS": "DOING", DONE: "DONE", PAUSED: "PAUSED", WAITING: "WAITING", WAIT: "WAITING", SUSPENDED: "SUSPENDED", CANCELED: "CANCELLED", CANCELLED: "CANCELLED", FAILED: "FAILED" };
+// kwLine：一行的状态 { kw, body }；空行、只有关键词没有正文的行、⏱ / 🔗 / 💬 记号行返回 null
+function kwLine(raw) {
+  let s = raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s+/, "").replace(STAMP_RE, "");
+  let kw = "";
+  const cb = CHECKBOX_RE.exec(s);
+  if (cb) { kw = cb[1] === " " ? "TODO" : cb[1] === "/" ? "DOING" : cb[1] === "-" ? "CANCELLED" : "DONE"; s = s.slice(cb[0].length); }
+  const m = /^(TODO|DOING|LATER|NOW|PAUSED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)(?=\s|$)\s*/.exec(s);
+  if (m) { kw = m[1]; s = s.slice(m[0].length); }
+  // 关键词后面跟着的时刻 / 时间段是记录，会跟着状态一起变，不算正文
+  s = s.replace(/^\d{1,2}[:：]\d{2}(?:\s*[-–~～]\s*\d{1,2}[:：]\d{2})?\s*/, "").trim();
+  if (!s || s.startsWith("⏱") || s.startsWith("🔗") || s.startsWith("💬")) return null;
+  return { kw, body: s };
+}
 function kwSnapshot(content) {
   const out = new Map();
   let inCode = false, count = 0;
   for (const raw of content.split("\n")) {
     if (/^\s*(```|~~~)/.test(raw)) { inCode = !inCode; continue; }
     if (inCode || !raw.trim() || ++count > 6000) continue;
-    let s = raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s+/, "").replace(STAMP_RE, "");
-    let kw = "";
-    const cb = CHECKBOX_RE.exec(s);
-    if (cb) { kw = cb[1] === " " ? "TODO" : cb[1] === "/" ? "DOING" : cb[1] === "-" ? "CANCELLED" : "DONE"; s = s.slice(cb[0].length); }
-    const m = /^(TODO|DOING|LATER|NOW|PAUSED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)(?=\s|$)\s*/.exec(s);
-    if (m) { kw = m[1]; s = s.slice(m[0].length); }
-    // 关键词后面跟着的时刻 / 时间段是记录，会跟着状态一起变，不算正文
-    s = s.replace(/^\d{1,2}[:：]\d{2}(?:\s*[-–~～]\s*\d{1,2}[:：]\d{2})?\s*/, "").trim();
-    if (!s || s.startsWith("⏱")) continue;
-    out.set(s, out.has(s) ? null : kw);
+    const r = kwLine(raw);
+    if (r) out.set(r.body, out.has(r.body) ? null : r.kw);
   }
   return out;
+}
+// 编辑器里同一行改动前后两个样子，是不是一次状态切换：是就返回 { body, from, to }，不是返回 null。
+//   正文没变、关键词变了：⌘/、点 TODOseq 的关键词；
+//   手敲关键词：敲完最后那一下，改动前的那行是「敲了一半的关键词 + 正文」
+function kwLineChange(oldRaw, newRaw) {
+  const a = kwLine(oldRaw), b = kwLine(newRaw);
+  if (!a || !b || a.kw === b.kw) return null;
+  if (a.body === b.body) return { body: b.body, from: a.kw, to: b.kw };
+  if (!a.kw && b.kw && a.body.endsWith(b.body)) {
+    const typed = a.body.slice(0, a.body.length - b.body.length).trim();
+    if (typed && b.kw.startsWith(typed)) return { body: b.body, from: "", to: b.kw };
+  }
+  return null;
 }
 // 前后两份快照里，哪几行的状态变了：[{ body, from, to }]。新写的行、删掉的行不算
 function kwChanges(prev, cur) {
@@ -1263,9 +1394,33 @@ function aiIsPrompt(d) {
   return text.trim() && !/^\s*(<(command-|local-command|system-reminder|task-notification|ci-monitor)|\[Request interrupted)/.test(text) ? text.trim() : "";
 }
 
+// 一次工具调用用一句短话说出来（任务行下面「它眼下在干什么」）
+function aiStep(name, input) {
+  const i = input || {}, n = String(name || "");
+  const base = (x) => String(x || "").split("/").pop();
+  const cut = (x) => { x = String(x || "").replace(/\s+/g, " ").trim(); return x.length > 36 ? x.slice(0, 35) + "…" : x; };
+  if (/^(Bash|shell|local_shell_call|exec_command|shell_command)$/.test(n)) return cut(i.description || (Array.isArray(i.command) ? i.command[i.command.length - 1] : i.command || i.cmd) || "跑命令");
+  if (/^(Edit|MultiEdit|NotebookEdit|apply_patch)$/.test(n)) return cut(`改 ${base(i.file_path || i.notebook_path) || "文件"}`);
+  if (n === "Write") return cut(`写 ${base(i.file_path)}`);
+  if (n === "Read") return cut(`读 ${base(i.file_path)}`);
+  if (n === "Grep" || n === "Glob") return cut(`找 ${i.pattern || ""}`);
+  if (n === "Agent" || n === "Task") return cut(`派出去：${i.description || ""}`);
+  if (n === "WebSearch") return cut(`搜 ${i.query || ""}`);
+  if (n === "WebFetch") return "读网页";
+  if (n === "Skill") return cut(`用技能 ${i.skill || ""}`);
+  return cut(n.startsWith("mcp__") ? n.split("__").pop() : n);
+}
+// Agent 自己列的待办做到第几步：[[状态, 这一步叫什么]…] → { done, total, cur }
+const todoOf = (pairs) => {
+  if (!pairs.length) return null;
+  const cur = (pairs.find(([st]) => st === "in_progress") || [])[1] || "";
+  return { done: pairs.filter(([st]) => st === "completed").length, total: pairs.length, cur: String(cur).replace(/\s+/g, " ").slice(0, 36) };
+};
+
 class AiUsage {
   constructor(cfg) {
     this.cfg = cfg;
+    this.live = new Map();    // 会话号 -> { agent, at, state, step, todo }：这个会话眼下在干什么，只在内存里（见 liveOf）
     this.files = new Map();   // path -> { size, offset, days: Map(key -> { sess: Map(sid -> {proj, ts[], text}), prompts }), msgs: Map(id -> 用量), titles: Map(sid -> 标题) }
     this.titles = new Map();  // Codex 的会话标题（不在会话文件里，另外读）
   }
@@ -1305,6 +1460,101 @@ class AiUsage {
     } catch (e) { /* 没有这个文件 */ }
   }
 
+  // 会话眼下的状态，任务行下面的进度条「监听」的就是它：
+  //   state = run 在跑（你刚发了话、它在调工具）/ wait 这一轮答完了，等你；step = 最近一步在干什么；
+  //   todo = 它自己列的待办做到第几步（Claude 的 TodoWrite / TaskCreate、Codex 的 update_plan），没列就是 null，那就没有百分比可看
+  // 续接的会话会把旧消息抄进新文件，时间比已经见过的早的不管
+  liveOf(sid, agent, ms) {
+    let v = this.live.get(sid);
+    if (!v) this.live.set(sid, v = { agent, at: 0, state: "run", step: "", todo: null });
+    if (ms < v.at) return null;
+    v.at = ms;
+    return v;
+  }
+  liveClaude(d, sid, ms) {
+    const v = this.liveOf(sid, "claude", ms);
+    if (!v) return;
+    const c = d.message && d.message.content;
+    if (d.type === "user") {
+      const stopped = typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b.type === "text").map((b) => b.text).join("") : "";
+      v.state = /^\s*\[Request interrupted/.test(stopped) ? "wait" : "run";
+      return;
+    }
+    const stop = d.message && d.message.stop_reason;
+    v.state = stop === "end_turn" || stop === "stop_sequence" ? "wait" : "run";
+    for (const b of Array.isArray(c) ? c : []) {
+      if (b.type !== "tool_use") continue;
+      const i = b.input || {};
+      if (b.name === "TodoWrite" && Array.isArray(i.todos)) v.todo = todoOf(i.todos.map((t) => [t.status, t.activeForm || t.content]));
+      else if (b.name === "TaskCreate") { (v.tasks ||= { made: 0, st: new Map() }).made++; v.todo = this.taskTodo(v.tasks); }
+      else if (b.name === "TaskUpdate" && i.taskId != null) { (v.tasks ||= { made: 0, st: new Map() }).st.set(String(i.taskId), i.status || v.tasks.st.get(String(i.taskId)) || ""); v.todo = this.taskTodo(v.tasks); }
+      else v.step = aiStep(b.name, i);
+    }
+  }
+  taskTodo(tk) {
+    const sts = [...tk.st.values()], gone = sts.filter((x) => x === "deleted").length;
+    const total = Math.max(tk.made, tk.st.size) - gone;
+    return total > 0 ? { done: sts.filter((x) => x === "completed").length, total, cur: "" } : null;
+  }
+  liveCodex(d, p, sid, ms) {
+    const v = this.liveOf(sid, "codex", ms);
+    if (!v) return;
+    if (d.type === "event_msg") {
+      if (p.type === "task_complete" || p.type === "turn_aborted") v.state = "wait";
+      else if (p.type === "task_started" || p.type === "user_message") v.state = "run";
+      return;
+    }
+    if (p.type !== "function_call" && p.type !== "custom_tool_call" && p.type !== "local_shell_call") return;
+    v.state = "run";
+    let a = {};
+    try { a = typeof p.arguments === "string" ? JSON.parse(p.arguments) : p.arguments || p.action || {}; } catch (e) { /* 参数不是 JSON 就只报工具名 */ }
+    if (p.name === "update_plan" && Array.isArray(a.plan)) v.todo = todoOf(a.plan.map((x) => [x.status, x.step]));
+    else v.step = aiStep(p.name || p.type, a);
+  }
+
+  // 把一个日志文件新追加的部分读进来（读过的不重读）
+  async readNew(p, agent, st, touched) {
+    const fs = require("fs"), path = require("path");
+    let fc = this.files.get(p);
+    // Codex / WorkBuddy 一个文件就是一个会话，文件名里带会话号
+    if (!fc || st.size < fc.size) {
+      this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent,
+        sid: (/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/.exec(p) || [])[1] || path.basename(p, ".jsonl") });
+      fc.id = fc.sid;   // 这个文件自己的会话号（Codex 的子线程会把 sid 换成主线程的）
+      // Codex 归档时文件换了位置：原来那个位置读过的那份不要了，免得同一个会话算两遍
+      if (agent === "codex") for (const [q, o] of this.files) if (q !== p && o.agent === "codex" && o.id === fc.id) this.files.delete(q);
+    }
+    const fh = await fs.promises.open(p, "r");
+    try {
+      const buf = Buffer.alloc(st.size - fc.offset);
+      await fh.read(buf, 0, buf.length, fc.offset);
+      fc.size = st.size;
+      const end = buf.lastIndexOf(10);
+      if (end < 0) return;
+      fc.offset += end + 1;
+      const lines = buf.toString("utf8", 0, end).split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        this.ingest(lines[i], fc, touched);
+        if (i % 3000 === 2999) await new Promise((r) => setTimeout(r, 0));   // 大文件分段，别把界面卡住
+      }
+    } finally { await fh.close(); }
+  }
+
+  // 只看这几个会话的日志有没有新内容（任务行下面的进度条用，比整个扫一遍轻得多）。读到新东西就返回碰到的日记日，没有返回 null
+  async poll(sids) {
+    const fs = require("fs"), touched = new Set();
+    let got = false;
+    for (const [p, fc] of [...this.files]) {
+      if (!sids.has(fc.sid) && !sids.has(fc.id)) continue;
+      let st;
+      try { st = await fs.promises.stat(p); } catch (e) { continue; }
+      if (st.size === fc.size) continue;
+      await this.readNew(p, fc.agent, st, touched);
+      got = true;
+    }
+    return got ? touched : null;
+  }
+
   // 读 mtime >= since 的日志；读过的文件只读新追加的部分。返回这次碰到的日记日
   async scan(since = 0) {
     const fs = require("fs"), path = require("path");
@@ -1328,28 +1578,7 @@ class AiUsage {
         let fc = this.files.get(p);
         if (!fc && st.mtimeMs < since) continue;
         if (fc && st.size === fc.size) continue;
-        // Codex / WorkBuddy 一个文件就是一个会话，文件名里带会话号
-        if (!fc || st.size < fc.size) {
-          this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent,
-            sid: (/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/.exec(p) || [])[1] || path.basename(p, ".jsonl") });
-          fc.id = fc.sid;   // 这个文件自己的会话号（Codex 的子线程会把 sid 换成主线程的）
-          // Codex 归档时文件换了位置：原来那个位置读过的那份不要了，免得同一个会话算两遍
-          if (agent === "codex") for (const [q, o] of this.files) if (q !== p && o.agent === "codex" && o.id === fc.id) this.files.delete(q);
-        }
-        const fh = await fs.promises.open(p, "r");
-        try {
-          const buf = Buffer.alloc(st.size - fc.offset);
-          await fh.read(buf, 0, buf.length, fc.offset);
-          fc.size = st.size;
-          const end = buf.lastIndexOf(10);
-          if (end < 0) continue;
-          fc.offset += end + 1;
-          const lines = buf.toString("utf8", 0, end).split("\n");
-          for (let i = 0; i < lines.length; i++) {
-            this.ingest(lines[i], fc, touched);
-            if (i % 3000 === 2999) await new Promise((r) => setTimeout(r, 0));   // 大文件分段，别把界面卡住
-          }
-        } finally { await fh.close(); }
+        await this.readNew(p, agent, st, touched);
         await new Promise((r) => setTimeout(r, 0));
       }
     }
@@ -1381,6 +1610,8 @@ class AiUsage {
     if (d.type === "ai-title") { if (d.aiTitle) fc.titles.set(fc.sid, d.aiTitle); return; }
     if (!["message", "reasoning", "function_call", "function_call_result"].includes(d.type) || !+d.timestamp) return;
     const { key, day, s } = this.touchSess(fc, touched, +d.timestamp, fc.sid, d.cwd, "workbuddy");
+    const lv = this.liveOf(fc.sid, "workbuddy", +d.timestamp);
+    if (lv) lv.state = d.type === "message" && d.role === "assistant" ? "wait" : "run";
     if (d.type === "message" && d.role === "user") {
       const text = (Array.isArray(d.content) ? d.content : []).filter((b) => b && b.type === "input_text").map((b) => b.text || "").join("")
         .replace(/<system-reminder[\s\S]*?<\/system-reminder>/g, "").trim();
@@ -1410,6 +1641,7 @@ class AiUsage {
     const ms = Date.parse(d.timestamp);
     if (!ms || (d.type !== "event_msg" && d.type !== "response_item")) return;
     const { key, day, s } = this.touchSess(fc, touched, ms, fc.sid, fc.cwd, fc.app);
+    this.liveCodex(d, p, fc.sid, ms);
     if (d.type === "response_item" && p.type === "message" && p.role === "user") {
       const text = (Array.isArray(p.content) ? p.content : []).filter((b) => b && b.type === "input_text").map((b) => b.text || "").join("").trim();
       if (text && !text.startsWith("<")) this.addPrompt(day, s, text);   // < 开头的是环境说明，不是你敲的
@@ -1443,6 +1675,7 @@ class AiUsage {
     let s = day.sess.get(sid);
     if (!s) day.sess.set(sid, s = { proj, cwd: d.cwd || "", app: d.entrypoint || "", agent: "claude", ts: [], text: "" });
     s.ts.push(t);
+    if (!d.isSidechain && !d.isMeta) this.liveClaude(d, sid, ms);
     if (d.type === "user") {
       const text = aiIsPrompt(d);
       if (text) {
@@ -1471,7 +1704,7 @@ class AiUsage {
       for (const [sid, s] of day.sess) {
         const cur = sess.get(sid);
         if (cur) { cur.ts.push(...s.ts); if (cur.text.length < 300 && s.text) cur.text += " / " + s.text; }
-        else sess.set(sid, { proj: s.proj, cwd: s.cwd, app: s.app, agent: aiAgent(s), ts: [...s.ts], text: s.text, segs: [], min: 0, out: 0 });
+        else sess.set(sid, { proj: s.proj, cwd: s.cwd, app: s.app, agent: aiAgent(s), ts: [...s.ts], text: s.text, segs: [], min: 0, out: 0, fresh: 0, cached: 0 });
       }
     }
     if (!sess.size) return null;
@@ -1514,7 +1747,8 @@ class AiUsage {
       const live = m.model && m.model !== "<synthetic>";
       if (sess.has(m.sid)) {
         const g = res.by[sess.get(m.sid).agent];
-        sess.get(m.sid).out += m.out; g.out += m.out; g.calls++; g.fresh += m.fresh; g.cached += m.cached;
+        const ss = sess.get(m.sid);
+        ss.out += m.out; ss.fresh += m.fresh; ss.cached += m.cached; g.out += m.out; g.calls++; g.fresh += m.fresh; g.cached += m.cached;
         if (live) g.models[m.model] = (g.models[m.model] || 0) + m.out;
       }
       if (live) res.models[m.model] = (res.models[m.model] || 0) + m.out;
@@ -1529,7 +1763,7 @@ class AiUsage {
     }
     // 每个会话一行：标题、开头说的话、目录、活跃的时段
     for (const [sid, s] of sess) res.list.push({ sid, agent: s.agent, dir: s.proj, cwd: s.cwd || "", app: s.app || "", title: titles.get(sid) || "", text: s.text.slice(0, 300),
-      min: Math.round(s.min), out: s.out, segs: s.segs.map(([a, b]) => [Math.round(a), Math.round(b)]) });
+      min: Math.round(s.min), out: s.out, fresh: s.fresh, cached: s.cached, segs: s.segs.map(([a, b]) => [Math.round(a), Math.round(b)]) });
     return res;
   }
 
@@ -1556,6 +1790,8 @@ function unionMin(segs) {
 }
 
 const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
+// token 消耗 = 产出 + 读入。缓存命中（每轮重读上下文）不算进去，那个数大得多，也不代表干了多少活
+const tokUsed = (x) => (x ? (x.out || 0) + (x.fresh || 0) : 0);
 
 // 一件任务做的那几段里，有哪些 Claude 会话在干活：会话的活跃时段和任务做的时段重叠 ≥ 2 分钟。
 // 几条线并行时，同一个会话会同时挂在几件任务上
@@ -1611,7 +1847,7 @@ class AiSessionsModal extends OB.Modal {
     if (x.title && first) box.createDiv({ cls: "naut-ai-sess-text", text: first.slice(0, 200) });
     const cli = agent === "codex" || x.app === "cli";   // 默认按钮给哪个：Codex 和终端里的 Claude Code 回终端，其余回 Claude 桌面版
     const when = x.overlap != null ? `和这件重叠 ${dur(x.overlap)}` : x.stopped ? `最后在 ${clock(x.lastAt)}` : `${clock(x.lastAt)} 还在动`;
-    box.createDiv({ cls: "naut-ai-sess-meta", text: `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 产出 ${fmtTok(x.out)} tok` });
+    box.createDiv({ cls: "naut-ai-sess-meta", text: `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）` });
     if (agent === "workbuddy") return;
     const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
     const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
@@ -1856,6 +2092,22 @@ class FocusModal extends OB.Modal {
   }
 }
 
+// 选一个会话绑到任务上：最近三天有动静的，今天的在前、最近在动的在前；归档了的不列
+class BindModal extends OB.FuzzySuggestModal {
+  constructor(app, list, today, current, done) {
+    super(app);
+    this.list = list; this.today = today; this.current = current; this.done = done;
+    this.setPlaceholder("绑到哪个会话…（搜标题、你发的第一句话、目录）");
+  }
+  getItems() { return this.list; }
+  getItemText(x) {
+    const first = (x.text || "").split(" / ")[0];
+    const when = x.day === this.today ? clock(x.segs[x.segs.length - 1][1]) : x.day.replace(/\D+/g, "-").slice(5);
+    return `${x.sid === this.current ? "🔗 " : ""}${x.title || first.slice(0, 40) || "（没有标题）"}　${aiWhere(x)} · ${x.dir} · ${when} · ${fmtTok(tokUsed(x))} tok`;
+  }
+  onChooseItem(x) { this.done(x); }
+}
+
 class QuickPanel extends OB.FuzzySuggestModal {
   constructor(app, plugin) {
     super(app);
@@ -2045,6 +2297,7 @@ class SpiralView extends ItemView {
       const line = cap.createDiv({ cls: "naut-ai-line", attr: { title: [
         `协作 ${dur(ai.wall)}：有 ${only || "Agent"} 在干活的时间，几个窗口同时开只算一次（螺旋内圈的细线，一个 Agent 一种颜色）`,
         `${only || "Agent"} 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`,
+        `消耗 ${fmtTok(tokUsed(ai))} tok = 产出 + 读入${agents.length > 1 ? "：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`,
         `产出 ${fmtTok(ai.out)}：${only || "Agent"} 写出来的 token（含思考），${ai.calls} 次调用`,
         `读入 ${fmtTok(ai.fresh)}：新读进来的文件、命令输出`,
         `缓存命中 ${fmtTok(ai.cached)}：每轮重读上下文，不算工作量`,
@@ -2052,7 +2305,7 @@ class SpiralView extends ItemView {
         models && `模型：${models}`,
       ].filter(Boolean).join("\n") } });
       for (const [k] of agents) line.createSpan({ cls: `naut-sw naut-bg-${k}` });
-      line.createSpan({ text: `🤖 协作 ${dur(ai.wall)} · ${only || "Agent"} 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok · ${ai.prompts} 条指令` +
+      line.createSpan({ text: `🤖 协作 ${dur(ai.wall)} · ${only || "Agent"} 工时 ${dur(ai.agent)} · 消耗 ${fmtTok(tokUsed(ai))} tok · ${ai.prompts} 条指令` +
         (agents.length > 1 ? " · " + agents.map(([k, g]) => `${AI_AGENTS[k]} ${dur(g.wall)}`).join(" / ") : "") });
     }
     // 🧭 各个大方向这天花了多久（自动记进日记的会话各归到哪个方向）
@@ -2475,8 +2728,9 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerView(VIEW_TYPE, (leaf) => new SpiralView(leaf, this));
     this.addRibbonIcon("orbit", "螺旋日程", () => this.activate());
     // 命令和快捷面板（⌃⌥S）都从这张表来；默认快捷键都在 ⌃⌥ 下面，Obsidian 设置 → 快捷键里可以改
+    let nm = (s) => s;   // 命令名
     for (const a of this.actions()) {
-      const cmd = { id: a.id, name: a.name };
+      const cmd = { id: a.id, name: nm(a.name) };
       if (a.key) cmd.hotkeys = [a.key];
       if (a.editor) cmd.editorCallback = (editor, view) => a.run(editor, view);
       else if (a.when) cmd.checkCallback = (check) => { if (!a.when()) return false; if (!check) a.run(); return true; };
@@ -2494,6 +2748,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerObsidianProtocolHandler("nautilus-focus", (p) => this.suggestFocus(p.app || "", +p.stay || 0).catch((e) => console.error("[螺旋日程] 专注提议失败", e)));
     this.addSettingTab(new SpiralSettings(this.app, this));
     this.setupStatusBar();
+    this.setupAgentBar();
 
     // 在日历里点某一天（或打开任何一篇日记），螺旋跟着切到那一天
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
@@ -2507,6 +2762,12 @@ module.exports = class NautilusSpiral extends Plugin {
     // 任务状态切换的音效：全库的笔记都看（TODOseq 的任务列表、看板改的不一定是日记）
     this.kw = new Map();   // path -> kwSnapshot
     this.registerEvent(this.app.vault.on("modify", (f) => this.onAnyModify(f)));
+    this.registerEditorExtension(this.kwLiveExtension());   // 编辑器里一改就响，不等写盘
+    // DOING 的那一行下面的字符进度条；每 10 秒看一眼监听着的会话有没有新动静
+    this.registerEditorExtension(this.lineProgressExtension());
+    this.registerInterval(window.setInterval(() => this.progPoll().catch((e) => console.error("[螺旋日程] 进度条刷新失败", e)), 10 * 1000));
+    this.addCommand({ id: "bind-session", name: nm("把这一行绑定到一个 Agent 会话…（进度条只听它）"), editorCallback: (editor) => this.bindSession(editor) });
+    this.addCommand({ id: "unbind-session", name: nm("解除这一行和 Agent 会话的绑定"), editorCallback: (editor) => this.bindSession(editor, true) });
     this.registerEvent(this.app.workspace.on("file-open", (f) => this.kwBaseline(f)));
     this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
@@ -2777,7 +3038,7 @@ module.exports = class NautilusSpiral extends Plugin {
         const r = await this.ask("螺旋日程 · 测试通知", "看到这条就说明通了。点「收到」试试按钮", ["收到", "不用了"], 60);
         new OB.Notice(r == null ? "发不出去：系统没允许「螺旋日程」发通知。到「系统设置 → 通知 → 螺旋日程」打开「允许通知」，或者在通知中心里找到它的授权请求点「允许」。在那之前到点提醒照旧弹对话框" : r === "" ? "通知发出去了，但没点按钮（60 秒到了）" : r === "__click__" ? "收到：你点的是通知本身" : `收到：你点了「${r}」`, 10000);
       } },
-      { id: "auto-log", name: "现在把 Agent 会话整理进今天的日记", key: ca("L"), run: () => this.logNow() },
+      { id: "auto-log", name: "手动记日志：现在把 Agent 会话整理进今天的日记", key: ca("L"), run: () => this.logNow() },
       { id: "focus-end", name: "结束这一轮专注（问做完了没有）", key: ca("E"), when: () => !!this.session(), run: () => this.askDone(this.session()) },
       { id: "break-back", name: "吃饭 / 锻炼回来了（问要不要切回 DOING）", key: ca("B"), when: () => !!this.settings.breakState, run: () => { this.settings.breakState.asking = false; this.askBack(this.settings.breakState); } },
       { id: "review", name: "预估 vs 实际（复盘）", key: ca("R"), run: () => this.showReview() },
@@ -3630,7 +3891,8 @@ module.exports = class NautilusSpiral extends Plugin {
       const upgrade = this.aiStore.v !== AI_STORE_V;
       const since = this.aiStore.backfilled && !upgrade ? Date.now() - (AI_FRESH_DAYS + 2) * 864e5 : 0;
       const touched = await ai.scan(ai.files.size ? Date.now() - 2 * 864e5 : since);
-      const changed = ai.merge(this.aiStore, touched, upgrade) || !this.aiStore.backfilled || upgrade;
+      const changed = ai.merge(this.aiStore, touched, upgrade) || !this.aiStore.backfilled || upgrade || this._aiDirty;
+      this._aiDirty = false;
       this.aiStore.backfilled = true;
       this.aiStore.v = AI_STORE_V;
       if (changed) {
@@ -3658,6 +3920,90 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerInterval(window.setInterval(() => this.tickStatus(), 1000));
     this.registerInterval(window.setInterval(() => this.refreshCapacity(), 60 * 1000));
     this.app.workspace.onLayoutReady(() => this.refreshCapacity());
+  }
+
+  // ---------------- 状态栏：Agent 汇总 ----------------
+  // 眼下挂在大纲上的 Agent 会话：开着的笔记和今天的日记里，下面有「🔗」行的任务，加上 DOING 的行自动对上的会话。
+  // 做完、取消了的任务不算，归档了的会话不算，这次打开 Obsidian 以来没读到过动静的也不算。
+  // 返回 [{ path, line, label, sid, agent, state }]：state = run 在跑 / wait 这一轮答完了在等你 / quiet 没答完但好几分钟没动静（多半停在要你点「允许」）
+  async agentScan() {
+    const cfg = this.settings, out = [], seen = new Set(), arch = this._archived || new Set(), on = aiOn(cfg);
+    if (cfg.agentStatus === false || cfg.showAi === false || !this._ai) return out;
+    const docs = [], paths = new Set();
+    this.app.workspace.iterateAllLeaves((l) => {
+      const v = l.view;
+      if (!(v instanceof OB.MarkdownView) || !v.file || !v.editor || paths.has(v.file.path)) return;
+      paths.add(v.file.path);
+      docs.push([v.file.path, v.editor.getValue()]);
+    });
+    const today = this.todayFile();
+    if (today && !paths.has(today.path)) try { docs.push([today.path, await this.app.vault.cachedRead(today)]); } catch (e) { /* 读不到就不算 */ }
+    for (const [path, text] of docs) {
+      if (text.length > 2e6 || !(text.includes("🔗") || /DOING|NOW|IN-PROGRESS|\[\/\]/.test(text))) continue;
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const link = parseLink(lines[i]);
+        // 有 🔗 的任务等扫到它的 🔗 行再算；没有 🔗 的 DOING 行看它自动对上了哪个会话
+        const owner = link ? markOwner(lines, i) : DOING_LINE_RE.test(lines[i]) && !linkUnder(lines, i) ? i : -1;
+        if (owner < 0) continue;
+        const k = kwLine(lines[owner]);
+        if (!k || /^(DONE|CANCELED|CANCELLED|FAILED)$/.test(k.kw)) continue;
+        let sid = link && link.sid, agent = link && link.agent;
+        if (!link) {
+          const it = parseJournal(lines[owner].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task" && x.doing);
+          const x = it && this.progSession(workKey(it.label));
+          if (!x) continue;
+          sid = x.sid; agent = aiAgent(x);
+        }
+        const lv = this._ai.live.get(sid);
+        if (!lv || seen.has(sid) || arch.has(sid) || !on.includes(agent)) continue;
+        seen.add(sid);
+        out.push({ path, line: owner, label: k.body, sid, agent, state: lv.state === "wait" ? "wait" : (Date.now() - lv.at) / 60e3 <= AI_IDLE ? "run" : "quiet" });
+      }
+    }
+    return out;
+  }
+  setupAgentBar() {
+    if (typeof this.addStatusBarItem !== "function") return;
+    const el = (this.agentEl = this.addStatusBarItem());
+    el.addClass("naut-agents", "mod-clickable");
+    el.setAttr("data-tooltip-position", "top");
+    el.hide();
+    el.addEventListener("click", () => this.agentClick().catch((e) => console.error("[螺旋日程] 状态栏 Agent", e)));
+  }
+  tickAgents() {
+    const el = this.agentEl;
+    if (!el) return;
+    const list = this.settings.agentStatus === false ? [] : this._agents || [];
+    const run = list.filter((a) => a.state === "run").length, wait = list.length - run;
+    el.toggle(list.length > 0);
+    if (!list.length) return;
+    const text = `🤖 ${[run ? `${run} 在跑` : "", wait ? `${wait} 等你` : ""].filter(Boolean).join(" · ")}`;
+    if (el.getText() !== text) {
+      // 数变了：轻轻跳一下
+      if (el.getText()) { el.removeClass("is-bump"); void el.offsetWidth; el.addClass("is-bump"); }
+      el.setText(text);
+    }
+    el.toggleClass("is-waiting", wait > 0);
+    const word = { run: "在跑", wait: "等你回复", quiet: "好几分钟没动静" };
+    el.setAttr("aria-label", [...list].sort((a, b) => (a.state === "run") - (b.state === "run")).map((a) => `${word[a.state]} · ${AI_AGENTS[a.agent] || a.agent} · ${a.label.slice(0, 28)}`).join("\n") + `\n单击：到${wait ? "等你的" : "在跑的"}那一行（再点到下一个）`);
+  }
+  // 点一下跳到等你的那一行；有好几个就轮着跳；没有在等的就跳到在跑的
+  async agentClick() {
+    const list = this._agents || [], waiting = list.filter((a) => a.state !== "run"), pool = waiting.length ? waiting : list;
+    if (!pool.length) return;
+    const t = pool[(this._agentAt = ((this._agentAt ?? -1) + 1) % pool.length)];
+    const file = this.app.vault.getAbstractFileByPath(t.path);
+    if (!(file instanceof TFile)) return;
+    // 扫的时候到现在行可能挪过：按会话的 🔗 行、再按正文重新找一遍
+    let line = t.line;
+    try {
+      const lines = (await this.app.vault.cachedRead(file)).split("\n");
+      const at = lines.findIndex((l) => { const k = parseLink(l); return k && k.sid === t.sid; });
+      const owner = at >= 0 ? markOwner(lines, at) : lines.findIndex((l) => { const k = kwLine(l); return k && k.body === t.label; });
+      if (owner >= 0) line = owner;
+    } catch (e) { /* 读不到就用扫的时候的行号 */ }
+    await this.openLine(file, line);
   }
 
   tickStatus() {
@@ -3688,8 +4034,8 @@ module.exports = class NautilusSpiral extends Plugin {
       text = this._capText ? `🌀 ${this._capText}` : "🌀";
       warning = !!this._capWarn;
     }
-    // 自动记着的行里，这会儿有几件 Agent 在做
-    const st = this.states.get(this.journalPath(this.today()));
+    // Agent 会话几个在跑、几个在等你，另有一格（见 tickAgents）；那一格关了，这里照旧报自动记着的行里有几件 Agent 在做
+    const st = cfg.agentStatus === false ? this.states.get(this.journalPath(this.today())) : null;
     if (st) {
       const auto = this.autoKeys(dayKey);
       const k = auto.size ? [...st].filter(([l, c]) => c.doing && auto.has(workKey(l))).length : 0;
@@ -3958,7 +4304,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const hit = agent === "claude" ? [...fc.days.values()].some((d) => d.sess.has(x.sid)) : fc.sid === x.sid;
       if (hit && (!best || fc.size > best.size)) best = { p, size: fc.size };
     }
-    const out = { prompts: [], last: "" };
+    const out = { prompts: [], last: "", full: "" };
     if (!best) return out;
     const len = Math.min(best.size, 400 * 1024);
     const buf = Buffer.alloc(len);
@@ -3987,6 +4333,7 @@ module.exports = class NautilusSpiral extends Plugin {
     }
     // 一长串数字（卡号、密钥之类）不往外带
     const clip = (s) => s.replace(/\d{12,}/g, "…").replace(/\s+/g, " ").trim();
+    out.full = out.last.slice(0, 8000);   // 最后一条回复的原文（结果回写用，见 resultText）
     out.prompts = out.prompts.slice(-4).map((t) => clip(t).slice(0, 160));
     out.last = clip(out.last).slice(-700);
     return out;
@@ -4119,9 +4466,10 @@ module.exports = class NautilusSpiral extends Plugin {
     return { text: lines.join("\n") };
   }
 
-  // 实际做的时段写在那一行下面的第一个子项里（⏱ 开头，解析日记时跳过这种行）：⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · Claude
+  // 实际做的时段写在那一行下面的第一个子项里（⏱ 开头，解析日记时跳过这种行）：⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · 48k tok · Claude
+  // tok = 这一行名下的会话当天用掉的 token（产出 + 读入），你自己做的没有；sid = 只有一个 Claude 会话时它的会话号，谁记的那两个字就写成能点回那个会话的链接
   // 隔了不到 10 分钟的两段并成一段写，免得太碎；太多段只写最后 8 段
-  autoClock(text, key, segs, who) {
+  autoClock(text, key, segs, who, tok = 0, sid = "") {
     const found = this.autoFind(text, key);
     if (!found || !segs.length) return text;
     const lines = text.split("\n");
@@ -4130,7 +4478,9 @@ module.exports = class NautilusSpiral extends Plugin {
     for (const [a, b] of segs) { const last = shown[shown.length - 1]; if (last && a - last[1] <= 10) last[1] = Math.max(last[1], b); else shown.push([a, b]); }
     const total = Math.round(segs.reduce((n, [a, b]) => n + b - a, 0));
     const indent = /^\s*/.exec(lines[at])[0] + "\t";
-    const line = `${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join("、")} · 共 ${durTag(total)}${who ? " · " + who : ""}`;
+    const line = `${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join("、")} · 共 ${durTag(total)}${tok ? ` · ${fmtTok(tok)} tok` : ""}${who ? " · " + (sid && who === AI_AGENTS.claude ? `[${who}](${claudeLink(sid)})` : who) : ""}`;
+    // 这个会话的「🔗」行不用留了：会话是哪个，已经写在 ⏱ 行末尾的链接里
+    if (sid) { const l = linkUnder(lines, at); if (l && l.sid === sid) lines.splice(l.line, 1); }
     const base = /^\s*/.exec(lines[at])[0].replace(/\t/g, "    ").length;
     for (let i = at + 1; i < lines.length; i++) {
       if (lines[i].trim() && /^\s*/.exec(lines[i])[0].replace(/\t/g, "    ").length <= base) break;
@@ -4163,7 +4513,7 @@ module.exports = class NautilusSpiral extends Plugin {
         const x = list.find((s) => s.sid === sid && s.segs && s.segs.length) || null;
         text = this.autoLine(text, rec, x, "done").text;
         const segs = (work[rec.key] || []).filter((s) => s[1] != null);
-        if (segs.length) text = this.autoClock(text, rec.key, segs, x ? AI_AGENTS[aiAgent(x)] : "");
+        if (segs.length) text = this.autoClock(text, rec.key, segs, x ? AI_AGENTS[aiAgent(x)] : "", tokUsed(x), x && aiAgent(x) === "claude" ? x.sid : "");
         const name = workKey(rec.label).replace(AUTO_MARK, "");
         after.push(() => { rec.status = "done"; });
         out.push(`${name}（${dayKey.replace(/\D+/g, "-").slice(5)}）`);
@@ -4215,8 +4565,11 @@ module.exports = class NautilusSpiral extends Plugin {
         } else if (rec.status === "doing" && !active && !rec.asked && !arch.has(x.sid)) todo.push({ x, active, rec });   // 刚停下来：问一次是不是其实做完了、有没有要你做的（归档了的不用问）
         else live.push({ x, active, rec });
       }
+      // 0. 日记里已经用「🔗」行绑好的新会话：是哪一行已经写明了，不用问小模型，直接接在那一行上
+      const linked = linkMap(await this.readJournal(file), cfg);
+      const bound = todo.filter((t) => t.fresh && linked.has(t.x.sid)), unbound = todo.filter((t) => !(t.fresh && linked.has(t.x.sid)));
       // 1. 新会话、刚停下来的会话：问小模型（一次最多 8 个，多的下一轮）
-      const ask = todo.slice(0, 8);
+      const ask = unbound.slice(0, 8);
       let ans = new Map();
       if (ask.length) {
         // 能接上去的行：还没做完的任务。带子任务的大项不算，自己记的「要你做的后续」也不算
@@ -4225,13 +4578,20 @@ module.exports = class NautilusSpiral extends Plugin {
         report.asked = ask.length;
         report.error = this._autoErr || "";
       }
+      for (const t of bound) ans.set(t.x.sid, { label: "", matchKey: linked.get(t.x.sid), done: false, dir: "", todos: [], skip: false });
+      // 归档了、又是「🔗」绑着的会话：先把它最后说的话读出来，下面标 DONE 时一起写成「💬」行（🔗 行到时候就收掉了）
+      const said = new Map();
+      if (cfg.resultBack !== false) for (const x of day.list) if (arch.has(x.sid) && linked.has(x.sid)) {
+        const t = await this.sessionTail(x).catch(() => null);
+        if (t && t.full) said.set(x.sid, resultText(t.full, cfg.resultMax));
+      }
       // 2. 照着改日记（从这里到写回之间不等别的东西，免得你正好在打字）
       const base = await this.readJournal(file);
       let text = base;
       const work = ((cfg.workLog ||= {})[dayKey] ||= {});
       const digest = { doing: [], suspended: [], done: [], archived: [], todo: [] };
       const clocks = new Set();
-      for (const { x, active, fresh } of [...ask, ...todo.slice(8), ...live]) {
+      for (const { x, active, fresh } of [...bound, ...ask, ...unbound.slice(8), ...live]) {
         const a = ans.get(x.sid);
         const last = lastOf(x);
         let rec = st[x.sid];
@@ -4266,7 +4626,7 @@ module.exports = class NautilusSpiral extends Plugin {
         const name = workKey(rec.label).replace(AUTO_MARK, "");
         // 你把这个会话归档了：算做完，标 DONE，实际时段补在下面。你自己改回 TODO / PAUSED 的行不动
         if (arch.has(x.sid) && (fresh || cur === "doing" || cur === "suspended")) {
-          text = this.autoLine(text, rec, x, "done").text;
+          text = resultInto(this.autoLine(text, rec, x, "done").text, x.sid, said.get(x.sid));
           rec.status = "done"; delete rec.fresh; delete rec.parkedAt; delete rec.hold;
           clocks.add(rec.key);
           digest.archived.push(`${name}（${dur(x.min)}）`);
@@ -4301,16 +4661,18 @@ module.exports = class NautilusSpiral extends Plugin {
         }
       }
       // 3. 用时：各个会话真正在动的时段，记到它那一行名下（同一行接了几个会话就并起来）；搁置和做完的，时段写进日记正文
-      const byKey = new Map(), who = new Map();
+      const byKey = new Map(), who = new Map(), toks = new Map(), sids = new Map();
       for (const x of day.list) {
         const rec = st[x.sid];
         if (!rec || rec.skip || rec.gone || !rec.key) continue;
+        toks.set(rec.key, (toks.get(rec.key) || 0) + tokUsed(x));
+        (sids.get(rec.key) || sids.set(rec.key, []).get(rec.key)).push(aiAgent(x) === "claude" ? x.sid : "");
         (byKey.get(rec.key) || byKey.set(rec.key, []).get(rec.key)).push(...x.segs);
         (who.get(rec.key) || who.set(rec.key, new Set()).get(rec.key)).add(AI_AGENTS[aiAgent(x)]);
       }
       const merged = new Map();
       for (const [k, segs] of byKey) merged.set(k, unionSegs([...(work[k] || []).filter((s) => s[1] != null), ...segs].map(([a, b]) => [a, b])));
-      for (const k of clocks) if (merged.has(k)) text = this.autoClock(text, k, merged.get(k), [...who.get(k)].join(" / "));
+      for (const k of clocks) if (merged.has(k)) text = this.autoClock(text, k, merged.get(k), [...who.get(k)].join(" / "), toks.get(k) || 0, (sids.get(k) || []).length === 1 ? sids.get(k)[0] : "");
       report.diff = diffLines(base, text);
       if (!dry) this._muteUntil = Date.now() + 4000;
       if (dry) { await this.autoArchivePast(arch, dayKey, true, report); cfg.autoLogState[dayKey] = JSON.parse(snap); return report; }
@@ -4506,8 +4868,39 @@ module.exports = class NautilusSpiral extends Plugin {
     this.kw.set(file.path, cur);
     if (this.kw.size > 80) this.kw.delete(this.kw.keys().next().value);   // 只留最近碰过的几十篇
     if (!prev || Date.now() < (this._muteUntil || 0)) return;
-    const changes = kwChanges(prev, cur);
+    const changes = this.kwFresh(file.path, kwChanges(prev, cur));
     if (changes.length && changes.length <= 3) this.sound(kwCue(changes));
+  }
+  // 编辑器里的改动（⌘/、点关键词、手敲）当场就响：写盘要等停手两秒，等它再响就不跟手了。
+  // 只看落在一行之内的改动，一次动了三行以上的、整段替换的（粘贴、同步、重新载入）不管，那些留给写盘那一路
+  kwLiveExtension() {
+    const { EditorView } = require("@codemirror/view");
+    return EditorView.updateListener.of((u) => {
+      if (!u.docChanged || this.settings.uiSound === false) return;
+      const a = u.startState.doc, b = u.state.doc, changes = [];
+      let lines = 0;
+      u.changes.iterChangedRanges((fa, ta, fb, tb) => {
+        if (++lines > 3) return;
+        const la = a.lineAt(fa), lb = b.lineAt(fb);
+        if (ta > la.to || tb > lb.to) { lines = 99; return; }
+        const c = kwLineChange(la.text, lb.text);
+        if (c) changes.push(c);
+      });
+      if (!changes.length || lines > 3 || Date.now() < (this._muteUntil || 0)) return;
+      const info = u.state.field(OB.editorInfoField, false);
+      const fresh = this.kwFresh(info && info.file ? info.file.path : "", changes);
+      if (fresh.length) this.sound(kwCue(fresh));
+    });
+  }
+  // 同一行的同一次变化，编辑器和写盘两路都会看到（前后差两秒），只响一次：记下每一行上次响的是变成什么，一分钟内再报同一个就不响
+  kwFresh(path, changes) {
+    const now = Date.now(), heard = (this.kwHeard ||= new Map());
+    for (const [k, v] of heard) if (now - v.at > 60000) heard.delete(k);
+    return changes.filter((c) => {
+      const k = path + "\n" + c.body, was = heard.get(k);
+      heard.set(k, { to: c.to, at: now });
+      return !(was && was.to === c.to);
+    });
   }
   async onAnyModify(f) {
     if (!(f instanceof TFile) || f.extension !== "md" || this.settings.uiSound === false) return;
@@ -4517,6 +4910,346 @@ module.exports = class NautilusSpiral extends Plugin {
   async kwBaseline(f) {
     if (!(f instanceof TFile) || f.extension !== "md" || this.kw.has(f.path) || this.settings.uiSound === false) return;
     try { this.kw.set(f.path, kwSnapshot(await this.app.vault.cachedRead(f))); } catch (e) { /* 读不到就算了 */ }
+  }
+
+  // ---------------- 任务行下面的进度条 ----------------
+  // 编辑器里 DOING（或 [/]）的那一行下面显示一行字符进度条，像命令行那样用 # 填。数从哪来，按这个顺序：
+  //   1. 你自己写在这一行里的进度：60%、2/3、三分之一、一半
+  //   2. 监听对上的那个 Agent 会话：它自己列了待办，就按做完几步算；没列就没有百分比，# 来回走表示它在跑
+  //   3. 这一行写了预估时长、又有开始时刻：按已经做了多久算
+  // 对上了会话，后面还写它眼下的状态（在跑 / 等你回复 / 多久没动静）、最近一步在干什么、用了多少 token。
+  // 会话怎么对上：自动记日记记下的那一行；不然看重名（会话标题和这一行一样），或者你发过去的话里带着这一行的字
+  lineStatus(raw, link = null) {
+    const cfg = this.settings;
+    const cache = (this._progCache ||= new Map());
+    let it = cache.get(raw);
+    if (it === undefined) {
+      it = parseJournal(raw.replace(/^\s+/, ""), cfg).find((i) => i.kind === "task" && i.doing) || null;
+      if (cache.size > 300) cache.clear();
+      cache.set(raw, it);
+    }
+    if (!it) return null;
+    const label = workKey(it.label);
+    const x = cfg.showAi !== false ? this.progSession(label, link) : null;
+    const lv = x && this._ai ? this._ai.live.get(x.sid) : null;
+    // 你把这个会话归档了 = 做完了：进度拉满，稍后这一行自动记成 DONE（见 progFinish）
+    const archived = !!(x && cfg.autoLogArchiveDone !== false && this._archived && this._archived.has(x.sid));
+    const nowM = moment(), now = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
+    let pct = null, lead = "", mode = "";
+    if (archived) pct = 1;
+    else if (it.progress != null) pct = it.progress;
+    else if (lv && lv.todo && lv.todo.total) { pct = lv.todo.done / lv.todo.total; lead = `${lv.todo.done}/${lv.todo.total} 步`; }
+    else if (it.explicitDur && it.startedAt != null && now >= it.startedAt) {
+      const spent = now - it.startedAt;
+      pct = Math.min(1, spent / it.dur);
+      lead = spent > it.dur ? `${dur(spent)} / ${dur(it.dur)} · 超 ${dur(spent - it.dur)}` : `${dur(spent)} / ${dur(it.dur)}`;
+    }
+    const parts = lead ? [lead] : [];
+    if (x) {
+      (this._progSids ||= new Set()).add(x.sid);
+      const quiet = lv ? Math.max(0, Math.round((Date.now() - lv.at) / 60e3)) : null;
+      const state = archived ? "已归档" : !lv ? "" : lv.state === "wait" ? "等你回复" : quiet <= AI_IDLE ? "在跑" : `${dur(quiet)} 没动静`;
+      mode = lv && lv.state === "run" && quiet <= AI_IDLE ? "run" : "wait";
+      parts.push(`${x.bound ? "绑定" : "监听"} ${AI_AGENTS[aiAgent(x)]}${state ? " · " + state : ""}`);
+      const step = !archived && lv && lv.state === "run" ? (lv.todo && lv.todo.cur) || lv.step : "";
+      if (step) parts.push(step);
+      const tok = this.progTokens(x.sid);
+      if (tok) parts.push(`${fmtTok(tok)} tok`);
+    }
+    if (pct == null && !x) return null;
+    return { pct, mode: pct != null ? "bar" : mode, agent: x ? aiAgent(x) : "", tail: parts.join(" · "), finish: archived ? { sid: x.sid, label } : null,
+      tip: [archived ? "这个会话归档了，这一行马上记成 DONE" : it.progress != null ? "进度是你写在这一行里的" : pct != null && lead.includes("步") ? "进度按这个会话自己列的待办算" : pct != null ? "进度按预估时长算" : "这个会话没有列待办，看不出做到百分之几",
+        x ? `${x.bound ? "手动绑定的会话" : "监听的会话"}：${x.title || (x.text || "").slice(0, 40) || x.sid}（${aiWhere(x)}）` : ""].filter(Boolean).join("\n") };
+  }
+  // 这一行对上的是哪个会话：下面有「🔗」行的（link = 那一行读出来的 { sid, agent }）优先，绑了就只听它，那个会话今天没动静也照样认；
+  // 没绑的在今天有动静的会话里找，几个都对得上取最近在动的
+  progSession(label, link = null) {
+    const cfg = this.settings, dayKey = this.today().format(cfg.format);
+    if (link && link.sid && aiOn(cfg).includes(link.agent || "claude")) {
+      const days = this.aiStore ? this.aiStore.days : {};
+      for (const k of Object.keys(days).sort().slice(-7).reverse()) {
+        const hit = (days[k].list || []).find((x) => x.sid === link.sid);
+        if (hit) return { ...hit, bound: true };
+      }
+      return { sid: link.sid, agent: link.agent || "claude", title: "", text: "", app: "", bound: true };
+    }
+    // 今天的会话清单几秒内重复用（一屏上有好几行 DOING，各问一遍）
+    let c = this._progDay;
+    if (!c || c.key !== dayKey || c.store !== this.aiStore || Date.now() - c.at > 5000) {
+      const day = this.aiStore && aiPick(this.aiStore.days[dayKey], cfg);
+      c = this._progDay = { key: dayKey, store: this.aiStore, at: Date.now(), list: ((day && day.list) || []).filter((x) => x.segs && x.segs.length) };
+    }
+    const list = c.list;
+    if (!list.length) return null;
+    const st = (cfg.autoLogState || {})[dayKey] || {};
+    let hits = list.filter((x) => { const r = st[x.sid]; return r && r.key === label && !r.skip && !r.gone; });
+    if (!hits.length) {
+      const norm = (v) => String(v || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+      const want = norm(label);
+      if (want.length >= 4) hits = list.filter((x) => { const t = norm(x.title); return (t.length >= 4 && (t === want || t.includes(want) || (t.length >= 6 && want.includes(t)))) || norm(x.text).includes(want); });
+    }
+    const lastOf = (x) => x.segs[x.segs.length - 1][1];
+    return hits.sort((a, b) => lastOf(b) - lastOf(a))[0] || null;
+  }
+  // 这个会话最近 7 天一共用掉多少 token（产出 + 读入）
+  progTokens(sid) {
+    const days = this.aiStore ? this.aiStore.days : {};
+    let n = 0;
+    for (const k of Object.keys(days).sort().slice(-7)) for (const x of days[k].list || []) if (x.sid === sid) n += tokUsed(x);
+    return n;
+  }
+  lineProgressExtension() {
+    const { ViewPlugin, Decoration, WidgetType } = require("@codemirror/view");
+    const { RangeSetBuilder, StateEffect } = require("@codemirror/state");
+    const plugin = this, W = 20;
+    const refresh = (this.progEffect = StateEffect.define());
+    const DOING_LINE = DOING_LINE_RE;
+    const resultOld = Decoration.line({ class: "naut-said" }), resultNew = Decoration.line({ class: "naut-said is-new" });
+    // 画一遍：有百分比的，# 从上次的格数一格一格长到新的格数，百分数跟着跳；没有百分比、会话在跑的，三个 # 来回走
+    const paint = (el, info) => {
+      const doc = el.ownerDocument, win = doc.defaultView || window;
+      if (!el._bar) {
+        for (const k of ["bar", "pct", "tail"]) { el["_" + k] = doc.createElement("span"); el["_" + k].className = "naut-prog-" + k; el.appendChild(el["_" + k]); }
+        el._n = 0; el._i = 0;
+      }
+      win.clearInterval(el._timer);
+      el._timer = 0;
+      el.dataset.mode = info.mode;
+      el.dataset.agent = info.agent;
+      el.title = info.tip;
+      el._tail.textContent = (info.mode === "bar" ? "  " : " ") + info.tail;
+      if (info.mode === "bar") {
+        const to = Math.max(0, Math.min(W, Math.round(info.pct * W)));
+        const show = (n) => { el._bar.textContent = "[" + "#".repeat(n) + "-".repeat(W - n) + "]"; el._pct.textContent = " " + Math.round(n === to ? info.pct * 100 : n / W * 100) + "%"; };
+        show(el._n);
+        if (el._n !== to) el._timer = win.setInterval(() => {
+          if (!el.isConnected) { win.clearInterval(el._timer); return; }
+          el._n += el._n < to ? 1 : -1;
+          show(el._n);
+          if (el._n === to) win.clearInterval(el._timer);
+        }, 28);
+      } else if (info.mode === "run") {
+        const show = () => { const a = Array(W).fill(" "); for (let k = 0; k < 3; k++) { const q = el._i % (W + 3) - k; if (q >= 0 && q < W) a[q] = "#"; } el._bar.textContent = "[" + a.join("") + "]"; };
+        el._pct.textContent = "";
+        show();
+        el._timer = win.setInterval(() => { if (!el.isConnected) { win.clearInterval(el._timer); return; } el._i++; show(); }, 110);
+      } else {
+        el._bar.textContent = "[" + "·".repeat(W) + "]";
+        el._pct.textContent = "";
+      }
+    };
+    class ProgWidget extends WidgetType {
+      constructor(info) { super(); this.info = info; this.sig = JSON.stringify(info); }
+      eq(other) { return other.sig === this.sig; }
+      toDOM(view) {
+        const el = view.dom.ownerDocument.createElement("span");
+        el.className = "naut-prog";
+        el.setAttribute("aria-hidden", "true");
+        paint(el, this.info);
+        return el;
+      }
+      updateDOM(dom) { if (!dom._bar) return false; paint(dom, this.info); return true; }
+      destroy(dom) { (dom.ownerDocument.defaultView || window).clearInterval(dom._timer); }
+      ignoreEvent() { return true; }
+    }
+    const build = (view) => {
+      const b = new RangeSetBuilder();
+      if (plugin.settings.lineProgress === false) return b.finish();
+      const doc = view.state.doc;
+      let last = -1;
+      for (const { from, to } of view.visibleRanges) {
+        for (let pos = from; pos <= to;) {
+          const line = doc.lineAt(pos);
+          if (line.number > last && line.length < 2000 && DOING_LINE.test(line.text)) {
+            let info = null;
+            try {
+              // 这一项下面几行里有没有「🔗」行（绑定写在正文里）
+              const below = [line.text];
+              for (let n = line.number + 1; n <= doc.lines && n <= line.number + 12; n++) below.push(doc.line(n).text);
+              info = plugin.lineStatus(line.text, linkUnder(below, 0));
+            } catch (e) { console.error("[螺旋日程] 进度条", e); }
+            if (info && info.finish) plugin.progQueueDone(view, info.finish);
+            if (info) b.add(line.to, line.to, Decoration.widget({ widget: new ProgWidget(info), side: 1 }));
+          } else if (line.number > last && RESULT_LINE_RE.test(line.text)) {
+            // 「💬」行：颜色放淡；刚写上来的两秒多底色亮一下再褪掉
+            const said = line.text.replace(/^\s*[-*+]\s+💬\s*/, ""), at = plugin._resFresh && plugin._resFresh.get(said);
+            b.add(line.from, line.from, at && Date.now() - at < 2600 ? resultNew : resultOld);
+          }
+          last = line.number;
+          pos = line.to + 1;
+        }
+      }
+      return b.finish();
+    };
+    return ViewPlugin.fromClass(class {
+      constructor(view) { this.decorations = build(view); }
+      update(u) { if (u.docChanged || u.viewportChanged || u.transactions.some((tr) => tr.effects.some((e) => e.is(refresh)))) this.decorations = build(u.view); }
+    }, { decorations: (v) => v.decorations });
+  }
+  // 监听着的那几个会话有新动静就读进来，然后让各个编辑器把进度条重画一遍（没变的那几条不会动）
+  async progPoll() {
+    const s = this.settings;
+    if ((s.lineProgress === false && s.resultBack === false && s.agentStatus === false) || this._progBusy || document.hidden) return;
+    this._progBusy = true;
+    try {
+      if (this.settings.showAi !== false && OB.Platform && OB.Platform.isDesktopApp) {
+        await this.aiUsage();
+        // 要盯的会话：画着进度条的那几行对上的，加上开着的笔记里所有「🔗」行绑着的（它们答完了要回写结果）
+        const sids = new Set([...(this._progSids || []), ...this.linkScan().map((h) => h.sid), ...(this._agents || []).map((a) => a.sid)]);
+        if (this._ai && sids && sids.size && !this._aiBusy) {
+          this._aiBusy = true;
+          try {
+            const touched = await this._ai.poll(sids);
+            if (touched && this._ai.merge(this.aiStore, touched)) this._aiDirty = true;
+          } finally { this._aiBusy = false; }
+        }
+        if (sids && sids.size) this._archived = await this.progArchived();
+      }
+      this.progRefresh();
+      await this.resultSync();
+      const was = new Map((this._agents || []).map((a) => [a.sid, a.state]));
+      this._agents = await this.agentScan();
+      this.tickAgents();
+      // 有会话刚答完一轮、轮到你了：敲两下（和 WAITING 同一个音；Obsidian 不在最前面时不响）
+      if (this._agents.some((a) => a.state === "wait" && was.get(a.sid) === "run")) this.sound("WAITING");
+    } finally { this._progBusy = false; }
+  }
+
+  // ---------------- 结果回写 ----------------
+  // 开着的笔记里所有的「🔗」行：[{ cm, path, sid, agent }]。同一篇笔记开在几个标签页里只算一个
+  linkScan() {
+    const out = [], seen = new Set();
+    this.app.workspace.iterateAllLeaves((l) => {
+      const v = l.view, cm = v instanceof OB.MarkdownView && v.editor && v.editor.cm;
+      if (!cm || !v.file || seen.has(v.file.path) || cm.state.doc.length > 2e6) return;
+      seen.add(v.file.path);
+      const text = cm.state.doc.toString();
+      if (!text.includes("🔗")) return;
+      for (const line of text.split("\n")) { const k = parseLink(line); if (k) out.push({ cm, path: v.file.path, ...k }); }
+    });
+    return out;
+  }
+  // 「🔗」绑着的会话答完了一轮（在等你）或者归档了：把它最后说的话写成同一件任务下面的「💬」行，下一轮答完再换成新的。
+  // 只动开着的编辑器，不进撤销记录（⌘Z 撤的是你自己的改动）；你正在用输入法打字的那一下不写，等下一轮；没开着的笔记等你打开它时补上
+  async resultSync() {
+    const cfg = this.settings;
+    if (cfg.resultBack === false || cfg.showAi === false || !this._ai || this._resBusy) return;
+    this._resBusy = true;
+    try {
+      const arch = this._archived || new Set(), cache = (this._resCache ||= new Map()), on = aiOn(cfg), todo = new Map();
+      for (const h of this.linkScan()) {
+        if (!on.includes(h.agent)) continue;
+        const lv = this._ai.live.get(h.sid);
+        if (!arch.has(h.sid) && !(lv && lv.state === "wait")) continue;   // 还在跑的不写：半路上说的话不是结论
+        const at = lv ? lv.at : 0;
+        let c = cache.get(h.sid);
+        if (!c || c.at !== at || c.max !== cfg.resultMax) {
+          const t = await this.sessionTail({ sid: h.sid, agent: h.agent }).catch(() => null);
+          cache.set(h.sid, c = { at, max: cfg.resultMax, said: t && t.full ? resultText(t.full, cfg.resultMax) : "" });
+        }
+        if (c.said) (todo.get(h.cm) || todo.set(h.cm, []).get(h.cm)).push([h.sid, c.said]);
+      }
+      for (const [cm, list] of todo) {
+        if (!cm.dom.isConnected || cm.composing) continue;
+        const text = cm.state.doc.toString();
+        let next = text;
+        for (const [sid, said] of list) next = resultInto(next, sid, said);
+        if (next === text) continue;
+        for (const [, said] of list) (this._resFresh ||= new Map()).set(said, Date.now());   // 刚写上的那一行亮一下（见 lineProgressExtension）
+        this.cmReplace(cm, text, next, false);
+      }
+    } finally { this._resBusy = false; }
+  }
+  // 把编辑器里的文字从 text 换成 next，只改变了的那几行（有「块去向」就用它的按行比对，中间折叠着的块不会被展开），没有就整段换。
+  // history = false：这次改动不进撤销记录
+  cmReplace(cm, text, next, history = true) {
+    const dtt = this.app.plugins.plugins["done-to-top"];
+    const doc = cm.state.doc, at = (p) => doc.line(p.line + 1).from + p.ch;
+    let changes;
+    if (dtt && dtt.core && dtt.core.diffChanges) changes = dtt.core.diffChanges(text, next).map((c) => ({ from: at(c.from), to: at(c.to), insert: c.text }));
+    else {
+      let a = 0, bEnd = text.length, nEnd = next.length;
+      while (a < bEnd && a < nEnd && text[a] === next[a]) a++;
+      while (bEnd > a && nEnd > a && text[bEnd - 1] === next[nEnd - 1]) { bEnd--; nEnd--; }
+      changes = [{ from: a, to: bEnd, insert: next.slice(a, nEnd) }];
+    }
+    cm.dispatch(history ? { changes } : { changes, annotations: require("@codemirror/state").Transaction.addToHistory.of(false) });
+  }
+  // 归档了哪些会话：Claude 桌面 app 里归档的、Codex 里归档的（和自动记日记用的是同一份判定，受同一个开关管）
+  async progArchived() {
+    const cfg = this.settings, out = new Set();
+    if (cfg.autoLogArchiveDone === false) return out;
+    try { for (const sid of await archivedSessions(this._archCache ||= new Map())) out.add(sid); } catch (e) { /* 读不到就当没归档 */ }
+    if (aiOn(cfg).includes("codex")) try { for (const sid of await AiUsage.codexArchived()) out.add(sid); } catch (e) { /* 同上 */ }
+    return out;
+  }
+  // 归档了的会话对着的那一行：先让进度条走到 100% 停一下，再把这一行记成 DONE。一个会话的一行只试一次
+  progQueueDone(cm, finish) {
+    const key = finish.sid + "\n" + finish.label;
+    const tried = (this._progDoneTried ||= new Set());
+    if (tried.has(key)) return;
+    tried.add(key);
+    // 先把会话最后说的话写成「💬」行（记 DONE 时 🔗 行就收掉了，之后找不到是哪个会话），再记 DONE
+    window.setTimeout(() => this.resultSync().catch(() => {}).then(() => { try { this.progFinish(cm, finish); } catch (e) { console.error("[螺旋日程] 归档后记 DONE 失败", e); } }), 1600);
+  }
+  // 和自动记日记里「归档 = 做完」是同一套写法：DONE 后面写会话最后有动静的时刻，顶格的行挪到 DONE 区，实际时段和 token 写在下面的 ⏱ 行里
+  progFinish(cm, { sid, label }) {
+    if (!cm.dom.isConnected) return;
+    const cfg = this.settings, text = cm.state.doc.toString();
+    const found = this.autoFind(text, label);
+    if (!found || found.cur !== "doing") return;   // 这一行已经不是 DOING 了（你自己改了、挪走了）：不碰
+    const day = this.aiStore && aiPick(this.aiStore.days[this.today().format(cfg.format)], cfg);
+    const x = ((day && day.list) || []).find((s) => s.sid === sid && s.segs && s.segs.length) || null;
+    let next = this.autoLine(text, { key: label, label, created: false }, x, "done").text;
+    if (x) next = this.autoClock(next, label, x.segs, AI_AGENTS[aiAgent(x)], tokUsed(x), aiAgent(x) === "claude" ? x.sid : "");
+    if (next === text) return;
+    const info = cm.state.field(OB.editorInfoField, false);
+    this.kwFresh(info && info.file ? info.file.path : "", [{ body: (kwLine(text.split("\n")[found.it.line] || "") || {}).body || label, to: "DONE" }]);   // 这一声在这里响，别让写盘那一路再响一遍
+    this.cmReplace(cm, text, next);
+    this.sound("DONE");
+    new OB.Notice(`✅ 会话归档了：「${label.replace(AUTO_MARK, "").slice(0, 24)}」记成 DONE`);
+  }
+
+  // 手动把光标所在的任务和一个会话绑起来（off = 解除）：在这一行下面写一行「🔗」。绑定就是日记里的这一行字，删掉它就解除了
+  bindSession(editor, off = false) {
+    const cfg = this.settings;
+    const n = editor.getCursor().line, raw = editor.getLine(n);
+    const it = parseJournal(raw.replace(/^\s+/, ""), cfg).find((i) => i.kind === "task");
+    if (!it) { new OB.Notice("光标要放在一行任务上（TODO / DOING… 开头的列表项）"); return; }
+    const lines = editor.getValue().split("\n");
+    const had = linkUnder(lines, n);
+    if (off) {
+      if (!had) { new OB.Notice("这一行下面没有「🔗」绑定"); return; }
+      editor.transaction({ changes: [{ from: { line: had.line - 1, ch: lines[had.line - 1].length }, to: { line: had.line, ch: lines[had.line].length }, text: "" }] });
+      this.progRefresh();
+      new OB.Notice("已解除绑定，这一行回到按名字自动对会话");
+      return;
+    }
+    const days = this.aiStore ? this.aiStore.days : {}, keys = Object.keys(days).sort().slice(-3), seen = new Map();
+    for (const k of keys) for (const x of ((aiPick(days[k], cfg) || {}).list || [])) if (x.segs && x.segs.length) seen.set(x.sid, { ...x, day: k });
+    const arch = this._archived || new Set();
+    const list = [...seen.values()].filter((x) => !arch.has(x.sid)).sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : b.segs[b.segs.length - 1][1] - a.segs[a.segs.length - 1][1]));
+    if (!list.length) { new OB.Notice("最近三天没有读到 Agent 会话"); return; }
+    new BindModal(this.app, list, keys[keys.length - 1], had && had.sid, (x) => {
+      if (editor.getLine(n) !== raw) { new OB.Notice("这一行在这期间变了，没有绑，请再来一次"); return; }
+      const now = editor.getValue().split("\n"), cur = linkUnder(now, n);
+      const title = x.title || (x.text || "").split(" / ")[0];
+      const line = linkLine(/^\s*/.exec(raw)[0] + "\t", aiAgent(x), title, x.sid);
+      editor.transaction({ changes: [cur
+        ? { from: { line: cur.line, ch: 0 }, to: { line: cur.line, ch: now[cur.line].length }, text: line }
+        : { from: { line: n, ch: raw.length }, to: { line: n, ch: raw.length }, text: "\n" + line }] });
+      (this._progSids ||= new Set()).add(x.sid);
+      this.progRefresh();
+      new OB.Notice(`🔗 已绑定：${title.slice(0, 30) || x.sid.slice(0, 8)}${it.doing ? "" : "\n这一行是 DOING 的时候才显示进度条"}`);
+    }).open();
+  }
+  progRefresh() {
+    if (!this.progEffect) return;
+    this._progSids = new Set();
+    this.app.workspace.iterateAllLeaves((l) => {
+      const cm = l.view instanceof OB.MarkdownView && l.view.editor && l.view.editor.cm;
+      if (cm) cm.dispatch({ effects: this.progEffect.of(null) });
+    });
   }
 
   // 界面上的小音效（设置里可以关）。Obsidian 不在最前面时不响：那时候日记多半是别的东西在改
@@ -4670,6 +5403,13 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(!!s.clockToNote).onChange(async (v) => { s.clockToNote = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName("状态栏").setDesc("右下角常驻一格：在做事时显示最近开始的那件做了多久，没在做时显示今天的容量。单击打开螺旋日程，⌥ 单击到日记里那一行，⇧ 单击在旁边分栏打开今天的日记")
       .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); }));
+    new Setting(containerEl).setName("任务行下面的进度条").setDesc("编辑器里 DOING 的那一行下面显示一行字符进度条 [#####-----] 45%。进度取你写在这一行里的 60%、2/3、一半；没写就看对上的 Agent 会话（它自己列了待办才有百分比，没列只显示在跑还是等你、眼下那一步、用了多少 token）；再不然按预估时长算")
+      .addToggle((t) => t.setValue(s.lineProgress !== false).onChange(async (v) => { s.lineProgress = v; await this.plugin.saveData(s); this.plugin.progRefresh(); }));
+    new Setting(containerEl).setName("状态栏的 Agent 汇总").setDesc("右下角多一格「🤖 2 在跑 · 1 等你」：开着的笔记和今天的日记里，下面有「🔗」行的任务和 DOING 的行对上的会话，眼下几个在跑、几个在等你。单击跳到等你的那一行，有好几个就轮着跳。没有会话时这一格不显示")
+      .addToggle((t) => t.setValue(s.agentStatus !== false).onChange(async (v) => { s.agentStatus = v; await this.plugin.saveData(s); this.plugin._agents = await this.plugin.agentScan(); this.plugin.tickAgents(); }));
+    new Setting(containerEl).setName("会话的结论写回任务下面").setDesc("任务下面有「🔗」行（绑着一个 Agent 会话）时：会话答完一轮或者被归档了，把它最后说的话写成这件任务下面的一行「💬」，下一轮答完再换成新的。只在这篇笔记开着的时候写；想让它停就关掉这一项，或者删掉那一行 🔗")
+      .addToggle((t) => t.setValue(s.resultBack !== false).onChange(async (v) => { s.resultBack = v; await this.plugin.saveData(s); }));
+    num("「💬」行最多多少字", "多的在句子结尾处截断。完整的回复点 🔗 行回到会话里看", "resultMax", 40, 2000);
     new Setting(containerEl).setName("界面音效").setDesc("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在上面单独设")
       .addToggle((t) => t.setValue(s.uiSound !== false).onChange(async (v) => { s.uiSound = v; await this.plugin.saveData(s); if (v) this.plugin.sound("done"); }));
     num("番茄钟阈值（分钟）", "一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "pomoMinutes", 0, 600);
@@ -4705,4 +5445,4 @@ class SpiralSettings extends PluginSettingTab {
   }
 }
 
-module.exports.core = { parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, SOUNDS };
+module.exports.core = { resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS };

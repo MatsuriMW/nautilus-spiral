@@ -297,10 +297,16 @@
 /* 在做事：计时；连着做过了番茄钟阈值变红，开太久像是忘了关就提醒检查。没在做：今天的容量，超载 / 空档不足时变橙 */
 .status-bar-item.naut-status { font-variant-numeric: tabular-nums; transition: color .3s ease; }
 .status-bar-item.naut-status.is-warning { color: var(--color-orange); }
+/* Agent 汇总那一格：有会话在等你时换成低饱和的赭色、慢慢呼吸；数变了轻轻跳一下（只动 transform 和透明度） */
+.status-bar-item.naut-agents { font-variant-numeric: tabular-nums; transition: color .3s ease; transform-origin: 50% 60%; }
+.status-bar-item.naut-agents.is-waiting { color: #a8704f; animation: naut-breathe 3.2s ease-in-out infinite; }
+.status-bar-item.naut-agents.is-bump { animation: naut-agents-bump .36s var(--naut-ease, ease-out); }
+.status-bar-item.naut-agents.is-waiting.is-bump { animation: naut-agents-bump .36s var(--naut-ease, ease-out), naut-breathe 3.2s ease-in-out .36s infinite; }
+@keyframes naut-agents-bump { 0% { transform: translateY(0) scale(1); } 40% { transform: translateY(-2px) scale(1.06); } 100% { transform: none; } }
 .status-bar-item.naut-status.is-overdue { color: var(--text-error); }
 .status-bar-item.naut-status.is-forgotten { color: var(--text-error); font-weight: 600; animation: naut-breathe 2.8s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .status-bar-item.naut-status { animation: none !important; transition: none !important; }
+  .status-bar-item.naut-status, .status-bar-item.naut-agents { animation: none !important; transition: none !important; }
 }
 
 /* ---------------- ⌃⌥V 现在怎样 ---------------- */
@@ -379,3 +385,21 @@
 /* 人机协作里的项目行能点开看会话 */
 .naut-row.naut-ai-row { cursor: pointer; }
 .naut-auto-err { color: var(--color-orange); cursor: help; }
+
+/* ---------------- 任务行下面的进度条 ----------------
+   编辑器里 DOING 的那一行下面一行等宽字符：[#########-----------] 45%  监听 Claude · 在跑 · 改 main.js · 48k tok
+   挂在那一行里面（不是单独一行），所以跟着这一行的缩进走；占满一整行宽的 inline-block，自己折到下一行（写成 block 的话行尾会多出一个空行）；# 的颜色：自己做的是 DOING 的红，监听着 Agent 的用那个 Agent 的颜色 */
+.naut-prog { display: inline-block; width: 100%; vertical-align: top; text-indent: 0; font-family: var(--font-monospace); font-size: 0.76em; line-height: 1.6; color: color-mix(in srgb, var(--text-muted) 80%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; -webkit-user-select: none; cursor: default; --naut-prog: #c8635f; animation: naut-prog-in .28s var(--naut-ease, ease-out) both; }
+.naut-prog[data-agent="claude"] { --naut-prog: #d97757; }
+.naut-prog[data-agent="codex"] { --naut-prog: #62b0ea; }
+.naut-prog[data-agent="workbuddy"] { --naut-prog: #17a57f; }
+.naut-prog-bar { white-space: pre; color: var(--naut-prog); }
+.naut-prog-pct { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+.naut-prog[data-mode="wait"] .naut-prog-bar { opacity: .5; }
+.naut-prog[data-mode="run"] .naut-prog-tail { animation: naut-breathe 1.8s ease-in-out infinite; }
+@keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+/* 任务下面的「💬」行（绑着的会话最后说的话）：字放淡；刚写上来时底色亮一下再褪掉（只动底色，不动版式） */
+.cm-line.naut-said { color: var(--text-muted); }
+.cm-line.naut-said.is-new { animation: naut-said-in 2.4s ease-out both; }
+@keyframes naut-said-in { from { background-color: rgba(217, 119, 87, .18); } to { background-color: transparent; } }
+@media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail, .cm-line.naut-said.is-new { animation: none !important; } }
