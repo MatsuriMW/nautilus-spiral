@@ -79,7 +79,7 @@ Until it is listed in the community directory: download `main.js`, `manifest.jso
 
 The core needs three things; everything else is optional and listed in the [guide](./docs/guide.zh-CN.md) under 「用到哪个开哪个」.
 
-1. In the plugin settings, set your daily-note **folder** and **file name format** (a moment.js format such as `YYYY-MM-DD`), and the hours your day starts and ends.
+1. In the plugin settings, set your daily-note **folder** and **file name format** (a moment.js format such as `YYYY-MM-DD`), the hours your day starts and ends, and the date boundary: the time before which you are still writing in yesterday's note. The boundary is a 24-hour clock time such as `08:00` or `4:30`.
 2. In today's note, write a couple of list items: `- 14:00-15:00 meeting` and `- TODO reply to mail 20m`.
 3. Open the spiral from the ribbon icon or the command 「打开螺旋日程」.
 

@@ -403,3 +403,5 @@
 .cm-line.naut-said.is-new { animation: naut-said-in 2.4s ease-out both; }
 @keyframes naut-said-in { from { background-color: rgba(217, 119, 87, .18); } to { background-color: transparent; } }
 @media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail, .cm-line.naut-said.is-new { animation: none !important; } }
+/* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
+input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px rgba(200, 99, 95, .25) !important; }

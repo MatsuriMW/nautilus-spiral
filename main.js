@@ -5,7 +5,7 @@ const VIEW_TYPE = "nautilus-spiral";
 const DEFAULTS = {
   dayStart: 8,          // 螺旋从几点开始
   dayEnd: 32,           // 螺旋和排程到几点结束，超过 24 表示次日凌晨（32 = 次日早上 8 点；个人作息夜里会一直干活，早上七八点才睡）
-  dayCutoff: 8,         // 日记的日期分界：早上几点前还算前一天
+  dayCutoff: 8,         // 日记的日期分界：这个时刻之前还算前一天。存的是小时数，可以带小数（4.5 = 04:30）；设置里按 24 小时制的时刻填
   defaultDur: 15,       // 没写时长的任务按多少分钟算
   folder: "日记",
   format: "YYYY_MM_DD",
@@ -720,6 +720,15 @@ let hatchSeq = 0;   // 每个螺旋的斜纹图案一个号，几个视图同时
 
 const pad = (n) => String(n).padStart(2, "0");
 const clock = (t) => `${pad(Math.floor(t / 60) % 24)}:${pad(Math.round(t % 60))}`;
+// 「日记日期分界」这类按 24 小时制填的时刻 ↔ 小时数（可以带小数）。认「8」「8.5」「08:00」「4:30」「23：30」，不认就返回 null；范围 00:00–23:59
+function parseHourClock(v) {
+  const s = String(v ?? "").trim().replace(/：/g, ":");
+  let m, h = null;
+  if ((m = /^(\d{1,2}):(\d{1,2})$/.exec(s))) { if (+m[2] < 60) h = +m[1] + +m[2] / 60; }
+  else if (/^\d{1,2}(\.\d+)?$/.test(s)) h = +s;
+  return h != null && h >= 0 && h < 24 ? Math.round(h * 60) / 60 : null;
+}
+const fmtHourClock = (h) => clock(Math.round((+h || 0) * 60));
 // 第二大脑每日回顾记进日记的复习：「DONE 14:10-14:12 复习卡片 23 张（…）」。螺旋上画成青色，顶部汇总张数和用时
 const REVIEW_RE = /^复习卡片\s*(\d+)\s*张/;
 const isReview = (t) => t.kind === "task" && t.state === "done" && REVIEW_RE.test(t.label || "");
@@ -4207,7 +4216,7 @@ module.exports = class NautilusSpiral extends Plugin {
   weeklyTick() {
     const cfg = this.settings;
     if (cfg.weeklyDirs === false) return;
-    const day = this.today(), h = moment().hours();
+    const day = this.today(), nowM = moment(), h = nowM.hours() + nowM.minutes() / 60;
     const week = day.format("GGGG-[W]WW");
     if (day.isoWeekday() !== 7 || (h < 21 && h >= (cfg.dayCutoff ?? 8)) || cfg.weeklySent === week || this._weeklyBusy) return;
     this._weeklyBusy = true;
@@ -5294,7 +5303,20 @@ class SpiralSettings extends PluginSettingTab {
       }));
     num("一天从几点开始", "螺旋的起点（0–23）", "dayStart", 0, 23);
     num("一天到几点结束", "螺旋和排程到几点为止，超过 24 表示次日凌晨，比如 32 = 次日早上 8 点", "dayEnd", 12, 36);
-    num("日记日期分界（点）", "早上几点前还算前一天的日记，比如 8 = 早上 8 点前都算昨天", "dayCutoff", 0, 12);
+    // 日期分界按 24 小时制的时刻填。别的插件（日记整理、块去向、任务提醒…）的「今天」都读这一项
+    new Setting(containerEl).setName("日记日期分界").setDesc("这个时刻之前还算前一天的日记。按 24 小时制写：08:00、4:30、23:30 都行，只写一个数也行（8 = 08:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项")
+      .addText((t) => {
+        t.setPlaceholder("08:00").setValue(fmtHourClock(s.dayCutoff ?? 8)).onChange(async (v) => {
+          const h = parseHourClock(v);
+          t.inputEl.toggleClass("naut-bad-input", h == null);
+          if (h == null) return;
+          s.dayCutoff = h;
+          await this.plugin.saveData(s);
+          this.plugin.refresh();
+        });
+        // 离开输入框时写成统一的样子（8 → 08:00）；填得不对就退回现在的值
+        t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(fmtHourClock(s.dayCutoff ?? 8)); });
+      });
     num("默认任务时长（分钟）", "没写时长的任务按这个算", "defaultDur", 1, 240);
     const text = (name, desc, key) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
       .setValue(s[key])
@@ -5445,4 +5467,4 @@ class SpiralSettings extends PluginSettingTab {
   }
 }
 
-module.exports.core = { resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS };
+module.exports.core = { parseHourClock, fmtHourClock, resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS };
