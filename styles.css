@@ -96,16 +96,19 @@
 .naut-hour { font-size: 8px; fill: var(--text-muted); opacity: 0.75; text-anchor: middle; dominant-baseline: middle; }
 .naut-log { fill: var(--text-normal); opacity: 0.7; }
 .naut-center { font-size: 16px; font-weight: 600; fill: var(--text-normal); text-anchor: middle; font-variant-numeric: tabular-nums; }
+/* 中间时间下面的复习张数 */
+.naut-center-rev { font-size: 9px; font-weight: 600; fill: var(--naut-review); text-anchor: middle; font-variant-numeric: tabular-nums; cursor: help; }
 /* 现在：一根中性色的指针（红色留给「重要」），圆点外面一圈底色，压在线段上也看得清 */
 .naut-now { stroke: var(--naut-now); stroke-width: 1.25; stroke-linecap: round; opacity: 0.5; }
 .naut-now-dot { fill: var(--naut-now); stroke: var(--background-primary); stroke-width: 2; }
 .naut-now-halo { fill: var(--naut-now); opacity: 0; pointer-events: none; transform-box: fill-box; transform-origin: center; animation: naut-pulse 2.6s ease-out infinite; }
 
 /* 🤖 人机协作 / 🎮 游戏：内圈细线 */
-.naut-ai, .naut-game { fill: none; stroke-width: 3; stroke-linecap: round; opacity: 0.9; transition: stroke-width .16s var(--naut-ease); }
+.naut-ai, .naut-game, .naut-rev { fill: none; stroke-width: 3; stroke-linecap: round; opacity: 0.9; transition: stroke-width .16s var(--naut-ease); }
 .naut-ai { stroke: var(--naut-ai); }
 .naut-game { stroke: var(--naut-game); }
-.naut-ai.is-hot, .naut-game.is-hot { stroke-width: 5; opacity: 1; }
+.naut-rev { stroke: var(--naut-review); }
+.naut-ai.is-hot, .naut-game.is-hot, .naut-rev.is-hot { stroke-width: 5; opacity: 1; }
 /* 细线上面叠的一条看不见的粗线，只管接鼠标 */
 .naut-hit { fill: none; stroke: transparent; stroke-width: 9; stroke-linecap: round; pointer-events: stroke; }
 
@@ -229,10 +232,10 @@
 .naut-enter .naut-gap { animation: naut-fade .6s ease-out .55s backwards; }
 .naut-enter .naut-seg { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards; }
 .naut-enter .naut-seg.naut-live { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards, naut-breathe 2.8s ease-in-out 1.4s infinite; }
-.naut-enter .naut-ai, .naut-enter .naut-game { animation: naut-draw-soft .5s var(--naut-ease) calc(var(--naut-d, 0ms) + 120ms) backwards; }
+.naut-enter .naut-ai, .naut-enter .naut-game, .naut-enter .naut-rev { animation: naut-draw-soft .5s var(--naut-ease) calc(var(--naut-d, 0ms) + 120ms) backwards; }
 .naut-enter .naut-hour, .naut-enter .naut-log { animation: naut-fade .4s ease-out var(--naut-d, 0ms) backwards; }
 .naut-enter .naut-now-g { transform-origin: 160px 160px; animation: naut-sweep .9s var(--naut-ease) .2s backwards; }
-.naut-enter .naut-handle, .naut-enter .naut-center { animation: naut-fade .4s ease-out .6s backwards; }
+.naut-enter .naut-handle, .naut-enter .naut-center, .naut-enter .naut-center-rev { animation: naut-fade .4s ease-out .6s backwards; }
 .naut-enter .naut-bar { animation: naut-wipe .6s var(--naut-ease) backwards; }
 .naut-enter .naut-cap > :not(.naut-bar) { animation: naut-fade .4s ease-out .15s backwards; }
 .naut-enter .naut-list > * { animation: naut-rise .32s var(--naut-ease) backwards; animation-delay: calc(220ms + var(--naut-i, 0) * 24ms); }

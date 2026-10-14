@@ -2470,6 +2470,15 @@ class SpiralView extends ItemView {
       const vis = late(svgEl("path", { d, class: "naut-game", pathLength: 1 }, svg), a);
       hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, `🎮 ${n}`);
     }
+    // 再往里一圈：复习卡片（第二大脑每日回顾记进日记的那几段），和主轨道上的复习段同一个青色
+    const revN = (t) => +(REVIEW_RE.exec(t.label) || [0, 0])[1];
+    const revs = items.filter(isReview);
+    for (const t of revs) for (const [a, b] of t.segments || []) {
+      const d = arc(a, Math.max(b, a + 3), -10 - 4.5 * Math.max(1, agents.length) - 6);
+      if (!d) continue;
+      const vis = late(svgEl("path", { d, class: "naut-rev", pathLength: 1 }, svg), a);
+      hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, `🃏 复习卡片 ${revN(t)} 张`);
+    }
     // 这件任务做过的那几段里，Claude 在干什么
     const aiMemo = new Map();
     const aiOf = (item) => {
@@ -2552,6 +2561,9 @@ class SpiralView extends ItemView {
     handle("end", E1);
     const center = svgEl("text", { x: c, y: c + 4, class: "naut-center" }, svg);
     center.textContent = dayRel === 0 ? clock(now) : date.format("M/D");
+    // 中间时间下面：这天一共复习了几张卡
+    const revTotal = revs.reduce((k, t) => k + revN(t), 0);
+    if (revTotal) hov(svgEl("text", { x: c, y: c + 19, class: "naut-center-rev" }, svg), `${revs.length} 轮`, `🃏 这天复习了 ${revTotal} 张卡片`).textContent = `🃏 ${revTotal}`;
 
     // 列表
     const list = root.createDiv({ cls: "naut-list" });
