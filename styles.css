@@ -1,6 +1,6 @@
 /* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
    内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿），游戏是紫的，靠位置和粗细再区分一层 */
-.naut-root, .naut-ai-modal, .naut-status-modal {
+.naut-root, .naut-ai-modal, .naut-status-modal, .naut-agent-pop {
   --naut-event: #e3a924;
   --naut-task: #2b64c3;
   --naut-prio: #d03739;
@@ -408,3 +408,46 @@
 @media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail, .cm-line.naut-said.is-new { animation: none !important; } }
 /* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
 input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px rgba(200, 99, 95, .25) !important; }
+
+/* 进度条下面那几行：左边一格图标、文字从同一条线开始，数字等宽；细账在悬停提示里 */
+.naut-cap-row { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); align-items: baseline; margin-top: 3px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; cursor: help; }
+.naut-cap-row.naut-cap-plan { margin-top: 6px; color: var(--text-normal); }
+.naut-cap-ico { justify-self: center; font-size: .95em; line-height: 1; }
+.naut-cap-ico.naut-burn { margin-right: 0; }
+.naut-cap-val { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.naut-cap-val > span { transition: color .3s ease; }
+.naut-cap-val .naut-sw { margin: 0 0 0 6px; }
+.naut-cap-val .naut-sw + .naut-sw { margin-left: 3px; }
+.naut-cap-row.is-error .naut-cap-val { white-space: normal; color: var(--text-error); }
+/* 状态栏 Agent 那一格点开的详情面板：贴在它正上方，一张会话一张卡片。只动透明度和 transform */
+.naut-agent-pop { position: fixed; z-index: var(--layer-menu, 60); width: min(380px, calc(100vw - 24px)); max-height: 62vh; overflow-y: auto; padding: 10px 10px 8px; border-radius: 12px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); box-shadow: 0 10px 28px rgba(0, 0, 0, .12), 0 2px 6px rgba(0, 0, 0, .06); font-size: var(--font-ui-smaller); color: var(--text-normal); transform-origin: 100% 100%; animation: naut-ap-in .2s var(--naut-ease) both; }
+.naut-agent-pop.is-leaving { animation: naut-ap-out .15s ease-in both; pointer-events: none; }
+@keyframes naut-ap-in { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes naut-ap-out { to { opacity: 0; transform: translateY(4px) scale(.98); } }
+.naut-ap-head { display: flex; justify-content: space-between; align-items: baseline; padding: 0 4px 7px; font-weight: 600; }
+.naut-ap-count { color: var(--text-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.naut-ap-list { display: flex; flex-direction: column; gap: 6px; }
+.naut-ap-card { padding: 8px 10px 8px; border-radius: 9px; background: var(--background-secondary); cursor: pointer; transition: background-color .15s ease, transform .15s ease; animation: naut-rise .28s var(--naut-ease) backwards; animation-delay: calc(var(--naut-i, 0) * 30ms); }
+.naut-ap-card:hover { background: var(--background-modifier-hover); transform: translateY(-1px); }
+.naut-ap-card.is-wait { box-shadow: inset 2px 0 0 #a8704f; }
+.naut-ap-top { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.naut-ap-dot { width: 7px; height: 7px; border-radius: 50%; }
+.naut-ap-state { font-size: .9em; line-height: 1.5; padding: 0 5px; border-radius: 4px; }
+.naut-ap-state.is-run { color: #4f7d5c; background: rgba(111, 159, 122, .15); }
+.naut-ap-state.is-wait { color: #8f5d40; background: rgba(168, 112, 79, .15); }
+.naut-ap-state.is-quiet { color: var(--text-muted); background: var(--background-modifier-border); }
+.naut-ap-card.is-run .naut-ap-dot { animation: naut-breathe 1.8s ease-in-out infinite; }
+.naut-ap-label { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.naut-ap-ago { color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.naut-ap-line { margin-top: 3px; padding-left: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.naut-ap-step { color: var(--text-normal); }
+.naut-ap-bar { margin: 5px 0 0 13px; height: 3px; border-radius: 2px; background: var(--background-modifier-border); overflow: hidden; }
+.naut-ap-fill { height: 100%; transform-origin: 0 50%; transition: transform .4s var(--naut-ease); }
+.naut-ap-said { margin: 5px 0 0 13px; padding: 5px 8px; border-radius: 6px; background: var(--background-primary); color: var(--text-normal); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.naut-ap-acts { display: flex; gap: 6px; margin: 6px 0 0 13px; }
+.naut-ap-acts button { font-size: .92em; padding: 2px 9px; height: auto; }
+@media (prefers-reduced-motion: reduce) { .naut-agent-pop, .naut-ap-card, .naut-ap-dot { animation: none !important; } }
+
+.naut-agent-pop.is-static .naut-ap-card { animation: none; }
+.naut-ap-empty, .naut-ap-more { padding: 6px 4px 2px; color: var(--text-faint); text-align: center; }
+.status-bar-item.naut-agents.is-idle { color: var(--text-faint); }

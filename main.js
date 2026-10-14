@@ -16,7 +16,7 @@ const DEFAULTS = {
   aiAgents: { claude: true, codex: true, workbuddy: true },   // 主力 AI 工具：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
   googleCal: false,       // 读 Google 日历里的事件当固定事件（只读，走 Google Calendar API）
   googleClientId: "",     // 你自己在 Google Cloud 里建的 OAuth 客户端（桌面应用）的 ID；客户端密钥和刷新令牌不放在这儿，在系统钥匙串里
-  showUnrecorded: true,   // 过去没有任何记录的时间在螺旋上画成斜纹，容量条下面给一行「有记录 / 没记录」
+  showUnrecorded: true,   // 过去没有任何记录的时间在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」
   showDayReview: true,    // 列表里的「📋 当日复盘」：这一天每件任务的预计和实际，逐件对照
   dayReviewFolded: true,  // 当日复盘默认收着，标题上带结论
   statusBar: true,        // 状态栏常驻：正在做什么、做了多久；没在做时显示今天的容量
@@ -231,6 +231,8 @@ function resultText(raw, max = 200) {
   }
   return t.replace(/\[\[/g, "\\[\\[").replace(/(^|[^\w&\\])#(?=[^\s#])/g, "$1\\#").replace(/==/g, "\\=\\=").replace(/%%/g, "\\%\\%").replace(/\$/g, "\\$").replace(/</g, "\\<").replace(/\s\^(?=[A-Za-z0-9-]+$)/, " \\^");
 }
+// 面板里显示「💬」那句话：去掉为日记加的转义和 Markdown 记号（**加粗**、`代码`、[文字](链接) 只留文字）
+const plainSaid = (s) => String(s || "").replace(/\\(.)/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
 function resultUnder(lines, n) {
   return childMark(lines, n, (l) => (RESULT_LINE_RE.test(l) ? {} : null));
 }
@@ -2276,35 +2278,67 @@ class SpiralView extends ItemView {
     bar.createDiv({ cls: "naut-bar-task", attr: { style: `width:${(fit / total) * 100}%` } });
     bar.createDiv({ cls: "naut-bar-free", attr: { style: `width:${((plan.available - fit) / total) * 100}%` } });
     if (plan.overflow) bar.createDiv({ cls: "naut-bar-over", attr: { style: `width:${(plan.overflow / total) * 100}%` } });
-    // 第一行回答「排得下吗」：已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几；第二行是它背后的两笔预算：可安排的时间和事件时间，各是 现在还剩 / 全天
+    // 进度条下面只留一眼能看完的几行，每行左边一格图标、文字对齐：
+    //   📋 排得下吗（已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几）；可安排的时间正在流逝时图标换成会闪的 🔥
+    //   🤖 Agent 这一天干了多少（协作时长 · token）
+    //   正在发生的事（专注中、吃饭中）各另起一行；日历读不到时说一声
+    // 细账（可安排和事件两笔预算、按以往的校准、各个大方向、复习、游戏、有没有记录）都收进这两行的悬停提示，不再各占一行；
+    // 全天事件下面「固定事件」里有，这里不列。鼠标划过螺旋时，上面那一行详情照旧（见 hover）
     const C = capacity(items, plan, cfg, now, dayRel, bounds);
-    const info = cap.createDiv({ cls: "naut-cap-text" });
-    info.createSpan({ text: `已计划 ${dur(C.demand)} · ` });
-    info.createSpan({ cls: C.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text", text: `${C.status.label} ${dur(C.status.value)}`,
-      attr: { title: C.status.key === "overload" ? "已计划的比可安排的时间多出这么多" : C.status.key === "fragmented" ? "总时间够，但没有一段连续的空档放得下，这么多分钟没排进去" : "排完已计划的以后还空着这么多" } });
-    info.createSpan({ cls: `naut-left is-${C.tone}`, text: ` · 剩余 ${C.left}%`, attr: { title: "余量 ÷ 全天可安排的时间" } });
-    const budget = cap.createDiv({ cls: "naut-cap-text naut-cap-budget" });
-    if (C.burning === "available") budget.createSpan({ cls: "naut-burn", text: "🔥", attr: { title: "可安排的时间正在流逝" } });
-    budget.createSpan({ text: `可安排 ${dur(C.available)} / ${dur(C.totalAvailable)}`, attr: { title: "从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间" } });
-    budget.createSpan({ text: " · " });
-    if (C.burning === "events") budget.createSpan({ cls: "naut-burn", text: "🔥", attr: { title: "事件时间正在流逝" } });
-    budget.createSpan({ text: `事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}`, attr: { title: "还没过去的事件时间 / 全天的事件时间（重叠的只算一次）" } });
-    // 按以往预估的准头校准一下：近 30 天整体多用 / 少用了多少
-    const rv = cfg.showReview !== false && dayRel >= 0 ? this.plugin.reviewData() : null;
-    if (rv && rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15 && plan.demand >= 15) {
-      info.createSpan({ cls: "naut-muted naut-calib", text: ` · 按以往约 ${dur(plan.demand * rv.ratio)}`,
-        attr: { title: `近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍，待办 ${dur(plan.demand)} 按这个比例约 ${dur(plan.demand * rv.ratio)}` } });
-    }
-
-    // 人机协作：这一天 Claude 干了多少（数据见上面「人机协作」一节的口径）
+    const row = (cls, icon, title, iconCls = "") => {
+      const r = cap.createDiv({ cls: "naut-cap-row" + (cls ? " " + cls : ""), attr: title ? { title } : {} });
+      r.createSpan({ cls: "naut-cap-ico" + (iconCls ? " " + iconCls : ""), text: icon });
+      return r.createSpan({ cls: "naut-cap-val" });
+    };
     const ai = aiStore && aiPick(aiStore.days[dayKey], cfg);
     // 这天用了哪几个 Agent（按 Claude / Codex / WorkBuddy 的固定顺序）；旧记录没分 Agent 的都算 Claude
     const agents = !ai ? [] : ai.by ? Object.keys(AI_AGENTS).filter((k) => ai.by[k] && ai.by[k].segs.length).map((k) => [k, ai.by[k]]) : [["claude", { segs: ai.segs, wall: ai.wall, out: ai.out }]];
+    const games = (gameLog && gameLog.days[dayKey]) || [];
+    // 📝 已经过去、没有任何记录的时间（螺旋上画成斜纹）。你记的 = 事件、做完的任务、做过的时段；机器记的 = Agent 会话、游戏。今天算到现在，过去的日子算整天
+    const upto = dayRel === 0 ? Math.min(Math.max(now, S1), E1) : dayRel < 0 ? E1 : S1;
+    const mine = [...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
+      ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => t.segments || []),
+      ...plan.queue.flatMap((t) => t.segments.slice(0, t.workedN)), ...plan.suspended.flatMap((t) => t.worked || []), ...orphans.flatMap((o) => o.segs)];
+    const gaps = cfg.showUnrecorded !== false ? pastGaps(S1, E1, upto, [...mine, ...(ai ? ai.segs : []), ...games.map(([a, b]) => [a, b])]) : [];
+
+    // 📋 这一天的细账，放在悬停提示里
+    const notes = [
+      `可安排 ${dur(C.available)} / ${dur(C.totalAvailable)}：从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间`,
+      `事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}：还没过去的事件时间 / 全天的事件时间（重叠的只算一次）`,
+      C.status.key === "overload" ? "超载：已计划的比可安排的时间多出这么多" : C.status.key === "fragmented" ? "空档不足：总时间够，但没有一段连续的空档放得下，这么多分钟没排进去" : "余量：排完已计划的以后还空着这么多",
+      "剩余：余量 ÷ 全天可安排的时间",
+    ];
+    if (C.burning) notes.push(C.burning === "available" ? "🔥 可安排的时间正在流逝" : "🔥 事件时间正在流逝");
+    // 按以往预估的准头校准一下：近 30 天整体多用 / 少用了多少
+    const rv = cfg.showReview !== false && dayRel >= 0 ? this.plugin.reviewData() : null;
+    if (rv && rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15 && plan.demand >= 15) notes.push(`按以往约 ${dur(plan.demand * rv.ratio)}：近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍`);
+    // 🃏 复习卡片（第二大脑的每日回顾记进日记的，每张按「复习用时」秒算）
+    const reviews = items.filter(isReview);
+    if (reviews.length) notes.push(`🃏 复习 ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} 张 · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))}（螺旋上的青色段）`);
+    // 🎮 游戏时间（插件每分钟看一眼在不在玩，记在 game-log.json）
+    if (games.length) {
+      const by = {};
+      for (const [a, b, n] of games) by[n] = (by[n] || 0) + b - a;
+      notes.push(`🎮 游戏 ${dur(unionMin(games))}` + (Object.keys(by).length > 1 || !by.Steam ? "：" + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([n, m]) => `${n} ${dur(m)}`).join(" · ") : "") + "（螺旋内圈的绿线）");
+    }
+    if (cfg.showUnrecorded !== false && upto - S1 >= 10) {
+      const past = upto - S1, len = (segs) => segs.reduce((k, [a, b]) => k + b - a, 0);
+      const none = len(gaps), byMe = past - len(pastGaps(S1, E1, upto, mine));
+      notes.push(`📝 已过去 ${dur(past)} · 有记录 ${dur(past - none)}（${Math.round((past - none) / past * 100)}%）· 没记录 ${dur(none)}：你记的 ${dur(byMe)}，只有机器记的 ${dur(past - none - byMe)}；没记录的画成斜纹`);
+    }
+    const plan1 = row("naut-cap-plan", C.burning === "available" ? "🔥" : "📋", notes.join("\n"), C.burning === "available" ? "naut-burn" : "");
+    plan1.createSpan({ text: `已计划 ${dur(C.demand)} · ` });
+    plan1.createSpan({ cls: C.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text", text: `${C.status.label} ${dur(C.status.value)}` });
+    plan1.createSpan({ cls: `naut-left is-${C.tone}`, text: ` · 剩余 ${C.left}%` });
+
+    // 🤖 人机协作：这一天 Agent 干了多少（口径见设置里「人机协作」一节）；各个大方向也收在它的悬停提示里
     if (ai) {
       const models = Object.entries(ai.models).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${fmtTok(n)}`).join("、");
       const only = agents.length === 1 ? AI_AGENTS[agents[0][0]] : "";
-      const line = cap.createDiv({ cls: "naut-ai-line", attr: { title: [
+      const ds = this.plugin.dirStats(dayKey), dl = this.plugin.dirs().filter((d) => ds[d.name]);
+      const line = row("naut-cap-ai", "🤖", [
         `协作 ${dur(ai.wall)}：有 ${only || "Agent"} 在干活的时间，几个窗口同时开只算一次（螺旋内圈的细线，一个 Agent 一种颜色）`,
+        agents.length > 1 ? "各 Agent：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${dur(g.wall)}`).join(" / ") : "",
         `${only || "Agent"} 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`,
         `消耗 ${fmtTok(tokUsed(ai))} tok = 产出 + 读入${agents.length > 1 ? "：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`,
         `产出 ${fmtTok(ai.out)}：${only || "Agent"} 写出来的 token（含思考），${ai.calls} 次调用`,
@@ -2312,47 +2346,10 @@ class SpiralView extends ItemView {
         `缓存命中 ${fmtTok(ai.cached)}：每轮重读上下文，不算工作量`,
         `指令 ${ai.prompts}：你亲手发的消息`,
         models && `模型：${models}`,
-      ].filter(Boolean).join("\n") } });
+        dl.length ? "🧭 各方向：" + dl.map((d) => `${d.name} ${dur(ds[d.name])}`).join(" · ") : "",
+      ].filter(Boolean).join("\n"));
+      line.createSpan({ text: `协作 ${dur(ai.wall)} · ${fmtTok(tokUsed(ai))} tok` });
       for (const [k] of agents) line.createSpan({ cls: `naut-sw naut-bg-${k}` });
-      line.createSpan({ text: `🤖 协作 ${dur(ai.wall)} · ${only || "Agent"} 工时 ${dur(ai.agent)} · 消耗 ${fmtTok(tokUsed(ai))} tok · ${ai.prompts} 条指令` +
-        (agents.length > 1 ? " · " + agents.map(([k, g]) => `${AI_AGENTS[k]} ${dur(g.wall)}`).join(" / ") : "") });
-    }
-    // 🧭 各个大方向这天花了多久（自动记进日记的会话各归到哪个方向）
-    {
-      const ds = this.plugin.dirStats(dayKey);
-      const dl = this.plugin.dirs().filter((d) => ds[d.name]);
-      if (dl.length) cap.createDiv({ cls: "naut-dir-line", text: "🧭 " + dl.map((d) => `${d.name} ${dur(ds[d.name])}`).join(" · "),
-        attr: { title: "按大方向合计：自动记进日记的 Agent 会话各归到哪个方向，同一方向几个会话同时开只算一次" } });
-    }
-    // 🃏 复习卡片（第二大脑的每日回顾记进日记的，每张按「复习用时」秒算）
-    const reviews = items.filter(isReview);
-    if (reviews.length) {
-      const n = reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0);
-      const m = reviews.reduce((k, t) => k + (t.dur || 0), 0);
-      cap.createDiv({ cls: "naut-review-line", text: `🃏 复习 ${n} 张 · ${dur(m)}`,
-        attr: { title: "第二大脑每日回顾里复习的卡片，每张按 5 秒算（第二大脑设置「复习用时」），螺旋上的青色段" } });
-    }
-    // 🎮 游戏时间（插件每分钟看一眼在不在玩，记在 game-log.json）
-    const games = (gameLog && gameLog.days[dayKey]) || [];
-    if (games.length) {
-      const by = {};
-      for (const [a, b, n] of games) by[n] = (by[n] || 0) + b - a;
-      const wall = unionMin(games);
-      cap.createDiv({ cls: "naut-game-line", text: `🎮 游戏 ${dur(wall)}` + (Object.keys(by).length > 1 || !by.Steam ? " · " + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([n, m]) => `${n} ${dur(m)}`).join(" · ") : ""),
-        attr: { title: "开着 Hearthstone / Steam 里的游戏，或者 Steam 在最前面的时间（螺旋内圈的绿线）。只在 Obsidian 开着时记录。" } });
-    }
-
-    // 📝 已经过去、没有任何记录的时间。你记的 = 事件、做完的任务、做过的时段；机器记的 = Agent 会话、游戏。今天算到现在，过去的日子算整天
-    const upto = dayRel === 0 ? Math.min(Math.max(now, S1), E1) : dayRel < 0 ? E1 : S1;
-    const mine = [...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
-      ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => t.segments || []),
-      ...plan.queue.flatMap((t) => t.segments.slice(0, t.workedN)), ...plan.suspended.flatMap((t) => t.worked || []), ...orphans.flatMap((o) => o.segs)];
-    const gaps = cfg.showUnrecorded !== false ? pastGaps(S1, E1, upto, [...mine, ...(ai ? ai.segs : []), ...games.map(([a, b]) => [a, b])]) : [];
-    if (cfg.showUnrecorded !== false && upto - S1 >= 10) {
-      const past = upto - S1, len = (segs) => segs.reduce((k, [a, b]) => k + b - a, 0);
-      const none = len(gaps), byMe = past - len(pastGaps(S1, E1, upto, mine));
-      cap.createDiv({ cls: "naut-rec-line", text: `📝 已过去 ${dur(past)} · 有记录 ${dur(past - none)}（${Math.round((past - none) / past * 100)}%）· 没记录 ${dur(none)}`,
-        attr: { title: [`你记的 ${dur(byMe)}：事件、做完的任务、做过的时段`, `只有机器记的 ${dur(past - none - byMe)}：Agent 会话、游戏`, "没记录的时间在螺旋上画成斜纹。它只是排程上的事实，不代表那段时间被浪费了"].join("\n") } });
     }
     // ⏱ 正在专注的这一轮
     const fs = this.plugin.session();
@@ -2372,13 +2369,8 @@ class SpiralView extends ItemView {
       const back = line.createEl("button", { cls: "naut-focus-stop", text: "回来了", attr: { title: "现在就问要不要切回 DOING" } });
       back.onclick = () => { bk.asking = false; this.plugin.askBack(bk); };
     }
-
-    // 📅 日历：全天事件不占时间，列在这里；读不到时说明原因
-    if (cal && (cal.allDay.length || cal.error)) {
-      cap.createDiv({ cls: "naut-cal-line" + (cal.error ? " is-error" : ""),
-        text: cal.error ? `📅 ${cal.error.split("\n")[0]}` : `📅 全天：${cal.allDay.map((e) => e.title).join("、")}`,
-        attr: { title: cal.error || cal.allDay.map((e) => `${e.title}（${e.calendar}）`).join("\n") } });
-    }
+    // 📅 日历读不到时说明原因（全天事件本身在下面「固定事件」里）
+    if (cal && cal.error) row("is-error", "📅", cal.error).setText(cal.error.split("\n")[0]);
 
     // 鼠标划到螺旋的哪一段，这一行立刻显示那一段的时间和做的事（不等系统的悬停提示），位置固定在螺旋上方
     const hover = root.createDiv({ cls: "naut-hover" });
@@ -3049,6 +3041,10 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "quick-panel", name: "快捷面板（螺旋日程的所有操作）", key: ca("S"), run: () => new QuickPanel(this.app, this).open(), hidden: true },
       { id: "status", name: "现在怎样：专注、在做的、容量、接下来", key: ca("V"), run: () => this.showStatus() },
       { id: "doing-ai", name: "正在做的事的 Agent 会话", key: ca("C"), run: () => this.showDoingAi() },
+      { id: "agent-panel", name: "Agent 会话面板：在跑的、在等你的（状态栏 🤖 那一格点开的那个）", key: ca("A"), run: () => {
+        if (this.settings.agentStatus === false) { new OB.Notice("设置里「状态栏的 Agent 汇总」关着，先打开它"); return; }
+        this.toggleAgentPop();
+      } },
       { id: "start-here", name: "开始光标所在的任务（改成 DOING + 专注）", key: { modifiers: ["Mod", "Shift"], key: "Enter" }, editor: true, run: (editor, view) => this.startAtCursor(editor, view) },
       { id: "start-next", name: "开始下一件（改成 DOING + 专注）", key: ca("N"), run: () => this.startNext() },
       { id: "suggest-focus", name: "开一轮专注（选一个大方向）", key: ca("F"), run: () => this.suggestFocus("", 0) },
@@ -3948,7 +3944,7 @@ module.exports = class NautilusSpiral extends Plugin {
   // 做完、取消了的任务不算，归档了的会话不算，这次打开 Obsidian 以来没读到过动静的也不算。
   // 返回 [{ path, line, label, sid, agent, state }]：state = run 在跑 / wait 这一轮答完了在等你 / quiet 没答完但好几分钟没动静（多半停在要你点「允许」）
   async agentScan() {
-    const cfg = this.settings, out = [], seen = new Set(), arch = this._archived || new Set(), on = aiOn(cfg);
+    const cfg = this.settings, out = [], seen = new Set(), arch = this._archived || new Set(), on = aiOn(cfg), done = (this._agentDone = new Set());
     if (cfg.agentStatus === false || cfg.showAi === false || !this._ai) return out;
     const docs = [], paths = new Set();
     this.app.workspace.iterateAllLeaves((l) => {
@@ -3968,7 +3964,7 @@ module.exports = class NautilusSpiral extends Plugin {
         const owner = link ? markOwner(lines, i) : DOING_LINE_RE.test(lines[i]) && !linkUnder(lines, i) ? i : -1;
         if (owner < 0) continue;
         const k = kwLine(lines[owner]);
-        if (!k || /^(DONE|CANCELED|CANCELLED|FAILED)$/.test(k.kw)) continue;
+        if (!k || /^(DONE|CANCELED|CANCELLED|FAILED)$/.test(k.kw)) { if (link) done.add(link.sid); continue; }
         let sid = link && link.sid, agent = link && link.agent;
         if (!link) {
           const it = parseJournal(lines[owner].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task" && x.doing);
@@ -3989,31 +3985,169 @@ module.exports = class NautilusSpiral extends Plugin {
     const el = (this.agentEl = this.addStatusBarItem());
     el.addClass("naut-agents", "mod-clickable");
     el.setAttr("data-tooltip-position", "top");
-    el.hide();
-    el.addEventListener("click", () => this.agentClick().catch((e) => console.error("[螺旋日程] 状态栏 Agent", e)));
+    el.setText("🤖");
+    el.addClass("is-idle");
+    // 单击：在它正上方弹出所有在跑的、最新三个在等你的会话；⌥ 单击：直接跳到日记里等你的那一行
+    el.addEventListener("click", (ev) => {
+      if (ev.altKey) { this.closeAgentPop(); this.agentClick().catch((e) => console.error("[螺旋日程] 状态栏 Agent", e)); return; }
+      this.toggleAgentPop();
+    });
+    this.register(() => this.closeAgentPop(true));
   }
+  // 状态栏 🤖 那一格和它的面板看的会话：最近一天里所有在跑、在等你的 Claude Code 会话，桌面版 Code 标签里的、终端里的 claude 都算
+  // （用户 2026-10-14 定的：只管 Claude Code，普通聊天本机也没有日志）。不管它在大纲里有没有挂一行，挂了的带上是哪一行（点了能跳过去）。
+  // 不算：归档了的；在大纲里挂的那一行已经做完 / 取消的；别的程序拉起来的后台会话（第一句话是机器塞的「<…>」）、没标题也没说过话的。
+  // 返回按最后动静从新到旧排好的 [{ sid, agent, state: run / wait / quiet, at, label, title, path?, line?, x }]
+  agentSessions(bound = []) {
+    const cfg = this.settings, out = [];
+    if (cfg.agentStatus === false || cfg.showAi === false || !this._ai) return out;
+    const arch = this._archived || new Set(), done = this._agentDone || new Set(), now = Date.now();
+    const byLine = new Map(bound.map((a) => [a.sid, a]));
+    for (const [sid, lv] of this._ai.live) {
+      const agent = lv.agent || "claude";
+      if (agent !== "claude" || !lv.at || now - lv.at > 24 * 3600e3 || arch.has(sid) || done.has(sid)) continue;
+      const x = this.agentRecord(sid), raw = x ? x.title || String(x.text || "").split(" / ")[0] : "";
+      const title = /^\s*</.test(raw) ? "" : raw.trim();
+      if (!title && !byLine.has(sid)) continue;
+      const b = byLine.get(sid);
+      const state = lv.state === "wait" ? "wait" : (now - lv.at) / 60e3 <= AI_IDLE ? "run" : "quiet";
+      out.push({ sid, agent, state, at: lv.at, label: b ? b.label : title, title, path: b ? b.path : "", line: b ? b.line : -1, x });
+    }
+    return out.sort((a, b) => b.at - a.at);
+  }
+  // 状态栏那一格常驻一行：有在跑的就显示最新的那个在跑的，没有就显示最新一个在等你的；都没有写「空闲」
   tickAgents() {
     const el = this.agentEl;
     if (!el) return;
-    const list = this.settings.agentStatus === false ? [] : this._agents || [];
-    const run = list.filter((a) => a.state === "run").length, wait = list.length - run;
-    el.toggle(list.length > 0);
-    if (!list.length) return;
-    const text = `🤖 ${[run ? `${run} 在跑` : "", wait ? `${wait} 等你` : ""].filter(Boolean).join(" · ")}`;
-    if (el.getText() !== text) {
-      // 数变了：轻轻跳一下
-      if (el.getText()) { el.removeClass("is-bump"); void el.offsetWidth; el.addClass("is-bump"); }
-      el.setText(text);
-    }
-    el.toggleClass("is-waiting", wait > 0);
-    const word = { run: "在跑", wait: "等你回复", quiet: "好几分钟没动静" };
-    el.setAttr("aria-label", [...list].sort((a, b) => (a.state === "run") - (b.state === "run")).map((a) => `${word[a.state]} · ${AI_AGENTS[a.agent] || a.agent} · ${a.label.slice(0, 28)}`).join("\n") + `\n单击：到${wait ? "等你的" : "在跑的"}那一行（再点到下一个）`);
+    const off = this.settings.agentStatus === false;
+    el.toggle(!off);
+    if (off) return this.closeAgentPop(true);
+    const list = this._agentList || [];
+    const runs = list.filter((a) => a.state === "run"), waits = list.filter((a) => a.state !== "run");
+    const head = runs[0] || waits[0];
+    const word = { run: "在跑", wait: "等你", quiet: "没动静" };
+    const short = (s) => { const c = [...String(s || "")]; return c.length > 18 ? c.slice(0, 18).join("") + "…" : c.join(""); };
+    const text = head ? `🤖 ${word[head.state]} · ${short(head.label)}${list.length > 1 ? ` · 另 ${list.length - 1} 个` : ""}` : "🤖 空闲";
+    // 在跑 / 等你的个数变了：轻轻跳一下（只换了标题不跳）
+    const key = `${runs.length}/${waits.length}`;
+    if (this._agentKey != null && this._agentKey !== key) { el.removeClass("is-bump"); void el.offsetWidth; el.addClass("is-bump"); }
+    this._agentKey = key;
+    if (el.getText() !== text) el.setText(text);
+    el.toggleClass("is-waiting", !runs.length && waits.length > 0);
+    el.toggleClass("is-idle", !head);
+    el.setAttr("aria-label", head ? `${runs.length ? `${runs.length} 个在跑` : ""}${runs.length && waits.length ? " · " : ""}${waits.length ? `${waits.length} 个在等你` : ""}\n单击看详情 · ⌥ 单击跳到日记里等你的那一行` : "最近一天没有在跑或在等你的会话");
+    if (this._agentPop) this.renderAgentPop();   // 面板开着就跟着刷新
   }
-  // 点一下跳到等你的那一行；有好几个就轮着跳；没有在等的就跳到在跑的
+  // ⌥ 单击：跳到日记里等你的那一行；有好几个就轮着跳；没有在等的就跳到在跑的（只看在大纲里挂了一行的会话）
   async agentClick() {
     const list = this._agents || [], waiting = list.filter((a) => a.state !== "run"), pool = waiting.length ? waiting : list;
     if (!pool.length) return;
-    const t = pool[(this._agentAt = ((this._agentAt ?? -1) + 1) % pool.length)];
+    return this.jumpToAgent(pool[(this._agentAt = ((this._agentAt ?? -1) + 1) % pool.length)]);
+  }
+
+  // ---------- 状态栏 Agent 那一格的详情面板 ----------
+  // 所有在跑的会话、最新三个在等你的会话，一个一张卡片：状态、标题（挂在大纲里的用那一行的字）、哪个 Agent、桌面版还是终端、
+  // 自己列的待办做到第几步、眼下在干什么、多久没动静、用了多少 token、几点开始的；在等你的再带上它最后说的那句话
+  toggleAgentPop() { if (this._agentPop) this.closeAgentPop(); else this.openAgentPop(); }
+  openAgentPop() {
+    if (!this.agentEl) return;
+    const doc = this.agentEl.ownerDocument;
+    this._agentPop = doc.body.createDiv({ cls: "naut-agent-pop" });
+    this.renderAgentPop();
+    this.sound("tick");   // 和点螺旋、点列表同一声「嗒」
+    const away = (ev) => { if (this._agentPop && !this._agentPop.contains(ev.target) && !this.agentEl.contains(ev.target)) this.closeAgentPop(); };
+    const esc = (ev) => { if (ev.key === "Escape") this.closeAgentPop(); };
+    doc.addEventListener("mousedown", away, true);
+    doc.addEventListener("keydown", esc, true);
+    this._agentPopOff = () => { doc.removeEventListener("mousedown", away, true); doc.removeEventListener("keydown", esc, true); };
+  }
+  closeAgentPop(now = false) {
+    const pop = this._agentPop;
+    if (!pop) return;
+    this._agentPop = null;
+    if (this._agentPopOff) this._agentPopOff();
+    if (now) return pop.remove();
+    pop.addClass("is-leaving");
+    window.setTimeout(() => pop.remove(), 160);
+  }
+  // 这个会话最近 7 天里最后一天的记录（标题、从哪个 App 开的、活跃时段）
+  agentRecord(sid) {
+    const days = this.aiStore ? this.aiStore.days : {};
+    for (const k of Object.keys(days).sort().slice(-7).reverse()) {
+      const x = ((aiPick(days[k], this.settings) || {}).list || []).find((s) => s.sid === sid);
+      if (x) return x;
+    }
+    return null;
+  }
+  renderAgentPop() {
+    const pop = this._agentPop;
+    if (!pop) return;
+    const keepScroll = pop.scrollTop, first = !pop.childElementCount;
+    pop.empty();
+    pop.toggleClass("is-static", !first);   // 每 10 秒刷新时卡片不再重新播入场
+    const list = this._agentList || [];
+    const runs = list.filter((a) => a.state === "run"), waits = list.filter((a) => a.state !== "run");
+    const shown = [...runs, ...waits.slice(0, 3)];
+    const word = { run: "在跑", wait: "等你", quiet: "没动静" };
+    const head = pop.createDiv({ cls: "naut-ap-head" });
+    head.createSpan({ cls: "naut-ap-title", text: "🤖 Agent 会话" });
+    head.createSpan({ cls: "naut-ap-count", text: [runs.length ? `${runs.length} 在跑` : "", waits.length ? `${waits.length} 等你` : ""].filter(Boolean).join(" · ") });
+    if (!shown.length) pop.createDiv({ cls: "naut-ap-empty", text: "最近一天没有在跑或在等你的会话" });
+    const body = pop.createDiv({ cls: "naut-ap-list" });
+    shown.forEach((a, i) => {
+      const lv = this._ai && this._ai.live.get(a.sid), x = a.x;
+      const card = body.createDiv({ cls: `naut-ap-card is-${a.state}` + (a.path ? " is-bound" : ""), attr: { style: `--naut-i:${i}` } });
+      const top = card.createDiv({ cls: "naut-ap-top" });
+      top.createSpan({ cls: `naut-ap-dot naut-bg-${a.agent}` });
+      top.createSpan({ cls: `naut-ap-state is-${a.state}`, text: word[a.state] });
+      top.createSpan({ cls: "naut-ap-label", text: a.label, attr: { title: a.label } });
+      const ago = Math.max(0, Math.round((Date.now() - a.at) / 60e3));
+      top.createSpan({ cls: "naut-ap-ago", text: ago < 1 ? "刚刚" : ago >= 1440 ? `${Math.floor(ago / 1440)} 天前` : `${dur(ago)}前` });
+      // 哪个 App 开的（桌面版 / 终端），挂在大纲里的再带上会话自己的标题
+      card.createDiv({ cls: "naut-ap-line", text: [x ? aiWhere(x) : AI_AGENTS[a.agent] || a.agent, a.path && a.title && a.title !== a.label ? a.title : ""].filter(Boolean).join(" · ") });
+      // 进度：它自己列的待办做到第几步，眼下在干什么
+      const todo = lv && lv.todo && lv.todo.total ? lv.todo : null;
+      const step = lv && a.state === "run" ? (todo && todo.cur) || lv.step : "";
+      if (todo || step) card.createDiv({ cls: "naut-ap-line naut-ap-step", text: "▸ " + [todo ? `${todo.done}/${todo.total} 步` : "", step].filter(Boolean).join(" · ") });
+      if (todo) card.createDiv({ cls: "naut-ap-bar" }).createDiv({ cls: `naut-ap-fill naut-bg-${a.agent}`, attr: { style: `transform:scaleX(${todo.done / todo.total})` } });
+      // 在等你的：它最后说的那句话（和日记里「💬」那一行同一份；没挂在大纲里的去会话日志里读）
+      if (a.state !== "run") {
+        const said = this._resCache && this._resCache.get(a.sid);
+        const el = card.createDiv({ cls: "naut-ap-said" });
+        if (said && said.said) el.setText(plainSaid(said.said));
+        else this.agentSaid(a, el);
+      }
+      const facts = [], tok = this.progTokens(a.sid);
+      if (tok) facts.push(`${fmtTok(tok)} tok`);
+      if (x && x.segs && x.segs.length) facts.push(`${clock(x.segs[0][0])} 起`, `动了 ${dur(Math.max(1, Math.round(x.min || unionMin(x.segs))))}`);
+      if (a.path) facts.push(a.path.split("/").pop().replace(/\.md$/, ""));
+      if (facts.length) card.createDiv({ cls: "naut-ap-line naut-ap-facts", text: facts.join(" · ") });
+      const acts = card.createDiv({ cls: "naut-ap-acts" });
+      const btn = (text, fn) => { const b = acts.createEl("button", { text }); b.onclick = (ev) => { ev.stopPropagation(); fn(); }; };
+      const open = () => require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${a.sid}`], () => {});
+      if (a.path) btn("跳到这一行", () => { this.closeAgentPop(); this.jumpToAgent(a).catch(() => {}); });
+      if (a.agent === "claude") btn("打开会话", () => { this.closeAgentPop(); open(); });
+      card.onclick = () => { this.closeAgentPop(); if (a.path) this.jumpToAgent(a).catch(() => {}); else if (a.agent === "claude") open(); };
+    });
+    if (waits.length > 3) pop.createDiv({ cls: "naut-ap-more", text: `另有 ${waits.length - 3} 个在等你` });
+    pop.scrollTop = keepScroll;
+    // 贴着状态栏那一格的正上方，右边对齐
+    const r = this.agentEl.getBoundingClientRect(), de = pop.ownerDocument.documentElement;
+    pop.style.bottom = `${Math.max(8, de.clientHeight - r.top + 6)}px`;
+    pop.style.right = `${Math.max(8, de.clientWidth - r.right)}px`;
+  }
+  // 没挂在大纲里的会话：去它的会话日志里读最后一条回复，压成一行（读过的同一轮不再读）
+  agentSaid(a, el) {
+    const cache = (this._saidCache ||= new Map()), c = cache.get(a.sid);
+    if (c && c.at === a.at) { el.setText(c.said); return; }
+    this.sessionTail({ sid: a.sid, agent: a.agent }).then((t) => {
+      const said = t && t.full ? plainSaid(resultText(t.full, this.settings.resultMax)) : "";
+      cache.set(a.sid, { at: a.at, said });
+      if (el.isConnected) { if (said) el.setText(said); else el.remove(); }
+    }).catch(() => el.remove());
+  }
+  // 跳到这个会话挂着的那一行：扫的时候到现在行可能挪过，按会话的 🔗 行、再按正文重新找一遍
+  async jumpToAgent(t) {
     const file = this.app.vault.getAbstractFileByPath(t.path);
     if (!(file instanceof TFile)) return;
     // 扫的时候到现在行可能挪过：按会话的 🔗 行、再按正文重新找一遍
@@ -5116,7 +5250,8 @@ module.exports = class NautilusSpiral extends Plugin {
       if (this.settings.showAi !== false && OB.Platform && OB.Platform.isDesktopApp) {
         await this.aiUsage();
         // 要盯的会话：画着进度条的那几行对上的，加上开着的笔记里所有「🔗」行绑着的（它们答完了要回写结果）
-        const sids = new Set([...(this._progSids || []), ...this.linkScan().map((h) => h.sid), ...(this._agents || []).map((a) => a.sid)]);
+        const recent = this._ai ? [...this._ai.live].filter(([, v]) => Date.now() - v.at < 30 * 60e3).map(([sid]) => sid) : [];
+        const sids = new Set([...(this._progSids || []), ...this.linkScan().map((h) => h.sid), ...(this._agents || []).map((a) => a.sid), ...recent]);
         if (this._ai && sids && sids.size && !this._aiBusy) {
           this._aiBusy = true;
           try {
@@ -5130,6 +5265,7 @@ module.exports = class NautilusSpiral extends Plugin {
       await this.resultSync();
       const was = new Map((this._agents || []).map((a) => [a.sid, a.state]));
       this._agents = await this.agentScan();
+      this._agentList = this.agentSessions(this._agents);
       this.tickAgents();
       // 有会话刚答完一轮、轮到你了：敲两下（和 WAITING 同一个音；Obsidian 不在最前面时不响）
       if (this._agents.some((a) => a.state === "wait" && was.get(a.sid) === "run")) this.sound("WAITING");
@@ -5431,7 +5567,7 @@ class SpiralSettings extends PluginSettingTab {
     num("复盘看最近几天", "插件自己的计时记录留 45 天；再往前的日子，靠日记里任务下面那一行 ⏱ 算实际用时", "reviewDays", 7, 365);
     new Setting(containerEl).setName("当日复盘").setDesc("列表里的「📋 今日复盘」：这一天每件任务的预计和实际，逐件对照。只有做完、也记到了实际用时的才算进偏差")
       .addToggle((t) => t.setValue(s.showDayReview !== false).onChange(async (v) => { s.showDayReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    new Setting(containerEl).setName("显示没记录的时间").setDesc("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条下面给一行「有记录 / 没记录」")
+    new Setting(containerEl).setName("显示没记录的时间").setDesc("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」各多少")
       .addToggle((t) => t.setValue(s.showUnrecorded !== false).onChange(async (v) => { s.showUnrecorded = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     new Setting(containerEl).setName("实际时段写回日记").setDesc("你手动做的任务不再是 DOING 时，在它下面写一行「⏱ 14:05–14:40、15:10–15:32 · 共 57m」，和自动记的行同一种写法。实际用时就留在日记正文里，不只存在插件的计时记录里")
       .addToggle((t) => t.setValue(!!s.clockToNote).onChange(async (v) => { s.clockToNote = v; await this.plugin.saveData(s); }));
@@ -5439,8 +5575,8 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); }));
     new Setting(containerEl).setName("任务行下面的进度条").setDesc("编辑器里 DOING 的那一行下面显示一行字符进度条 [#####-----] 45%。进度取你写在这一行里的 60%、2/3、一半；没写就看对上的 Agent 会话（它自己列了待办才有百分比，没列只显示在跑还是等你、眼下那一步、用了多少 token）；再不然按预估时长算")
       .addToggle((t) => t.setValue(s.lineProgress !== false).onChange(async (v) => { s.lineProgress = v; await this.plugin.saveData(s); this.plugin.progRefresh(); }));
-    new Setting(containerEl).setName("状态栏的 Agent 汇总").setDesc("右下角多一格「🤖 2 在跑 · 1 等你」：开着的笔记和今天的日记里，下面有「🔗」行的任务和 DOING 的行对上的会话，眼下几个在跑、几个在等你。单击跳到等你的那一行，有好几个就轮着跳。没有会话时这一格不显示")
-      .addToggle((t) => t.setValue(s.agentStatus !== false).onChange(async (v) => { s.agentStatus = v; await this.plugin.saveData(s); this.plugin._agents = await this.plugin.agentScan(); this.plugin.tickAgents(); }));
+    new Setting(containerEl).setName("状态栏的 Agent 汇总").setDesc("右下角常驻一格：有在跑的会话就显示最新那个在跑的，没有就显示最新一个在等你回复的。范围是最近一天所有的 Claude Code 会话（桌面版的 Code 会话、终端里的 claude 都算），归档了的、日记里那一行已经做完的不算。单击弹出所有在跑的和最新三个在等你的，⌥ 单击跳到日记里等你的那一行")
+      .addToggle((t) => t.setValue(s.agentStatus !== false).onChange(async (v) => { s.agentStatus = v; await this.plugin.saveData(s); this.plugin._agents = await this.plugin.agentScan(); this.plugin._agentList = this.plugin.agentSessions(this.plugin._agents); this.plugin.tickAgents(); }));
     new Setting(containerEl).setName("会话的结论写回任务下面").setDesc("任务下面有「🔗」行（绑着一个 Agent 会话）时：会话答完一轮或者被归档了，把它最后说的话写成这件任务下面的一行「💬」，下一轮答完再换成新的。只在这篇笔记开着的时候写；想让它停就关掉这一项，或者删掉那一行 🔗")
       .addToggle((t) => t.setValue(s.resultBack !== false).onChange(async (v) => { s.resultBack = v; await this.plugin.saveData(s); }));
     num("「💬」行最多多少字", "多的在句子结尾处截断。完整的回复点 🔗 行回到会话里看", "resultMax", 40, 2000);
@@ -5452,7 +5588,7 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.openTodayOnStartup !== false).onChange(async (v) => { s.openTodayOnStartup = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName("启动时左侧栏显示螺旋日程").setDesc("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）")
       .addToggle((t) => t.setValue(s.revealOnStartup !== false).onChange(async (v) => { s.revealOnStartup = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("显示人机协作").setDesc("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面显示当天协作时长、token 产出，螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json")
+    new Setting(containerEl).setName("显示人机协作").setDesc("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面「🤖」那一行显示当天协作时长和 token（悬停看细账），螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json")
       .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     containerEl.createEl("h3", { text: "🤖 主力 AI 工具" });
     containerEl.createEl("p", { cls: "setting-item-description", text: "平时主要用哪几个，就开哪几个。开着的才会读它的会话日志、画进螺旋、算 token、自动记进日记；关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。" });
