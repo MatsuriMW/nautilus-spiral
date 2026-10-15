@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 - **Agent 的时间。** 读 Claude Code、Codex（桌面版和命令行）、WorkBuddy 留在本机的会话日志，把每个 Agent 干活的时段画成内圈的细线，一个 Agent 一种颜色，带上各自消耗的 token（产出 + 读入，缓存命中单列）。三个里用哪几个，你自己选。
 - **正在做的那一行下面有一条进度。** 编辑器里 `DOING` 的那一行下面多一行等宽字符，像命令行那样用 `#` 填：`[#########-----------] 45%`。数取你写在这一行里的进度（`60%`、`2/3`）；没写就看对上的那个 Agent 会话，它自己列了待办就按做完几步算；再不然按已经做了多久和预计时长算。对上了会话，后面还写它在跑还是等你回复、最近一步在干什么、用了多少 token；会话对不上可以手动绑定（在任务下面写一行 `🔗`），会话归档了这一行自动走到 100% 并记成 `DONE`。
 - **主动记录和被动记录结合。** 你有意记的：计划、预计时长、手动改的状态。机器在旁边替你记的：每个 Agent 会话真正在动的时段和时长。两种记录落在同一篇日记、同一圈螺旋上。
-- **人机共写（可选，默认关）。** Agent 会话在动，日记里对应的那一行变成 `DOING`；40 分钟没动静变成 `SUSPENDED`，实际时段写在它下面。插件不自己判断 `DONE`；你在 Claude 桌面 app 或 Codex 里把会话归档，才算你说的做完了。同一件事随时可以手动跑一次（`⌃⌥L`，或者「人机协作」旁边的按钮），自动的开没开着都行。
+- **人机共写（可选，默认关）。** Agent 会话在动，日记里对应的那一行变成 `DOING`；40 分钟没动静变成 `PAUSED`（暂停），实际时段写在它下面。插件不自己判断 `DONE`；你在 Claude 桌面 app 或 Codex 里把会话归档，才算你说的做完了。同一件事随时可以手动跑一次（`⌃⌥L`，或者「人机协作」旁边的按钮），自动的开没开着都行。
 - **每周方向回顾。** 每个会话归到一个大方向，周日晚上给你这一周的分配。
 
 ## 用日志大纲和 Agent 一起干活
@@ -48,6 +48,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 - **并列的几行，就是同时在跑的几个 Agent。** 几行 `DOING` 各挂各的会话、各有一条进度；螺旋内圈一个 Agent 一种颜色，画出它们同时在干活的时段。
 - **状态跟着会话走。** 在跑、等你回复、多久没动静，都是从会话日志里读的。会话在 Claude 桌面 app 或 Codex 里归档了，这一行走到 100%，自动记成 `DONE`。
 - **它最后说的话回到大纲里。** 任务下面有 `🔗` 的，会话每答完一轮，最后那条回复压成一行 `💬` 写在任务下面：做完时是结论，停下来问你时是它问的那一句。下一轮答完换成新的，完整的回复点 `🔗` 回会话里看。
+- **会话派出去的 subagent、开着的 side chat 也看得见。** Claude Code 会话派了 subagent，进度条末尾多一截 `🤖 2 跑 1 完`，下面每个 subagent 一行：它的描述、在跑还是跑完了、最近一步、用了多少 token；在 Claude 桌面版里给这个会话开了 side chat，也各占一行（开着、开了多久）。会话每答完一轮，在 `💬` 下面再写一行 `🤖 子代理 3：查 runTmux ✓ 16k、查 cue() ✗ 停了 · side chat 1` 留档。数据都来自本机：subagent 的日志在会话目录的 `subagents/` 下；side chat 不落盘，只能看到桌面版为它起的那个 claude 进程，问了什么、在答还是等你、用了多少 token 都读不到。
 - **状态栏报数。** 右下角一格 `🤖 2 在跑 · 1 等你`，点一下跳到等你的那一行。
 - **记录留在大纲里，能追回去。** 做完的任务下面是一行 `⏱ 20:12–21:09 · 共 57m · 885k tok · Claude`，末尾的 Claude 是链接，点了回到那个会话。
 - **发令交给配套的插件。** [块去向](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top)的 `⌥⌘S` 把一块连同子块发给 Claude CLI：开会话之前就定好会话号，在这一行下面记下 `🔗`，进度条随后开始走。选中几块并列的再发，每块各开一个会话（并列 = 并发）；选「子块各开一个」，母块当共同背景，每个子块一个会话，结论回到各自的子块下面（纵深 = 子会话）。会话可以开在终端窗口里，也可以放在后台的 tmux 里，或者用 `claude -p` 无头跑。不装它也行，把任务原样贴给 Agent 当第一句话就能对上。
@@ -133,7 +134,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 Obsidian 的密钥存储（系统钥匙串）里，不写进插件的 `data.json`；老版本 Obsidian 没有密钥存储时才退回 `data.json`。连接的那一会儿，插件在 `127.0.0.1` 的一个随机端口上等浏览器把授权码送回来，收到就关，最多等五分钟。
 
-**读库外的文件**，都是只读，而且只读设置里「主力 AI 工具」开着的那几个：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了）；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
+**读库外的文件**，都是只读，而且只读设置里「主力 AI 工具」开着的那几个：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了）；另外看一眼本机进程列表，认出 side chat 的 claude 进程；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
 
 **写库外的文件**：`~/Library/Caches/nautilus-spiral/`，是第一次用到时在本机编出来的几个 Swift 小助手（读日历用的，和一个试验性的通知 App）。
 

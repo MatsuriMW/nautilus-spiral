@@ -400,6 +400,12 @@
 .naut-prog-pct { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
 .naut-prog[data-mode="wait"] .naut-prog-bar { opacity: .5; }
 .naut-prog[data-mode="run"] .naut-prog-tail { animation: naut-breathe 1.8s ease-in-out infinite; }
+/* 进度条下面：会话派出去的 subagent、开着的 side chat，一个一行。在跑的用 Agent 的颜色，跑完的放淡，停了的砖红 */
+.naut-prog-kids { display: block; padding-left: 1.2em; }
+.naut-prog-kid { display: block; overflow: hidden; text-overflow: ellipsis; }
+.naut-prog-kid[data-st="run"] { color: color-mix(in srgb, var(--naut-prog) 75%, var(--text-muted)); }
+.naut-prog-kid[data-st="done"], .naut-prog-kid[data-st="more"] { opacity: .65; }
+.naut-prog-kid[data-st="fail"] { color: #b9726d; }
 @keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 /* 任务下面的「💬」行（绑着的会话最后说的话）：字放淡；刚写上来时底色亮一下再褪掉（只动底色，不动版式） */
 .cm-line.naut-said { color: var(--text-muted); }
