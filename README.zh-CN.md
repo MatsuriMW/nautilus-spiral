@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 ## 用日志大纲和 Agent 一起干活
 
 <p align="center">
-  <img src="assets/agent-line.png" width="520" alt="日记里一行 DOING 的任务，下面一行等宽字符：监听 Claude · 等你回复 · 214k tok">
+  <img src="assets/agent-lines.gif" width="800" alt="日记里四行 DOING 的任务，每行下面一条等宽字符的进度：监听 Claude · 在跑 · 最近一步 · token；其中一行下面还有一行「side chat · 开着 · 8m」">
 </p>
 
 日记是一份大纲，一行任务对应一个 Agent 会话。螺旋日程把这份大纲变成 Agent 干活的仪表盘：谁在跑、谁在等你、各用了多少 token、最后说了什么，都写在任务自己那一行下面。

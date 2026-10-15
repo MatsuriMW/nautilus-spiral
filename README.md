@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 ## The journal outline as a dashboard for your agents
 
 <p align="center">
-  <img src="assets/agent-line.png" width="520" alt="A DOING task in the daily note with one row of monospace text under it: listening to Claude, waiting for your reply, 214k tokens">
+  <img src="assets/agent-lines.gif" width="800" alt="Four DOING tasks in the daily note, each with a row of monospace progress under it: listening to Claude, running, its latest step, tokens; one also has a line 'side chat · open · 8m' below it">
 </p>
 
 A daily note is an outline, and one task line stands for one agent session. Nautilus Spiral turns that outline into a dashboard for the agents' work: which one is running, which one is waiting for you, how many tokens each has used and what it said last, all written under the task's own line.
