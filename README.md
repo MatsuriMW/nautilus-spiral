@@ -12,9 +12,9 @@ A spiral day planner for Obsidian that reads your daily note.
 
 Events stay pinned to their time. To-dos flow from "now" into the free gaps, in list order and by estimated duration. As time moves on, unfinished tasks are pushed forward, and a capacity bar tells you whether today still fits. What you actually did is drawn on the same spiral, so plan and reality sit side by side.
 
-**A 34-second tour** (Chinese captions, with sound). The panel in the film is drawn by the plugin's own code from a made-up daily note:
+**A 50-second tour** (Chinese captions, with sound). The panel in the film is drawn by the plugin's own code from a made-up daily note:
 
-https://github.com/user-attachments/assets/43952d18-314f-4f76-aa15-b21736ab2760
+https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 **The interface is in Chinese**, and so is the full [guide](./docs/guide.zh-CN.md). This page covers what the plugin does, how to install it and what it touches outside your vault.
 
