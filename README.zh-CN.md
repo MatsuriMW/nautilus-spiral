@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 - **专注轮。** 开始一件任务时带上计时，愿意的话再带一段 Raycast Focus；也可以不选任务，只选一个大方向开一轮。
 - **日历，只读。** macOS「日历」和 Google 日历（走 Google Calendar API，用你自己建的 OAuth 客户端）里的事件都可以当固定事件排进螺旋。两个可以同时开，同一件事只留一份。
 - **小音效，两种情绪。** 点螺旋上的一段、列表里的一行，有一声轻的「嗒」；库里任何一篇笔记的任务状态一变也响一声，不管是谁改的（快捷键、任务插件、看板、手敲）。往前走的（`TODO`、`DOING`、`DONE`）音往上走，轻而不亮；停下来的、没成的（`PAUSED`、`WAITING`、`SUSPENDED`、`CANCELLED`、`FAILED`）音往下落，一个比一个低、一个比一个糙。全是现合成的，不带声音文件，一个开关就能关。
-- **Agent 的时间。** 读 Claude Code、Codex（桌面版和命令行）、WorkBuddy 留在本机的会话日志，把每个 Agent 干活的时段画成内圈的细线，一个 Agent 一种颜色，带上各自消耗的 token（产出 + 读入，缓存命中单列）。三个里用哪几个，你自己选。
+- **Agent 的时间。** 读 Claude Code、Codex（桌面版和命令行）、WorkBuddy 留在本机的会话日志，把每个 Agent 干活的时段画成内圈的细线，一个 Agent 一种颜色，带上各自消耗的 token（产出 + 读入，缓存命中单列）。三个里用哪几个你自己选，再挑一个主力：主力全量追踪（全部历史、跨天补记、状态栏），其余的只追踪今天有动静的会话。
 - **正在做的那一行下面有一条进度。** 编辑器里 `DOING` 的那一行下面多一行等宽字符，像命令行那样用 `#` 填：`[#########-----------] 45%`。数取你写在这一行里的进度（`60%`、`2/3`）；没写就看对上的那个 Agent 会话，它自己列了待办就按做完几步算；再不然按已经做了多久和预计时长算。对上了会话，后面还写它在跑还是等你回复、最近一步在干什么、用了多少 token；会话对不上可以手动绑定（在任务下面写一行 `🔗`），会话归档了这一行自动走到 100% 并记成 `DONE`。
 - **主动记录和被动记录结合。** 你有意记的：计划、预计时长、手动改的状态。机器在旁边替你记的：每个 Agent 会话真正在动的时段和时长。两种记录落在同一篇日记、同一圈螺旋上。
 - **人机共写（可选，默认关）。** Agent 会话在动，日记里对应的那一行变成 `DOING`；40 分钟没动静变成 `PAUSED`（暂停），实际时段写在它下面。插件不自己判断 `DONE`；你在 Claude 桌面 app 或 Codex 里把会话归档，才算你说的做完了。同一件事随时可以手动跑一次（`⌃⌥L`，或者「人机协作」旁边的按钮），自动的开没开着都行。
@@ -134,7 +134,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 Obsidian 的密钥存储（系统钥匙串）里，不写进插件的 `data.json`；老版本 Obsidian 没有密钥存储时才退回 `data.json`。连接的那一会儿，插件在 `127.0.0.1` 的一个随机端口上等浏览器把授权码送回来，收到就关，最多等五分钟。
 
-**读库外的文件**，都是只读，而且只读设置里「主力 AI 工具」开着的那几个：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了）；另外看一眼本机进程列表，认出 side chat 的 claude 进程；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
+**读库外的文件**，都是只读，而且只读设置里开着的那几个 Agent（不是主力的只读今天改过的会话文件）：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了）；另外看一眼本机进程列表，认出 side chat 的 claude 进程；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
 
 **写库外的文件**：`~/Library/Caches/nautilus-spiral/`，是第一次用到时在本机编出来的几个 Swift 小助手（读日历用的，和一个试验性的通知 App）。
 

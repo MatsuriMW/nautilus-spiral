@@ -13,7 +13,8 @@ const DEFAULTS = {
   doneTimes: {},        // { "2026_09_29": { "任务文字": 872 } }，在 Bike 里改成 DONE 时记下的完成时间（分钟）
   autoOpened: false,
   showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
-  aiAgents: { claude: true, codex: true, workbuddy: true },   // 主力 AI 工具：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  aiAgents: { claude: true, codex: true, workbuddy: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  aiPrimary: "claude",  // 主力 Agent：全量追踪（历史、跨天补记、状态栏）；其余开着的只追踪今天有动静的会话
   googleCal: false,       // 读 Google 日历里的事件当固定事件（只读，走 Google Calendar API）
   googleClientId: "",     // 你自己在 Google Cloud 里建的 OAuth 客户端（桌面应用）的 ID；客户端密钥和刷新令牌不放在这儿，在系统钥匙串里
   showUnrecorded: true,   // 过去没有任何记录的时间在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」
@@ -1434,8 +1435,10 @@ function aiDay(ms, cfg) {
 // 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 绿
 const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy" };
 const aiAgent = (x) => (x && AI_AGENTS[x.agent] ? x.agent : "claude");   // 旧记录没写来源的都是 Claude
-// 设置里开着的那几个（主力 AI 工具），没设过就是全开
-const aiOn = (cfg) => Object.keys(AI_AGENTS).filter((k) => !(cfg && cfg.aiAgents) || cfg.aiAgents[k] !== false);
+// 主力 Agent：全量追踪；没设过是 Claude
+const aiPrimary = (cfg) => (cfg && AI_AGENTS[cfg.aiPrimary] ? cfg.aiPrimary : "claude");
+// 设置里开着的那几个，没设过就是全开；主力总是开着
+const aiOn = (cfg) => Object.keys(AI_AGENTS).filter((k) => !(cfg && cfg.aiAgents) || cfg.aiAgents[k] !== false || k === aiPrimary(cfg));
 const codexHome = () => process.env.CODEX_HOME || require("path").join(require("os").homedir(), ".codex");
 // 这个会话是在哪开的
 const aiWhere = (x) => {
@@ -1468,6 +1471,23 @@ function aiPick(day, cfg) {
   return { ...day, by: Object.fromEntries(keep.map((k) => [k, by[k]])), list, segs, proj, sessions: list.length,
     wall: Math.round(segs.reduce((n, [a, b]) => n + b - a, 0)), agent: sum("agent"), out: sum("out"), calls: sum("calls"), fresh: sum("fresh"), cached: sum("cached"), prompts: sum("prompts"),
     models: keep.every((k) => by[k].models) ? models : day.models };
+}
+
+// 同一天的两份汇总拼成一份（两份里的 Agent 不重叠）：主力重算的那份 + 库里留着的非主力那份
+function aiJoin(a, b) {
+  if (!a || !b) return a || b || null;
+  const segs = unionSegs([...(a.segs || []), ...(b.segs || [])].map(([x, y]) => [x, y]));
+  const proj = JSON.parse(JSON.stringify(a.proj || {}));
+  for (const [n, p] of Object.entries(b.proj || {})) {
+    const q = (proj[n] ||= { min: 0, out: 0 });
+    q.min += p.min || 0; q.out += p.out || 0;
+    for (const [k, m] of Object.entries(p.agents || {})) (q.agents ||= {})[k] = (q.agents[k] || 0) + m;
+  }
+  const models = { ...(a.models || {}) };
+  for (const [m, v] of Object.entries(b.models || {})) models[m] = (models[m] || 0) + v;
+  const add = (f) => (a[f] || 0) + (b[f] || 0), list = [...(a.list || []), ...(b.list || [])];
+  return { ...a, by: { ...(a.by || {}), ...(b.by || {}) }, list, sessions: list.length, segs, wall: Math.round(segs.reduce((n, [x, y]) => n + y - x, 0)), proj, models,
+    agent: add("agent"), out: add("out"), fresh: add("fresh"), cached: add("cached"), calls: add("calls"), prompts: add("prompts") };
 }
 
 function aiProject(cwd) {
@@ -1515,6 +1535,14 @@ class AiUsage {
     this.files = new Map();   // path -> { size, offset, days: Map(key -> { sess: Map(sid -> {proj, ts[], text}), prompts }), msgs: Map(id -> 用量), titles: Map(sid -> 标题) }
     this.titles = new Map();  // Codex 的会话标题（不在会话文件里，另外读）
     this.subs = new Map();    // 会话号 -> Map(agentId -> 子代理)：这个会话派出去的 subagent，见 subOf
+  }
+
+  // 不是主力的 Agent 只追踪今天：今天以前的动静不读进来（时长、token、在干什么都不算）。主力的照常全读
+  stale(agent, ms) {
+    if (agent === aiPrimary(this.cfg)) return false;
+    const now = Date.now();
+    if (!this._todayAt || now - this._todayAt > 60e3) { this._todayKey = aiDay(now, this.cfg).key; this._todayAt = now; }
+    return aiDay(ms, this.cfg).key < this._todayKey;
   }
 
   // ---- Claude Code 的 subagent ----
@@ -1759,7 +1787,7 @@ class AiUsage {
         let st;
         try { st = await fs.promises.stat(p); } catch (e) { continue; }
         let fc = this.files.get(p);
-        if (!fc && st.mtimeMs < since) continue;
+        if (!fc && (st.mtimeMs < since || this.stale(agent, st.mtimeMs))) continue;   // 非主力今天没动过的文件不读
         if (fc && st.size === fc.size) continue;
         await this.readNew(p, agent, st, touched);
         await new Promise((r) => setTimeout(r, 0));
@@ -1791,7 +1819,7 @@ class AiUsage {
     let d;
     try { d = JSON.parse(line); } catch (e) { return; }
     if (d.type === "ai-title") { if (d.aiTitle) fc.titles.set(fc.sid, d.aiTitle); return; }
-    if (!["message", "reasoning", "function_call", "function_call_result"].includes(d.type) || !+d.timestamp) return;
+    if (!["message", "reasoning", "function_call", "function_call_result"].includes(d.type) || !+d.timestamp || this.stale("workbuddy", +d.timestamp)) return;
     const { key, day, s } = this.touchSess(fc, touched, +d.timestamp, fc.sid, d.cwd, "workbuddy");
     const lv = this.liveOf(fc.sid, "workbuddy", +d.timestamp);
     if (lv) lv.state = d.type === "message" && d.role === "assistant" ? "wait" : "run";
@@ -1823,6 +1851,12 @@ class AiUsage {
     if (d.type === "turn_context") { if (p.model) fc.model = p.model; return; }
     const ms = Date.parse(d.timestamp);
     if (!ms || (d.type !== "event_msg" && d.type !== "response_item")) return;
+    if (this.stale("codex", ms)) {
+      // 今天以前的不记，但 token_count 是累计数，基数要跟着走，不然今天第一条会把以前的全算进来
+      const t = d.type === "event_msg" && p.type === "token_count" && p.info && p.info.total_token_usage;
+      if (t) fc.tot = { out: t.output_tokens || 0, fresh: Math.max(0, (t.input_tokens || 0) - (t.cached_input_tokens || 0)), cached: t.cached_input_tokens || 0 };
+      return;
+    }
     const { key, day, s } = this.touchSess(fc, touched, ms, fc.sid, fc.cwd, fc.app);
     this.liveCodex(d, p, fc.sid, ms);
     if (d.type === "response_item" && p.type === "message" && p.role === "user") {
@@ -1856,7 +1890,7 @@ class AiUsage {
     if (d.type === "custom-title") { if (d.customTitle) fc.titles.set(d.sessionId, d.customTitle); return; }
     if (d.type !== "assistant" && d.type !== "user") return;
     const ms = Date.parse(d.timestamp);
-    if (!ms) return;
+    if (!ms || this.stale("claude", ms)) return;
     const { key, t } = aiDay(ms, this.cfg);
     touched.add(key);
     let day = fc.days.get(key);
@@ -1971,7 +2005,14 @@ class AiUsage {
     let changed = false;
     for (const key of touched) {
       if (store.days[key] && key < frozen && !force) continue;
-      const s = this.summary(key);
+      let s = this.summary(key);
+      // 以前的日子：非主力的动静已经不读了，重算出来的只有主力的；库里原来记下的非主力那份接着留（这次读到了的 Agent 用新算的）
+      const old = store.days[key];
+      if (old && key < aiDay(Date.now(), this.cfg).key) {
+        const keep = Object.keys(AI_AGENTS).filter((k) => k !== aiPrimary(this.cfg) && !(s && s.by && s.by[k]));
+        const part = keep.length ? aiPick(old, { aiAgents: Object.fromEntries(Object.keys(AI_AGENTS).map((k) => [k, keep.includes(k)])), aiPrimary: keep[0] }) : null;
+        if (part && part.by && keep.some((k) => part.by[k])) s = aiJoin(s, part);
+      }
       if (s && JSON.stringify(s) !== JSON.stringify(store.days[key])) { store.days[key] = s; changed = true; }
     }
     return changed;
@@ -4229,7 +4270,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const byLine = new Map(bound.map((a) => [a.sid, a]));
     for (const [sid, lv] of this._ai.live) {
       const agent = lv.agent || "claude";
-      if (agent !== "claude" || !lv.at || now - lv.at > 24 * 3600e3 || arch.has(sid) || done.has(sid)) continue;
+      if (agent !== aiPrimary(cfg) || !lv.at || now - lv.at > 24 * 3600e3 || arch.has(sid) || done.has(sid)) continue;   // 只列主力的
       const x = this.agentRecord(sid), raw = x ? x.title || String(x.text || "").split(" / ")[0] : "";
       const title = /^\s*</.test(raw) ? "" : raw.trim();
       if (!title && !byLine.has(sid)) continue;
@@ -4877,13 +4918,16 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 前几天记下、到现在还挂着（DOING / 机器停下的 PAUSED，以及以前记的 SUSPENDED）的行：会话归档了，就在它当天的日记里补成 DONE。
-  // 你自己改成 TODO / PAUSED 的不动。返回改了的（给提醒用）；日记正好在被改的那一天这一轮跳过，下一轮再来
+  // 你自己改成 TODO / PAUSED 的不动。返回改了的（给提醒用）；日记正好在被改的那一天这一轮跳过，下一轮再来。
+  // 只补主力 Agent 的：非主力只追踪今天（以前的记录没写是哪个 Agent，按那天的汇总认，认不出来当 Claude）
   async autoArchivePast(arch, todayKey, dry, report) {
-    const cfg = this.settings;
+    const cfg = this.settings, primary = aiPrimary(cfg);
     const out = [];
     for (const dayKey of Object.keys(cfg.autoLogState || {})) {
       if (dayKey === todayKey) continue;
-      const hits = Object.entries(cfg.autoLogState[dayKey]).filter(([sid, r]) => arch.has(sid) && r.key && !r.skip && !r.gone && (r.status === "doing" || this.autoParked(r, r.status)));
+      const dayList = ((this.aiStore && this.aiStore.days[dayKey]) || {}).list || [];
+      const agentOf = (sid, r) => r.agent || aiAgent(dayList.find((x) => x.sid === sid));
+      const hits = Object.entries(cfg.autoLogState[dayKey]).filter(([sid, r]) => arch.has(sid) && r.key && !r.skip && !r.gone && (r.status === "doing" || this.autoParked(r, r.status)) && agentOf(sid, r) === primary);
       if (!hits.length) continue;
       const file = this.app.vault.getAbstractFileByPath(`${cfg.folder}/${dayKey}.md`);
       if (!(file instanceof TFile)) continue;
@@ -4991,7 +5035,7 @@ module.exports = class NautilusSpiral extends Plugin {
           if (!m && !a.label) { st[x.sid] = { skip: true }; continue; }
           const label = m ? m.label : AUTO_MARK + a.label;
           const probe = parseJournal(`- TODO ${label}`, cfg)[0];   // 这一行写进日记后会被读成什么名字，就按什么名字记
-          rec = st[x.sid] = { key: workKey(probe && probe.label ? probe.label : label), label, created: !m, dir: a.dir, status: m ? (m.doing ? "doing" : m.paused ? "paused" : m.suspended ? "suspended" : "open") : null, fresh: !m };
+          rec = st[x.sid] = { key: workKey(probe && probe.label ? probe.label : label), label, created: !m, dir: a.dir, agent: aiAgent(x), status: m ? (m.doing ? "doing" : m.paused ? "paused" : m.suspended ? "suspended" : "open") : null, fresh: !m };
           // 接手你正在计时的行：之前开着的那一段收在这个会话开始的时刻，之后的用时按会话真正在动的时段算
           const seg = (work[rec.key] || []).find((s) => s[1] == null);
           if (seg) { seg[1] = Math.max(seg[0], Math.min(now, x.segs[0][0])); if (seg[1] - seg[0] < 1) work[rec.key].splice(work[rec.key].indexOf(seg), 1); }
@@ -6024,21 +6068,26 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.revealOnStartup !== false).onChange(async (v) => { s.revealOnStartup = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName("显示人机协作").setDesc("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面「🤖」那一行显示当天协作时长和 token（悬停看细账），螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json")
       .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    containerEl.createEl("h3", { text: "🤖 主力 AI 工具" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "平时主要用哪几个，就开哪几个。开着的才会读它的会话日志、画进螺旋、算 token、自动记进日记；关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。" });
+    containerEl.createEl("h3", { text: "🤖 主力 Agent 和要追踪的 Agent" });
+    containerEl.createEl("p", { cls: "setting-item-description", text: "主力 Agent 全量追踪：读它全部的会话历史，前几天还挂着的行归档后补成 DONE，状态栏那一格列它的会话。其余开着的只追踪今天有动静的会话：今天的时长、token、自动记日记都照常，以前的会话不翻、不跨天补记。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。" });
     {
+      const reset = () => { this.plugin._ai = null; this.plugin._aiAt = 0; this.plugin.refresh(); };   // 换了要读的范围：把最近的日志重读一遍
+      new Setting(containerEl).setName("主力 Agent").setDesc("平时干活主要用哪一个。它总是开着")
+        .addDropdown((d) => {
+          for (const [k, n] of Object.entries(AI_AGENTS)) d.addOption(k, n);
+          d.setValue(aiPrimary(s)).onChange(async (v) => { s.aiPrimary = v; await this.plugin.saveData(s); reset(); this.display(); });
+        });
       const fs = require("fs"), path = require("path"), home = require("os").homedir();
       const where = { claude: [".claude/projects", "Claude Code 和 Claude 桌面版里的 Code 会话"], codex: [".codex/sessions", "Codex 桌面版和 codex 命令行，时长和 token 都读"], workbuddy: [".workbuddy/projects", "WorkBuddy 桌面版"] };
       for (const k of Object.keys(AI_AGENTS)) {
         const [dir, what] = where[k];
         const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
-        new Setting(containerEl).setName(AI_AGENTS[k]).setDesc(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`)
-          .addToggle((t) => t.setValue(aiOn(s).includes(k)).onChange(async (v) => {
+        const main = k === aiPrimary(s);
+        new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? "（主力，全量追踪）" : "（只追踪今天的）"}`).setDesc(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`)
+          .addToggle((t) => t.setValue(aiOn(s).includes(k)).setDisabled(main).onChange(async (v) => {
             s.aiAgents = { ...Object.fromEntries(Object.keys(AI_AGENTS).map((a) => [a, aiOn(s).includes(a)])), [k]: v };
             await this.plugin.saveData(s);
-            this.plugin._ai = null;   // 换了要读的目录：把最近的日志重读一遍
-            this.plugin._aiAt = 0;
-            this.plugin.refresh();
+            reset();
           }));
       }
     }
