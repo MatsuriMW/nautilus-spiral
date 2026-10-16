@@ -400,12 +400,6 @@
 .naut-prog-pct { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
 .naut-prog[data-mode="wait"] .naut-prog-bar { opacity: .5; }
 .naut-prog[data-mode="run"] .naut-prog-tail { animation: naut-breathe 1.8s ease-in-out infinite; }
-/* 进度条下面：会话派出去的 subagent、开着的 side chat，一个一行。在跑的用 Agent 的颜色，跑完的放淡，停了的砖红 */
-.naut-prog-kids { display: block; padding-left: 1.2em; }
-.naut-prog-kid { display: block; overflow: hidden; text-overflow: ellipsis; }
-.naut-prog-kid[data-st="run"] { color: color-mix(in srgb, var(--naut-prog) 75%, var(--text-muted)); }
-.naut-prog-kid[data-st="done"], .naut-prog-kid[data-st="more"] { opacity: .65; }
-.naut-prog-kid[data-st="fail"] { color: #b9726d; }
 @keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 /* 任务下面的「💬」行（绑着的会话最后说的话）：字放淡；刚写上来时底色亮一下再褪掉（只动底色，不动版式） */
 .cm-line.naut-said { color: var(--text-muted); }
@@ -435,12 +429,12 @@ input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px r
 .naut-ap-list { display: flex; flex-direction: column; gap: 6px; }
 .naut-ap-card { padding: 8px 10px 8px; border-radius: 9px; background: var(--background-secondary); cursor: pointer; transition: background-color .15s ease, transform .15s ease; animation: naut-rise .28s var(--naut-ease) backwards; animation-delay: calc(var(--naut-i, 0) * 30ms); }
 .naut-ap-card:hover { background: var(--background-modifier-hover); transform: translateY(-1px); }
-.naut-ap-card.is-wait { box-shadow: inset 2px 0 0 #a8704f; }
+.naut-ap-card.is-wait, .naut-ap-card.is-perm { box-shadow: inset 2px 0 0 #a8704f; }
 .naut-ap-top { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
 .naut-ap-dot { width: 7px; height: 7px; border-radius: 50%; }
 .naut-ap-state { font-size: .9em; line-height: 1.5; padding: 0 5px; border-radius: 4px; }
 .naut-ap-state.is-run { color: #4f7d5c; background: rgba(111, 159, 122, .15); }
-.naut-ap-state.is-wait { color: #8f5d40; background: rgba(168, 112, 79, .15); }
+.naut-ap-state.is-wait, .naut-ap-state.is-perm { color: #8f5d40; background: rgba(168, 112, 79, .15); }
 .naut-ap-state.is-quiet { color: var(--text-muted); background: var(--background-modifier-border); }
 .naut-ap-card.is-run .naut-ap-dot { animation: naut-breathe 1.8s ease-in-out infinite; }
 .naut-ap-label { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

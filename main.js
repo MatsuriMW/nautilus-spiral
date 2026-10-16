@@ -24,6 +24,7 @@ const DEFAULTS = {
   forgottenMinutes: 120,  // 计时开了这么久，状态栏提醒「检查计时」（不替你停）。0 = 不提醒
   clockToNote: false,     // 你手动做的时段也写回日记：任务不再是 DOING 时，在它下面写一行「⏱ 实际时段」
   lineProgress: true,     // 编辑器里 DOING 的那一行下面显示一行字符进度条（你写的进度 / 监听到的 Agent 会话 / 按预估时长）
+  agentKw: true,          // 挂在大纲上的会话停下来生成全部结束 → 那一行改成 TOREVIEW，撞限额 → HITLIMIT，又动起来 → 改回 DOING
   agentStatus: true,      // 状态栏多一格：挂在大纲上的 Agent 会话几个在跑、几个在等你，点一下跳到等你的那一行
   resultBack: true,       // 绑着会话的任务（下面有「🔗」行的）：会话答完一轮或者归档了，把它最后说的话写成任务下面的一行「💬」
   resultMax: 200,         // 「💬」行最多写多少个字，多的截掉
@@ -82,7 +83,7 @@ const DEFAULTS = {
 const LIST_RE = /^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$/;
 const STAMP_RE = /^\*\*(\d{1,2})[:：](\d{2})\*\*\s*/;           // 你习惯的 **07:37** 记录时间
 const CHECKBOX_RE = /^\[([ xX\/\-])\]\s*/;
-const KEYWORD_RE = /^(TODO|DOING|LATER|NOW|PAUSED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)\s+/;
+const KEYWORD_RE = /^(TODO|DOING|LATER|NOW|PAUSED|TOREVIEW|HITLIMIT|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)\s+/;
 const TIME = String.raw`(\d{1,2})(?:[:：](\d{2})|点(?:(半)|(\d{1,2})分?)?)`;
 const RANGE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}\s*(?:-|–|—|~|～|到|至)\s*(?:${TIME}|(\d{1,2})(?![\d:：点]))`);
 const SINGLE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}(?![\d])`);
@@ -145,6 +146,7 @@ const stripDuration = (s) => s
 
 function cleanLabel(s) {
   return s
+    .replace(/%%\s*(←[^%]*?)\s*%%/g, "$1")   // 日记整理藏成注释的「%%← 2026_10_15%%」还原成「← 2026_10_15」，下面认「←」尾巴的地方照旧
     .replace(RANGE_RE, "").replace(SINGLE_RE, "")
     .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:h|小时)\s*\d+\s*(?:m|min|分钟)(?![a-zA-Z])/g, "")
     .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:[~～\-–到至]\s*\d+(?:\.\d+)?\s*)?(?:hrs|hr|h|个小时|小时|mins|min|m|分钟)(?![a-zA-Z])/g, "")
@@ -213,6 +215,11 @@ function markOwner(lines, i) {
 const RESULT_LINE_RE = /^\s*[-*+]\s+💬/;
 // 正在做的任务行：DOING / NOW / IN-PROGRESS 或者 [/]
 const DOING_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?(?:\[\/\]\s|(?:DOING|NOW|IN-PROGRESS)(?=\s|$))/;
+// Agent 会话的两个 DOING 中间态（agentKwSync 按会话状态自动切，交互和 PAUSED 一样，⌘/ 或点一下回 DOING）：
+//   TOREVIEW = 对话不再有新内容了（答完了 / 被你打断了 / 好几分钟没动静，后台派的 subagent 也都跑完了）；
+//   HITLIMIT = 撞了用量限额（TODOseq 显示成 HITLIMIT!）。计时和 PAUSED 一样停着，进度条照画
+const AGENT_KW_RE = /^(TOREVIEW|HITLIMIT)$/;
+const AGENT_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?(?:\[\/\]\s|(?:DOING|NOW|IN-PROGRESS|TOREVIEW|HITLIMIT)(?=\s|$))/;
 // 会话的一条回复压成一行能放进日记的字：代码块不要，标题、列表符号、引用符号去掉，连成一行；
 // 会在库里生出东西的写法（#标签、[[双链]]、==高亮==、%%注释%%、$公式$、HTML 标签）都转义掉；太长就在句子结尾处截断
 function resultText(raw, max = 200) {
@@ -251,26 +258,32 @@ function resultInto(text, sid, said) {
   else lines.splice(at + 1, 0, line);
   return lines.join("\n");
 }
-// 任务下面的「🤖 子代理」行：绑着的那个会话派出去的 subagent、在它上面开过的 side chat，各是什么结果。机器写的，和 💬 同时写、同时换：
-//   - 🤖 子代理 3：查 runTmux ✓ 16k、查 sendToTwitter ✓ 12k、查 cue() ✗ 停了 · side chat 1
-// 和 🔗 / ⏱ / 💬 一样是记号行。只认「🤖 子代理」「🤖 side chat」开头的：日记整理收机器行的主题母块（顶格的「- 🤖 主题 · 6 条」）不是它
+// 1.6.0 写过的「🤖 子代理 3：… ✓ 16k」汇总行：现在不写了（subagent 改成子块，见 kidsInto），日记里留下的照旧当记号行认
 const SUB_LINE_RE = /^\s*[-*+]\s+🤖\s*(?:子代理|side chat)/;
 const isSubMark = (s) => /^🤖\s*(?:子代理|side chat)/.test(s);
-function subUnder(lines, n) {
-  return childMark(lines, n, (l) => (SUB_LINE_RE.test(l) ? {} : null));
+// 会话派出去的 subagent、开着的 side chat 写成任务的子块，子块下面一行「🔗 子代理 `a7de3cf8`」「🔗 side chat `pid 40948`」认它是谁。
+// 和会话的 🔗 一样是记号行（SID_RE 对不上，parseLink 不认它）；跑完换成 ⏱ 行，⏱ 行末尾的「子代理 `a7de3cf8`」还认得是谁
+const KID_LINK_RE = /^\s*[-*+]\s+🔗\s*(子代理|side chat)\s*`(?:pid\s*)?([0-9a-z]+)`/;
+function parseKid(line) {
+  const m = KID_LINK_RE.exec(line);
+  return m ? { kind: m[1] === "子代理" ? "sub" : "side", id: m[2] } : null;
 }
-// 把「🤖」行写到会话 sid 绑着的那件任务下面：已经有就换掉，没有就接在「💬」行（没有就是「🔗」行）后面。mark 是空的不动
-function subInto(text, sid, mark) {
-  if (!mark || !text.includes(sid)) return text;
-  const lines = text.split("\n");
-  const at = lines.findIndex((l) => { const k = parseLink(l); return k && k.sid === sid; });
-  const n = at < 0 ? -1 : markOwner(lines, at);
-  if (n < 0) return text;
-  const line = `${/^\s*/.exec(lines[at])[0]}- 🤖 ${mark}`;
-  const had = subUnder(lines, n);
-  if (had) { if (lines[had.line] === line) return text; lines[had.line] = line; }
-  else { const said = resultUnder(lines, n); lines.splice(said && said.line > at ? said.line + 1 : at + 1, 0, line); }
-  return lines.join("\n");
+function kidUnder(lines, n) {
+  return childMark(lines, n, parseKid);
+}
+// 子块是谁：还在跑的看「🔗 子代理」行（open），跑完的看 ⏱ 行末尾
+function kidIdent(line) {
+  const c = parseKid(line);
+  if (c) return { ...c, open: true };
+  const m = /^\s*[-*+]\s+⏱.*·\s*(子代理|side chat)\s*`(?:pid\s*)?([0-9a-z]+)`\s*$/.exec(line);
+  return m ? { kind: m[1] === "子代理" ? "sub" : "side", id: m[2], open: false } : null;
+}
+// subagent 的描述和子块的字对不对得上：块去向派的时候让会话把「那一项的头二十个字」写进描述。去掉状态词、时刻、编号、标点再比
+const kidNorm = (s) => String(s || "").replace(/🤖/g, "").replace(/^\s*(?:\d+[.)、]\s*)?(?:(?:TODO|DOING|LATER|NOW|WAITING|WAIT|PAUSED|TOREVIEW|HITLIMIT)\s+)?(?:\d{1,2}[:：]\d{2}\s*)?/, "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+function kidMatch(body, desc) {
+  const a = kidNorm(body), d = kidNorm(desc);
+  if (a.length < 4 || d.length < 4) return false;
+  return a.startsWith(d) || d.startsWith(a) || (a.length >= 8 && d.length >= 8 && a.slice(0, 8) === d.slice(0, 8));
 }
 // 一篇日记里所有的「🔗」行：Map(会话号 → 它挂在哪件任务上（任务名）)
 function linkMap(text, cfg) {
@@ -354,13 +367,14 @@ function parseJournal(content, cfg) {
     if (kw) s = s.replace(/^\[#[ABC]\]\s*/, "");   // 优先级（TODO [#A] …）不挡住后面的时刻
     const doing = kw && /DOING|NOW|IN-PROGRESS/.test(kw[1]) || (cb && cb[1] === "/");
     const suspended = !!kw && /^(WAIT|SUSPENDED)/.test(kw[1]);   // WAITING / SUSPENDED = 搁置：短期不推，今天不排、不占容量，做过的时间和进度留着
-    const paused = !!kw && kw[1] === "PAUSED";                     // PAUSED = 暂停：只是停一下，照常排，接着做时剩余时间扣掉做过的
+    const paused = !!kw && (kw[1] === "PAUSED" || AGENT_KW_RE.test(kw[1]));   // PAUSED = 暂停：只是停一下，照常排，接着做时剩余时间扣掉做过的；TOREVIEW / HITLIMIT 同
+    const agentKw = kw && AGENT_KW_RE.test(kw[1]) ? kw[1] : null;
     const progress = state === "none" ? null : parseProgress(s);
     let label = state === "none" ? s : stripProgress(s);
     for (const p of prio) label = label.split(p).join("");
     label = cleanLabel(label) || s.trim();
     const indent = lm[1].replace(/\t/g, "    ").length;
-    const base = { line, indent, label, state, doing: !!doing, suspended, paused, progress, prio: prio.some((p) => s.includes(p)), stamp };
+    const base = { line, indent, label, state, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
@@ -619,14 +633,14 @@ function blip(name) {
 
 // 任务状态一变就响一声，不管是谁改的（TODOseq 里点关键词、⌘/、看板、手敲）：只看那一行的关键词从什么变成了什么。
 // kwSnapshot：一篇笔记里每一行的状态，Map(去掉关键词和时间以后的正文 → 关键词)，没有关键词的行是 ""；同样的正文出现两次分不清是哪一行，记成 null 不管
-const KW_SOUND = { TODO: "TODO", LATER: "TODO", DOING: "DOING", NOW: "DOING", "IN-PROGRESS": "DOING", DONE: "DONE", PAUSED: "PAUSED", WAITING: "WAITING", WAIT: "WAITING", SUSPENDED: "SUSPENDED", CANCELED: "CANCELLED", CANCELLED: "CANCELLED", FAILED: "FAILED" };
+const KW_SOUND = { TODO: "TODO", LATER: "TODO", DOING: "DOING", NOW: "DOING", "IN-PROGRESS": "DOING", DONE: "DONE", PAUSED: "PAUSED", TOREVIEW: "WAITING", HITLIMIT: "SUSPENDED", WAITING: "WAITING", WAIT: "WAITING", SUSPENDED: "SUSPENDED", CANCELED: "CANCELLED", CANCELLED: "CANCELLED", FAILED: "FAILED" };
 // kwLine：一行的状态 { kw, body }；空行、只有关键词没有正文的行、⏱ / 🔗 / 💬 / 🤖 子代理 记号行返回 null
 function kwLine(raw) {
   let s = raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s+/, "").replace(STAMP_RE, "");
   let kw = "";
   const cb = CHECKBOX_RE.exec(s);
   if (cb) { kw = cb[1] === " " ? "TODO" : cb[1] === "/" ? "DOING" : cb[1] === "-" ? "CANCELLED" : "DONE"; s = s.slice(cb[0].length); }
-  const m = /^(TODO|DOING|LATER|NOW|PAUSED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)(?=\s|$)\s*/.exec(s);
+  const m = /^(TODO|DOING|LATER|NOW|PAUSED|TOREVIEW|HITLIMIT|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED)(?=\s|$)\s*/.exec(s);
   if (m) { kw = m[1]; s = s.slice(m[0].length); }
   // 关键词后面跟着的时刻 / 时间段是记录，会跟着状态一起变，不算正文
   // 优先级（[#A]）在时刻前后都可能出现，也不算正文
@@ -779,6 +793,17 @@ function run(cmd, args, timeout = 20000) {
 }
 
 // 拆开一行任务：列表符号（连同 **07:37** 记录点）、复选框和关键词去掉，关键词后面紧跟的时刻（DOING 14:05）单独拿出来
+// 老一些的限额报错没带 resetsAt，只在文字里写「resets 4:20am」「resets 1pm」「resets Oct 18, 9am」：取 at 之后最近的那个时刻（毫秒），读不出返回 0
+function resetFromText(text, at) {
+  const m = /resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i.exec(String(text || ""));
+  if (!m) return 0;
+  let h = +m[3] % 12 + (/pm/i.test(m[5]) ? 12 : 0);
+  const t = moment(at).hours(h).minutes(+(m[4] || 0)).seconds(0).milliseconds(0);
+  const mon = m[1] ? "janfebmaraprmayjunjulaugsepoctnovdec".indexOf(m[1].toLowerCase()) / 3 : -1;   // 月份按英文缩写自己对：Obsidian 里的 moment 是中文语言环境
+  if (mon >= 0 && Number.isInteger(mon)) { t.month(mon).date(+m[2]); if (t.valueOf() < at) t.add(1, "year"); }
+  else if (!m[1] && t.valueOf() <= at) t.add(1, "day");
+  return t.valueOf();
+}
 function splitTask(raw) {
   const m = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/.exec(raw);
   if (!m) return null;
@@ -1148,7 +1173,7 @@ const AUTO_MARK = "🤖 ";   // 自动记的行开头带这个
 
 // 模型起的名字要能原样写成一行任务：去掉会被当成时间、时长、格式标记、挪动标记的写法
 function safeLabel(s, cfg) {
-  let t = stripDuration(String(s || "").replace(/[\r\n←`*=~\[\]]/g, " ").replace(/^\s*(?:[-*+]\s+)?(?:TODO|DOING|DONE|SUSPENDED|PAUSED)\s+/i, "")
+  let t = stripDuration(String(s || "").replace(/[\r\n←`*=~\[\]]/g, " ").replace(/^\s*(?:[-*+]\s+)?(?:TODO|DOING|DONE|SUSPENDED|PAUSED|TOREVIEW|HITLIMIT)\s+/i, "")
     .replace(/(\d)[:：](\d)/g, "$1.$2").replace(/(\d)点/g, "$1 点")).replace(/[。；;，,\s]+$/, "").trim();
   const it = parseJournal(`- TODO ${t}`, cfg)[0];
   if (!it || it.kind !== "task") t = t.replace(/\d+/g, "").replace(/\s+/g, " ").trim();
@@ -1527,6 +1552,10 @@ class AiUsage {
     if (tools.length) r.handed = tools.some((b) => b.name === "SubagentHandback");
     if (!r.end) r.state = r.handed || stop === "end_turn" || stop === "stop_sequence" ? "done" : "run";
     for (const b of tools) if (b.name !== "SubagentHandback") r.step = aiStep(b.name, b.input);
+    // 它交回来的结论（写成子块下面的 💬）：新版在 SubagentHandback 的参数里，老版是最后一条回复的文字
+    const hb = tools.find((b) => b.name === "SubagentHandback"), said = (Array.isArray(c) ? c : []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    if (hb && hb.input) r.last = String(hb.input.message || hb.input.report || hb.input.result || "");
+    else if (said && !r.handed) r.last = said;
     const u = d.message && d.message.usage;
     if (u && d.message.id) r.tok.set(d.message.id, (u.output_tokens || 0) + (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0));
   }
@@ -1615,6 +1644,16 @@ class AiUsage {
   liveClaude(d, sid, ms) {
     const v = this.liveOf(sid, "claude", ms);
     if (!v) return;
+    // 撞了用量限额：这一轮以一条限额报错结束（和 limit-resume 认的是同一条），文字是「You've hit your session / weekly limit · resets 4:20am (…)」。
+    // 额度是整个账号的，几个在跑的会话会在同一刻各收到一条，所以会成批变 HITLIMIT。state = limit，resets = 额度几点恢复（毫秒），week = 是不是周额度
+    if (d.isApiErrorMessage && d.error === "rate_limit") {
+      const q = d.quotaLimits || (d.apiErrorParams || {}).rate_limit_info || {};
+      const text = (Array.isArray(d.message && d.message.content) ? d.message.content : []).map((b) => b.text || "").join("");
+      v.state = "limit";
+      v.resets = q.resetsAt ? (q.resetsAt < 1e12 ? q.resetsAt * 1000 : q.resetsAt) : resetFromText(text, ms);
+      v.week = q.rateLimitType ? /seven_day|week/.test(q.rateLimitType) : /weekly/i.test(text);
+      return;
+    }
     const c = d.message && d.message.content;
     if (d.type === "user") {
       const stopped = typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b.type === "text").map((b) => b.text).join("") : "";
@@ -3729,7 +3768,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
     const auto = this.autoKeys(file.basename);
     const doing = parseJournal(content, cfg).filter((i) => i.kind === "task" && i.state === "open" && i.doing && !auto.has(workKey(i.label)));
-    const born = doing.filter((i) => !prev.get(i.label)?.doing);
+    const born = doing.filter((i) => !prev.get(i.label)?.doing && !prev.get(i.label)?.agentKw);   // 从 TOREVIEW / HITLIMIT 切回来的不算新开始的
     if (!born.length) return;
     for (const t of born) this.touch(workKey(t.label));
     if (cfg.breakState) { cfg.breakState = null; this.saveData(cfg); this.refresh(); }   // 吃完自己开始干活了：不用再问
@@ -4088,7 +4127,7 @@ module.exports = class NautilusSpiral extends Plugin {
   // ---------------- 状态栏：Agent 汇总 ----------------
   // 眼下挂在大纲上的 Agent 会话：开着的笔记和今天的日记里，下面有「🔗」行的任务，加上 DOING 的行自动对上的会话。
   // 做完、取消了的任务不算，归档了的会话不算，这次打开 Obsidian 以来没读到过动静的也不算。
-  // 返回 [{ path, line, label, sid, agent, state }]：state = run 在跑 / wait 这一轮答完了在等你 / quiet 没答完但好几分钟没动静（多半停在要你点「允许」）
+  // 返回 [{ path, line, label, sid, agent, state }]：state = run 在跑 / wait 这一轮答完了在等你 / perm 停在「允许吗？」上等你点 / quiet 没答完但好几分钟没动静 / limit 撞限额
   async agentScan() {
     const cfg = this.settings, out = [], seen = new Set(), arch = this._archived || new Set(), on = aiOn(cfg), done = (this._agentDone = new Set());
     if (cfg.agentStatus === false || cfg.showAi === false || !this._ai) return out;
@@ -4102,18 +4141,18 @@ module.exports = class NautilusSpiral extends Plugin {
     const today = this.todayFile();
     if (today && !paths.has(today.path)) try { docs.push([today.path, await this.app.vault.cachedRead(today)]); } catch (e) { /* 读不到就不算 */ }
     for (const [path, text] of docs) {
-      if (text.length > 2e6 || !(text.includes("🔗") || /DOING|NOW|IN-PROGRESS|\[\/\]/.test(text))) continue;
+      if (text.length > 2e6 || !(text.includes("🔗") || /DOING|NOW|IN-PROGRESS|TOREVIEW|HITLIMIT|\[\/\]/.test(text))) continue;
       const lines = text.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const link = parseLink(lines[i]);
         // 有 🔗 的任务等扫到它的 🔗 行再算；没有 🔗 的 DOING 行看它自动对上了哪个会话
-        const owner = link ? markOwner(lines, i) : DOING_LINE_RE.test(lines[i]) && !linkUnder(lines, i) ? i : -1;
+        const owner = link ? markOwner(lines, i) : AGENT_LINE_RE.test(lines[i]) && !linkUnder(lines, i) && !kidUnder(lines, i) ? i : -1;   // subagent / side chat 的子块不去对会话
         if (owner < 0) continue;
         const k = kwLine(lines[owner]);
         if (!k || /^(DONE|CANCELED|CANCELLED|FAILED)$/.test(k.kw)) { if (link) done.add(link.sid); continue; }
         let sid = link && link.sid, agent = link && link.agent;
         if (!link) {
-          const it = parseJournal(lines[owner].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task" && x.doing);
+          const it = parseJournal(lines[owner].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task" && (x.doing || x.agentKw));
           const x = it && this.progSession(workKey(it.label));
           if (!x) continue;
           sid = x.sid; agent = aiAgent(x);
@@ -4121,10 +4160,49 @@ module.exports = class NautilusSpiral extends Plugin {
         const lv = this._ai.live.get(sid);
         if (!lv || seen.has(sid) || arch.has(sid) || !on.includes(agent)) continue;
         seen.add(sid);
-        out.push({ path, line: owner, label: k.body, sid, agent, state: lv.state === "wait" ? "wait" : (Date.now() - lv.at) / 60e3 <= AI_IDLE ? "run" : "quiet" });
+        out.push({ path, line: owner, label: k.body, kw: k.kw, sid, agent, bound: !!link, state: this.agentState(sid, lv) });
       }
     }
     return out;
+  }
+  // 会话眼下算什么（状态栏、面板、agentKwSync 都按这个）：wait / limit 看会话日志；日志停在调工具上的，
+  // 有权限提示的记号就是 perm，否则 AI_IDLE 分钟内有动静算 run，再久算 quiet
+  agentState(sid, lv, now = Date.now()) {
+    // 撞限额的过了恢复时刻还没续上（合着盖、limit-resume 没接）：额度已经回来了，算停在那儿等你
+    if (lv.state === "limit") return lv.resets && now > lv.resets ? "wait" : "limit";
+    if (lv.state === "wait") return "wait";
+    if (this.permOf(sid, lv)) return "perm";
+    return (now - lv.at) / 60e3 <= AI_IDLE ? "run" : "quiet";
+  }
+  // 停在「允许吗？」上的 Claude 会话。等权限时 Claude Code 不写会话日志，靠钩子 ~/.local/bin/agent-wait：
+  // 弹权限框（PermissionRequest / Notification 的 permission_prompt）时写 ~/.local/state/agent-wait/<会话号>.json，
+  // 你发话、这一轮结束、会话关掉时删掉。批准以后算已经放行：工具跑完日志里就有新动静，所以记号比日志里最后的动静早（留 1.5 秒余量）就不算；
+  // 长命令跑着时日志里一直没动静，就看 claude 进程（记号里的 pid）底下有没有在记号之后起的 Bash shell（参数里带 shell-snapshots）
+  async permScan() {
+    const fs = require("fs"), path = require("path"), dir = path.join(require("os").homedir(), ".local", "state", "agent-wait"), out = new Map();
+    let names = [];
+    try { names = await fs.promises.readdir(dir); } catch (e) { /* 没装钩子 */ }
+    for (const f of names) {
+      if (!f.endsWith(".json")) continue;
+      try { const d = JSON.parse(await fs.promises.readFile(path.join(dir, f), "utf8")); if (d && d.sid && d.at) out.set(d.sid, d); } catch (e) { /* 正在写的半截文件 */ }
+    }
+    for (const [sid, d] of out) { const was = this._perm && this._perm.get(sid); if (was && was.at === d.at && was.released) d.released = true; }
+    this._perm = out;
+    const open = [...out.values()].filter((d) => d.pid && !d.released);
+    if (!open.length) return;
+    let ps = "";
+    try { ps = await new Promise((ok, no) => require("child_process").execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,etime=,args="], { maxBuffer: 16e6 }, (e, so) => (e ? no(e) : ok(so)))); } catch (e) { return; }
+    const secs = (t) => { const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(t); return m ? ((+m[1] || 0) * 24 + (+m[2] || 0)) * 3600 + +m[3] * 60 + +m[4] : Infinity; };
+    const now = Date.now();
+    for (const line of ps.split("\n")) {
+      const m = /^\s*\d+\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+      if (!m || !m[3].includes("shell-snapshots/snapshot-")) continue;
+      for (const d of open) if (+m[1] === d.pid && now - secs(m[2]) * 1000 >= d.at - 1000) d.released = true;
+    }
+  }
+  permOf(sid, lv) {
+    const p = this._perm && this._perm.get(sid);
+    return p && !p.released && lv && lv.state !== "wait" && lv.state !== "limit" && lv.at <= p.at + 1500 ? p : null;
   }
   setupAgentBar() {
     if (typeof this.addStatusBarItem !== "function") return;
@@ -4156,7 +4234,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const title = /^\s*</.test(raw) ? "" : raw.trim();
       if (!title && !byLine.has(sid)) continue;
       const b = byLine.get(sid);
-      const state = lv.state === "wait" ? "wait" : (now - lv.at) / 60e3 <= AI_IDLE ? "run" : "quiet";
+      const state = this.agentState(sid, lv, now);
       out.push({ sid, agent, state, at: lv.at, label: b ? b.label : title, title, path: b ? b.path : "", line: b ? b.line : -1, x });
     }
     return out.sort((a, b) => b.at - a.at);
@@ -4171,7 +4249,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const list = this._agentList || [];
     const runs = list.filter((a) => a.state === "run"), waits = list.filter((a) => a.state !== "run");
     const head = runs[0] || waits[0];
-    const word = { run: "在跑", wait: "等你", quiet: "没动静" };
+    const word = { run: "在跑", wait: "等你", perm: "等批准", quiet: "没动静", limit: "撞限额" };
     const short = (s) => { const c = [...String(s || "")]; return c.length > 18 ? c.slice(0, 18).join("") + "…" : c.join(""); };
     const text = head ? `🤖 ${word[head.state]} · ${short(head.label)}${list.length > 1 ? ` · 另 ${list.length - 1} 个` : ""}` : "🤖 空闲";
     // 在跑 / 等你的个数变了：轻轻跳一下（只换了标题不跳）
@@ -4234,7 +4312,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const list = this._agentList || [];
     const runs = list.filter((a) => a.state === "run"), waits = list.filter((a) => a.state !== "run");
     const shown = [...runs, ...waits.slice(0, 3)];
-    const word = { run: "在跑", wait: "等你", quiet: "没动静" };
+    const word = { run: "在跑", wait: "等你", perm: "等批准", quiet: "没动静", limit: "撞限额" };
     const head = pop.createDiv({ cls: "naut-ap-head" });
     head.createSpan({ cls: "naut-ap-title", text: "🤖 Agent 会话" });
     head.createSpan({ cls: "naut-ap-count", text: [runs.length ? `${runs.length} 在跑` : "", waits.length ? `${waits.length} 等你` : ""].filter(Boolean).join(" · ") });
@@ -4257,7 +4335,9 @@ module.exports = class NautilusSpiral extends Plugin {
       if (todo || step) card.createDiv({ cls: "naut-ap-line naut-ap-step", text: "▸ " + [todo ? `${todo.done}/${todo.total} 步` : "", step].filter(Boolean).join(" · ") });
       if (todo) card.createDiv({ cls: "naut-ap-bar" }).createDiv({ cls: `naut-ap-fill naut-bg-${a.agent}`, attr: { style: `transform:scaleX(${todo.done / todo.total})` } });
       // 在等你的：它最后说的那句话（和日记里「💬」那一行同一份；没挂在大纲里的去会话日志里读）
-      if (a.state !== "run") {
+      const perm = a.state === "perm" && this.permOf(a.sid, lv);
+      if (perm) card.createDiv({ cls: "naut-ap-said", text: `停在权限提示上，等你点「允许」${perm.tool ? `：${perm.tool}` : ""}` });
+      else if (a.state !== "run") {
         const said = this._resCache && this._resCache.get(a.sid);
         const el = card.createDiv({ cls: "naut-ap-said" });
         if (said && said.said) el.setText(plainSaid(said.said));
@@ -4733,7 +4813,8 @@ module.exports = class NautilusSpiral extends Plugin {
   autoFind(text, key) {
     const hits = parseJournal(text, this.settings).filter((i) => i.kind === "task" && workKey(i.label) === key);
     const it = hits.find((i) => i.state === "open") || hits[0];
-    return it ? { it, cur: it.state === "done" ? "done" : it.doing ? "doing" : it.paused ? "paused" : it.suspended ? "suspended" : "open" } : null;
+    // TOREVIEW / HITLIMIT 是 DOING 停在半路（agentKwSync 切的），这里当 DOING 算，agentKw 另外带上
+    return it ? { it, agentKw: it.agentKw, cur: it.state === "done" ? "done" : it.doing || it.agentKw ? "doing" : it.paused ? "paused" : it.suspended ? "suspended" : "open" } : null;
   }
   // 这一行是机器自己停下的：机器写的 PAUSED（rec.autoPaused），或者改成暂停之前记的老 SUSPENDED。你自己改成 PAUSED 的不算
   autoParked(rec, cur) { return cur === "suspended" || (cur === "paused" && !!rec.autoPaused); }
@@ -4943,7 +5024,7 @@ module.exports = class NautilusSpiral extends Plugin {
           text = r.text; rec.status = "doing"; delete rec.parkedAt; delete rec.fresh; delete rec.autoPaused;
           digest.doing.push(name);
           report.changes.push(`DOING：${rec.label}`);
-        } else if (!active && (cur === "doing" || rec.fresh) && !(rec.hold && Date.now() < rec.hold)) {
+        } else if (!active && (cur === "doing" || rec.fresh) && !(found && found.agentKw) && !(rec.hold && Date.now() < rec.hold)) {   // 等你看、撞限额的不改成 PAUSED
           const r = this.autoLine(text, rec, x, "paused");
           text = r.text; rec.status = "paused"; rec.autoPaused = true; rec.parkedAt = last; delete rec.fresh;
           clocks.add(rec.key);
@@ -5092,7 +5173,7 @@ module.exports = class NautilusSpiral extends Plugin {
   observe(file, content, record) {
     const items = parseJournal(content, this.settings);
     const cur = new Map();
-    for (const i of items) if (i.kind === "task") cur.set(i.label, { state: i.state, doing: i.doing && i.state === "open", startedAt: i.startedAt, doneAt: i.doneAt, dur: i.dur });
+    for (const i of items) if (i.kind === "task") cur.set(i.label, { state: i.state, doing: i.doing && i.state === "open", agentKw: i.agentKw, startedAt: i.startedAt, doneAt: i.doneAt, dur: i.dur });
     const prev = this.states.get(file.path);
     this.states.set(file.path, cur);
     const nowM = moment();
@@ -5228,7 +5309,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const cache = (this._progCache ||= new Map());
     let it = cache.get(raw);
     if (it === undefined) {
-      it = parseJournal(raw.replace(/^\s+/, ""), cfg).find((i) => i.kind === "task" && i.doing) || null;
+      it = parseJournal(raw.replace(/^\s+/, ""), cfg).find((i) => i.kind === "task" && (i.doing || i.agentKw)) || null;
       if (cache.size > 300) cache.clear();
       cache.set(raw, it);
     }
@@ -5252,8 +5333,9 @@ module.exports = class NautilusSpiral extends Plugin {
     if (x) {
       (this._progSids ||= new Set()).add(x.sid);
       const quiet = lv ? Math.max(0, Math.round((Date.now() - lv.at) / 60e3)) : null;
-      const state = archived ? "已归档" : !lv ? "" : lv.state === "wait" ? "等你回复" : quiet <= AI_IDLE ? "在跑" : `${dur(quiet)} 没动静`;
-      mode = lv && lv.state === "run" && quiet <= AI_IDLE ? "run" : "wait";
+      const perm = !archived && this.permOf(x.sid, lv);
+      const state = archived ? "已归档" : !lv ? "" : lv.state === "wait" ? "等你回复" : perm ? `等你点允许${perm.tool ? ` · ${perm.tool}` : ""}` : lv.state === "limit" ? (lv.resets && Date.now() > lv.resets ? "额度已恢复，等你继续" : `撞${lv.week ? "周" : ""}限额${lv.resets ? ` · ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")} 恢复` : ""}`) : quiet <= AI_IDLE ? "在跑" : `${dur(quiet)} 没动静`;
+      mode = lv && lv.state === "run" && !perm && quiet <= AI_IDLE ? "run" : "wait";
       parts.push(`${x.bound ? "绑定" : "监听"} ${AI_AGENTS[aiAgent(x)]}${state ? " · " + state : ""}`);
       const step = !archived && lv && lv.state === "run" ? (lv.todo && lv.todo.cur) || lv.step : "";
       if (step) parts.push(step);
@@ -5263,7 +5345,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (pct == null && !x) return null;
     const kids = x && !archived ? this.progKids(x.sid, lv) : null;
     if (kids && kids.sum) parts.push(kids.sum);
-    return { pct, mode: pct != null ? "bar" : mode, agent: x ? aiAgent(x) : "", tail: parts.join(" · "), rows: kids ? kids.rows : [], finish: archived ? { sid: x.sid, label } : null,
+    return { pct, mode: pct != null ? "bar" : mode, agent: x ? aiAgent(x) : "", tail: parts.join(" · "), finish: archived ? { sid: x.sid, label } : null,
       tip: [archived ? "这个会话归档了，这一行马上记成 DONE" : it.progress != null ? "进度是你写在这一行里的" : pct != null && lead.includes("步") ? "进度按这个会话自己列的待办算" : pct != null ? "进度按预估时长算" : "这个会话没有列待办，看不出做到百分之几",
         x ? `${x.bound ? "手动绑定的会话" : "监听的会话"}：${x.title || (x.text || "").slice(0, 40) || x.sid}（${aiWhere(x)}）` : ""].filter(Boolean).join("\n") };
   }
@@ -5277,49 +5359,182 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!r.bg && parentWait) return { st: "fail", word: "停了" };
     return { st: "quiet", word: `${dur(Math.round(quiet))} 没动静` };
   }
-  kidName(r) {
-    return resultText(r.desc || r.type || "子代理", 40).replace(/、/g, "，");
+  kidTok(r) {
+    return [...r.tok.values()].reduce((n, v) => n + v, 0);
   }
-  // 这个会话派出去的 subagent、开着的 side chat，画在进度条下面：在跑的都画，跑完 / 停了的留 20 分钟，最多 5 行。
-  // 返回 { sum: 进度条末尾那一截「🤖 2 跑 1 完 · side chat 1」, rows: [{ text, st }] }，什么都没有返回 null
+  // 母块进度条末尾那一截：这个会话今天派的 subagent 几个在跑、几个跑完，开着几个 side chat（各自的明细在子块上）
   progKids(sid, lv) {
     const ai = this._ai;
     if (!ai) return null;
-    const now = Date.now(), parentWait = !lv || lv.state === "wait";
-    const kids = ai.subsOf(sid).map((r) => ({ r, ...this.kidState(r, parentWait) }))
-      .filter((k) => (now - k.r.at) / 60e3 < (k.st === "done" || k.st === "fail" ? 20 : 30));
+    const parentWait = !lv || lv.state !== "run", key = this.today().format(this.settings.format);
+    const kids = ai.subsOf(sid).filter((r) => aiDay(r.start, this.settings).key === key).map((r) => this.kidState(r, parentWait).st);
     const sides = (this._side && this._side.get(sid)) || [];
-    if (!kids.length && !sides.length) return null;
-    const busy = kids.filter((k) => k.st === "run" || k.st === "quiet").sort((a, b) => a.r.start - b.r.start);
-    const over = kids.filter((k) => k.st === "done" || k.st === "fail").sort((a, b) => b.r.at - a.r.at);
-    const tokOf = (r) => [...r.tok.values()].reduce((n, v) => n + v, 0);
-    const rows = [...busy, ...over].map((k) => {
-      const tok = tokOf(k.r);
-      return { st: k.st, text: `↳ ${k.r.desc || k.r.type || "子代理"} · ${k.word}${k.st === "run" && k.r.step ? " · " + k.r.step : ""}${tok ? " · " + fmtTok(tok) : ""}` };
-    });
-    // side chat 只知道开着、开了多久（见 sideChats）
-    for (const s of sides) rows.push({ st: "wait", text: `↳ side chat · 开着 · ${dur(Math.max(1, Math.round((now - s.since) / 60e3)))}` });
-    const shown = rows.length > 5 ? [...rows.slice(0, 4), { st: "more", text: `↳ … 还有 ${rows.length - 4} 个` }] : rows;
     const n = (f) => kids.filter(f).length, bits = [];
-    if (n((k) => k.st === "run" || k.st === "quiet")) bits.push(`${n((k) => k.st === "run" || k.st === "quiet")} 跑`);
-    if (n((k) => k.st === "done")) bits.push(`${n((k) => k.st === "done")} 完`);
-    if (n((k) => k.st === "fail")) bits.push(`${n((k) => k.st === "fail")} 停`);
+    if (n((k) => k === "run" || k === "quiet")) bits.push(`${n((k) => k === "run" || k === "quiet")} 跑`);
+    if (n((k) => k === "done")) bits.push(`${n((k) => k === "done")} 完`);
+    if (n((k) => k === "fail")) bits.push(`${n((k) => k === "fail")} 停`);
     const sum = [bits.length ? "🤖 " + bits.join(" ") : "", sides.length ? `side chat ${sides.length}` : ""].filter(Boolean).join(" · ");
-    return { sum, rows: shown };
+    return sum ? { sum } : null;
   }
-  // 写进日记的「🤖」行（见 subInto）：这个会话派过的所有 subagent（最近 4 个写名字）、开过几个 side chat。都没有返回空串
-  subMark(sid, parentWait = true) {
-    const subs = this._ai ? this._ai.subsOf(sid) : [], opened = (this._sideSeen && this._sideSeen.get(sid)) || new Set();
-    if (!subs.length && !opened.size) return "";
-    const tokOf = (r) => [...r.tok.values()].reduce((n, v) => n + v, 0);
-    const items = subs.slice(-4).map((r) => {
-      const k = this.kidState(r, parentWait), tok = tokOf(r);
-      return `${this.kidName(r)} ${k.st === "done" ? "✓" + (tok ? " " + fmtTok(tok) : "") : k.st === "fail" ? "✗ " + k.word : "⋯ 在跑"}`;
-    });
-    const open = ((this._side && this._side.get(sid)) || []).length;
-    const side = opened.size ? `side chat ${opened.size}${open ? `（${open} 个开着）` : ""}` : "";
-    const head = subs.length ? `子代理 ${subs.length}${subs.length > 4 ? "（最近 4 个）" : ""}：${items.join("、")}` : "";
-    return [head, side].filter(Boolean).join(" · ");
+  // 子块（下面有「🔗 子代理 / side chat」行的 DOING）自己的进度条：subagent 在跑还是跑完、最近一步、token；side chat 只知道开着、开了多久
+  kidStatus(kid) {
+    const base = { pct: null, mode: "wait", agent: "claude", finish: null };
+    if (kid.kind === "side") {
+      const s = [...(this._side || new Map()).values()].flat().find((x) => String(x.pid) === kid.id);
+      return { ...base, tail: s ? `side chat · 开着 · ${dur(Math.max(1, Math.round((Date.now() - s.since) / 60e3)))}` : "side chat · 关了",
+        tip: "Claude 桌面版的 side chat：只看得到它开着（桌面版为它起的 claude 进程还在），问了什么、在答还是等你、用了多少 token 都读不到" };
+    }
+    let r = null, parent = "";
+    for (const [sid, m] of (this._ai ? this._ai.subs : new Map())) for (const x of m.values()) if (x.id.startsWith(kid.id)) { r = x; parent = sid; }
+    if (!r) return { ...base, tail: "子代理 · 还没读到它的日志", tip: "" };
+    const lv = this._ai.live.get(parent), k = this.kidState(r, !lv || lv.state !== "run"), tok = this.kidTok(r);
+    return { ...base, mode: k.st === "run" ? "run" : "wait", tail: ["子代理", k.word, k.st === "run" ? r.step : "", tok ? `${fmtTok(tok)} tok` : ""].filter(Boolean).join(" · "),
+      tip: `${r.desc || "subagent"}（${r.type || "subagent"}${r.bg ? "，后台派的" : ""}）` };
+  }
+  // 「🔗」绑着的会话 sid 派出去的 subagent、开着的 side chat，写成这件任务的子块：
+  //   块去向从子块派的（subagent 的描述对得上一个还没做完的子块）：直接改那个子块，TODO → DOING，跑完 → DONE / FAILED / CANCELLED；
+  //   会话自己派的、side chat：在任务的子块最后新加一个机器子块「DOING 23:35 🤖 描述」。
+  //   在跑时子块下面一行「🔗 子代理 `id`」绑住；跑完换成「⏱ 23:31–23:40 · 共 9m · 16k tok · 子代理 `id`」，再接一行「💬 它交回来的结论」。
+  // 只管日记日今天派出去的。状态只在开始、结束时改；一次改一处，改完重新看一遍，直到没得改
+  kidsInto(text, sid) {
+    const cfg = this.settings, ai = this._ai;
+    if (!ai || !text.includes(sid)) return text;
+    const key = this.today().format(cfg.format), lv = ai.live.get(sid), parentWait = !lv || lv.state !== "run";
+    const subs = ai.subsOf(sid).filter((r) => (r.desc || r.type) && aiDay(r.start, cfg).key === key);
+    const sides = this._side ? this._side.get(sid) || [] : null;   // null = 还没看过进程，side chat 先不动
+    if (!subs.length && !(sides && sides.length) && !text.includes("🔗 side chat")) return text;
+    const width = (l) => /^\s*/.exec(l)[0].replace(/\t/g, "    ").length;
+    const hm = (ms) => moment(ms).format("HH:mm");
+    let lines = text.split("\n");
+    const step = () => {
+      const at = lines.findIndex((l) => { const k = parseLink(l); return k && k.sid === sid; });
+      const n = at < 0 ? -1 : markOwner(lines, at);
+      if (n < 0) return false;
+      const base = width(lines[n]), kidW = width(lines[at]), kidInd = /^\s*/.exec(lines[at])[0];
+      const unit = kidInd.includes("\t") ? "\t" : " ".repeat(Math.max(2, kidW - base));
+      let end = n;
+      for (let i = n + 1; i < lines.length; i++) { if (!lines[i].trim()) continue; if (width(lines[i]) <= base) break; end = i; }
+      const kids = [];
+      for (let i = n + 1; i <= end; i++) if (width(lines[i]) === kidW && LIST_RE.test(lines[i]) && !/^\s*[-*+]\s+(?:🔗|⏱|💬|🤖\s*(?:子代理|side chat))/.test(lines[i])) kids.push(i);
+      const known = new Map();
+      for (const k of kids) { const c = childMark(lines, k, kidIdent); if (c) known.set(`${c.kind}:${c.id}`, { k, ...c }); }
+      const claimed = new Set([...known.values()].map((c) => c.k));
+      const ind2 = (k) => { const c = childMark(lines, k, () => ({})); return c ? /^\s*/.exec(lines[c.line])[0] : /^\s*/.exec(lines[k])[0] + unit; };
+      const setKw = (k, kw, time) => { const pt = splitTask(lines[k]); if (pt) lines[k] = `${pt.prefix}${kw} ${time} ${pt.rest}`; };
+      const finishLines = (ind, r) => {
+        const tok = this.kidTok(r), min = Math.max(1, Math.round((r.at - r.start) / 60e3)), said = r.last ? resultText(r.last, cfg.resultMax) : "";
+        return [`${ind}- ⏱ ${hm(r.start)}–${hm(r.at)} · 共 ${durTag(min)}${tok ? ` · ${fmtTok(tok)} tok` : ""} · 子代理 \`${r.id.slice(0, 8)}\``, ...(said ? [`${ind}- 💬 ${said}`] : [])];
+      };
+      const finKw = (r, k) => (k.st === "done" ? "DONE" : r.end === "failed" ? "FAILED" : "CANCELLED");
+      for (const r of subs) {
+        const id = r.id.slice(0, 8), k = this.kidState(r, parentWait), over = k.st === "done" || k.st === "fail", had = known.get(`sub:${id}`);
+        if (had) {
+          if (!had.open || !over) continue;
+          // 跑完了：子块记成 DONE（或 FAILED / CANCELLED），「🔗 子代理」行换成 ⏱ 和 💬
+          setKw(had.k, finKw(r, k), hm(r.at));
+          const ind = /^\s*/.exec(lines[had.line])[0];
+          lines.splice(had.line, 1, ...finishLines(ind, r));
+          return true;
+        }
+        // 块去向从子块派的：描述对得上一个还没做完、也没绑别的东西的子块，就改它
+        const mine = kids.find((i) => { if (claimed.has(i)) return false; const kl = kwLine(lines[i]); return kl && !/^(DONE|CANCELED|CANCELLED|FAILED)$/.test(kl.kw) && !linkUnder(lines, i) && kidMatch(kl.body, r.desc); });
+        if (mine != null) {
+          const ind = ind2(mine), pt = splitTask(lines[mine]);
+          if (over) { setKw(mine, finKw(r, k), hm(r.at)); lines.splice(mine + 1, 0, ...finishLines(ind, r)); }
+          else { setKw(mine, "DOING", pt && pt.kw === "DOING" && pt.since ? pt.since : hm(r.start)); lines.splice(mine + 1, 0, `${ind}- 🔗 子代理 \`${id}\``); }
+          return true;
+        }
+        // 会话自己派的：新加一个机器子块
+        const name = resultText(r.desc || r.type, 60);
+        const add = over ? [`${kidInd}- ${finKw(r, k)} ${hm(r.at)} ${AUTO_MARK}${name}`, ...finishLines(kidInd + unit, r)]
+          : [`${kidInd}- DOING ${hm(r.start)} ${AUTO_MARK}${name}`, `${kidInd}${unit}- 🔗 子代理 \`${id}\``];
+        lines.splice(end + 1, 0, ...add);
+        return true;
+      }
+      if (sides) {
+        const open = new Set(sides.map((s) => String(s.pid)));
+        for (const s of sides) {
+          if (known.has(`side:${s.pid}`)) continue;
+          lines.splice(end + 1, 0, `${kidInd}- DOING ${hm(s.since)} ${AUTO_MARK}side chat`, `${kidInd}${unit}- 🔗 side chat \`pid ${s.pid}\``);
+          return true;
+        }
+        // 进程没了 = side chat 关了：记成 DONE，「🔗 side chat」行换成 ⏱
+        for (const c of known.values()) {
+          if (c.kind !== "side" || !c.open || open.has(c.id)) continue;
+          const pt = splitTask(lines[c.k]), now = Date.now(), from = pt && pt.since ? pt.since : hm(now);
+          const [h, m] = from.split(":").map(Number), start = new Date(now); start.setHours(h, m, 0, 0);
+          const min = Math.max(1, Math.round((now - (start.getTime() > now ? start.getTime() - 864e5 : start.getTime())) / 60e3));
+          setKw(c.k, "DONE", hm(now));
+          lines[c.line] = `${/^\s*/.exec(lines[c.line])[0]}- ⏱ ${from}–${hm(now)} · 共 ${durTag(min)} · side chat \`pid ${c.id}\``;
+          return true;
+        }
+      }
+      return false;
+    };
+    for (let i = 0; i < 40 && step(); i++);
+    const next = lines.join("\n");
+    return next === text ? text : next;
+  }
+  // 大纲里挂着会话的那一行，关键词跟着会话走：生成的内容全部结束了 → TOREVIEW，撞限额 → HITLIMIT，又动起来 → DOING（开始的时刻不变）。
+  // 「全部结束」= 对话不再有新内容：这一轮答完了、被你打断了，或者好几分钟没写日志（多半卡在等你点「允许」，也可能在跑很长的命令，
+  // 那样等它跑完写了日志会自动回 DOING），而且它在后台派的 subagent 也没有还在跑的。
+  // 只在这三个之间切，你改成别的（PAUSED、DONE…）就不碰；只在会话状态变了的那一下切，你手动切回去的，等会话下次换状态再说。
+  // 开着的编辑器里改不进撤销记录，没开着的直接改文件
+  async agentKwSync(agents) {
+    const cfg = this.settings;
+    if (cfg.agentKw === false || !agents || !agents.length) return;
+    const want = { wait: "TOREVIEW", perm: "TOREVIEW", quiet: "TOREVIEW", limit: "HITLIMIT", run: "DOING" }, seen = (this._kwState ||= new Map()), byPath = new Map();
+    const ai = this._ai;
+    const kidsRunning = (sid) => !!ai && ai.subsOf(sid).some((r) => r.bg && this.kidState(r, true).st === "run");
+    for (const a0 of agents) {
+      const a = (a0.state === "wait" || a0.state === "quiet") && kidsRunning(a0.sid) ? { ...a0, state: "run" } : a0;   // 主会话停了、后台 subagent 还在跑：还不算结束
+      const kw = want[a.state];
+      if (!kw || seen.get(a.sid) === a.state) continue;
+      if (a.kw === kw || !["DOING", "TOREVIEW", "HITLIMIT"].includes(a.kw)) { seen.set(a.sid, a.state); continue; }
+      (byPath.get(a.path) || byPath.set(a.path, []).get(a.path)).push({ ...a, to: kw });
+    }
+    const swap = (raw, to) => { const p = splitTask(raw); return p && !p.cb && p.kw ? `${p.prefix}${to} ${p.since ? p.since + " " : ""}${p.rest}`.trimEnd() : raw; };
+    const apply = (text, list) => {
+      const lines = text.split("\n"), heard = [];
+      for (const a of list) {
+        let n = -1;
+        if (a.bound) { const at = lines.findIndex((l) => { const k = parseLink(l); return k && k.sid === a.sid; }); n = at < 0 ? -1 : markOwner(lines, at); }
+        else n = lines.findIndex((l, i) => AGENT_LINE_RE.test(l) && (kwLine(l) || {}).body === a.label && (i === a.line || !lines.slice(0, i).some((x) => (kwLine(x) || {}).body === a.label)));
+        const k = n < 0 ? null : kwLine(lines[n]);
+        if (!k || !["DOING", "TOREVIEW", "HITLIMIT"].includes(k.kw)) { seen.set(a.sid, a.state); continue; }
+        const next = swap(lines[n], a.to);
+        if (next !== lines[n]) { lines[n] = next; heard.push({ body: k.body, to: a.to }); }
+        seen.set(a.sid, a.state);
+      }
+      return { next: lines.join("\n"), heard };
+    };
+    for (const [path, list] of byPath) {
+      let cm = null;
+      this.app.workspace.iterateAllLeaves((l) => { const v = l.view; if (!cm && v instanceof OB.MarkdownView && v.file && v.file.path === path && v.editor && v.editor.cm) cm = v.editor.cm; });
+      if (cm) {
+        if (!cm.dom.isConnected || cm.composing) continue;   // 正在用输入法打字：下一轮再改
+        const text = cm.state.doc.toString(), { next, heard } = apply(text, list);
+        this.kwFresh(path, heard);   // 这一声已经在 progPoll 里按会话状态响过了，写盘那一路别再响
+        if (next !== text) this.cmReplace(cm, text, next, false);
+        continue;
+      }
+      const f = this.app.vault.getAbstractFileByPath(path);
+      if (f instanceof TFile) await this.app.vault.process(f, (text) => { const { next, heard } = apply(text, list); this.kwFresh(path, heard); return next; });
+    }
+  }
+  // 开着的笔记里每个「🔗」绑着的 Claude 会话，都按 kidsInto 写一遍子块（不进撤销记录；你正在用输入法打字时不写，等下一轮）
+  async kidSync() {
+    const cfg = this.settings;
+    if (cfg.resultBack === false || cfg.showAi === false || !this._ai) return;
+    const byCm = new Map();
+    for (const h of this.linkScan()) if (h.agent === "claude") (byCm.get(h.cm) || byCm.set(h.cm, new Set()).get(h.cm)).add(h.sid);
+    for (const [cm, sids] of byCm) {
+      if (!cm.dom.isConnected || cm.composing) continue;
+      const text = cm.state.doc.toString();
+      let next = text;
+      for (const sid of sids) next = this.kidsInto(next, sid);
+      if (next !== text) this.cmReplace(cm, text, next, false);
+    }
   }
   // 这一行对上的是哪个会话：下面有「🔗」行的（link = 那一行读出来的 { sid, agent }）优先，绑了就只听它，那个会话今天没动静也照样认；
   // 没绑的在今天有动静的会话里找，几个都对得上取最近在动的
@@ -5363,7 +5578,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const { RangeSetBuilder, StateEffect } = require("@codemirror/state");
     const plugin = this, W = 20;
     const refresh = (this.progEffect = StateEffect.define());
-    const DOING_LINE = DOING_LINE_RE;
+    const DOING_LINE = AGENT_LINE_RE;
     const resultOld = Decoration.line({ class: "naut-said" }), resultNew = Decoration.line({ class: "naut-said is-new" });
     // 画一遍：有百分比的，# 从上次的格数一格一格长到新的格数，百分数跟着跳；没有百分比、会话在跑的，三个 # 来回走
     const paint = (el, info) => {
@@ -5378,13 +5593,6 @@ module.exports = class NautilusSpiral extends Plugin {
       el.dataset.agent = info.agent;
       el.title = info.tip;
       el._tail.textContent = (info.mode === "bar" ? "  " : " ") + info.tail;
-      // 进度条下面：这个会话派出去的 subagent、开着的 side chat，一个一行
-      const rows = info.rows || [];
-      if (rows.length && !el._kids) { el._kids = doc.createElement("span"); el._kids.className = "naut-prog-kids"; el.appendChild(el._kids); }
-      if (el._kids) {
-        el._kids.replaceChildren(...rows.map((r) => { const k = doc.createElement("span"); k.className = "naut-prog-kid"; k.dataset.st = r.st; k.textContent = r.text; return k; }));
-        el._kids.style.display = rows.length ? "" : "none";
-      }
       if (info.mode === "bar") {
         const to = Math.max(0, Math.min(W, Math.round(info.pct * W)));
         const show = (n) => { el._bar.textContent = "[" + "#".repeat(n) + "-".repeat(W - n) + "]"; el._pct.textContent = " " + Math.round(n === to ? info.pct * 100 : n / W * 100) + "%"; };
@@ -5433,7 +5641,9 @@ module.exports = class NautilusSpiral extends Plugin {
               // 这一项下面几行里有没有「🔗」行（绑定写在正文里）
               const below = [line.text];
               for (let n = line.number + 1; n <= doc.lines && n <= line.number + 12; n++) below.push(doc.line(n).text);
-              info = plugin.lineStatus(line.text, linkUnder(below, 0));
+              // 子块下面有「🔗 子代理 / side chat」行的：它是会话派出去的 subagent / 开着的 side chat，进度条听它，不去对会话
+              const kid = kidUnder(below, 0);
+              info = kid ? plugin.kidStatus(kid) : plugin.lineStatus(line.text, linkUnder(below, 0));
             } catch (e) { console.error("[螺旋日程] 进度条", e); }
             if (info && info.finish) plugin.progQueueDone(view, info.finish);
             if (info) b.add(line.to, line.to, Decoration.widget({ widget: new ProgWidget(info), side: 1 }));
@@ -5477,12 +5687,16 @@ module.exports = class NautilusSpiral extends Plugin {
       }
       this.progRefresh();
       await this.resultSync();
+      await this.kidSync();
       const was = new Map((this._agents || []).map((a) => [a.sid, a.state]));
+      await this.permScan();
       this._agents = await this.agentScan();
+      await this.agentKwSync(this._agents).catch((e) => console.error("[螺旋日程] 切换 TOREVIEW / HITLIMIT 失败", e));
       this._agentList = this.agentSessions(this._agents);
       this.tickAgents();
-      // 有会话刚答完一轮、轮到你了：敲两下（和 WAITING 同一个音；Obsidian 不在最前面时不响）
-      if (this._agents.some((a) => a.state === "wait" && was.get(a.sid) === "run")) this.sound("WAITING");
+      // 有会话刚答完一轮、或者刚停到权限框上，轮到你了：敲两下（和 WAITING 同一个音；Obsidian 不在最前面时不响）
+      if (this._agents.some((a) => (a.state === "wait" || a.state === "perm") && was.get(a.sid) === "run")) this.sound("WAITING");
+      else if (this._agents.some((a) => a.state === "limit" && was.get(a.sid) && was.get(a.sid) !== "limit")) this.sound("SUSPENDED");
     } finally { this._progBusy = false; }
   }
 
@@ -5518,16 +5732,15 @@ module.exports = class NautilusSpiral extends Plugin {
           const t = await this.sessionTail({ sid: h.sid, agent: h.agent }).catch(() => null);
           cache.set(h.sid, c = { at, max: cfg.resultMax, said: t && t.full ? resultText(t.full, cfg.resultMax) : "" });
         }
-        // 同时写「🤖」行：这个会话派过的 subagent、开过的 side chat（都没有就不写）
-        const mark = this.subMark(h.sid, true);
-        if (c.said || mark) (todo.get(h.cm) || todo.set(h.cm, []).get(h.cm)).push([h.sid, c.said, mark]);
+        if (c.said) (todo.get(h.cm) || todo.set(h.cm, []).get(h.cm)).push([h.sid, c.said]);
       }
       for (const [cm, list] of todo) {
         if (!cm.dom.isConnected || cm.composing) continue;
         const text = cm.state.doc.toString();
         let next = text;
-        for (const [sid, said, mark] of list) { const was = next; next = resultInto(next, sid, said); if (next !== was) (this._resFresh ||= new Map()).set(said, Date.now()); next = subInto(next, sid, mark); }
+        for (const [sid, said] of list) next = resultInto(next, sid, said);
         if (next === text) continue;
+        for (const [, said] of list) (this._resFresh ||= new Map()).set(said, Date.now());   // 刚写上的那一行亮一下（见 lineProgressExtension）
         this.cmReplace(cm, text, next, false);
       }
     } finally { this._resBusy = false; }
@@ -5796,6 +6009,8 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.lineProgress !== false).onChange(async (v) => { s.lineProgress = v; await this.plugin.saveData(s); this.plugin.progRefresh(); }));
     new Setting(containerEl).setName("状态栏的 Agent 汇总").setDesc("右下角常驻一格：有在跑的会话就显示最新那个在跑的，没有就显示最新一个在等你回复的。范围是最近一天所有的 Claude Code 会话（桌面版的 Code 会话、终端里的 claude 都算），归档了的、日记里那一行已经做完的不算。单击弹出所有在跑的和最新三个在等你的，⌥ 单击跳到日记里等你的那一行")
       .addToggle((t) => t.setValue(s.agentStatus !== false).onChange(async (v) => { s.agentStatus = v; await this.plugin.saveData(s); this.plugin._agents = await this.plugin.agentScan(); this.plugin._agentList = this.plugin.agentSessions(this.plugin._agents); this.plugin.tickAgents(); }));
+    new Setting(containerEl).setName("会话停下来时改任务的状态").setDesc("挂在大纲上的 Agent 会话（任务下面有「🔗」行，或者 DOING 的行自动对上的）：对话不再有新内容了（这一轮答完、被你打断，或者好几分钟没动静，比如卡在等你点「允许」；后台派的 subagent 也都跑完了），那一行改成 TOREVIEW；撞了用量限额改成 HITLIMIT（显示成 HITLIMIT!）；又动起来了改回 DOING，开始的时刻不变。只在 DOING / TOREVIEW / HITLIMIT 之间切，你改成别的就不碰；你手动切回去的，等会话下次换状态再说")
+      .addToggle((t) => t.setValue(s.agentKw !== false).onChange(async (v) => { s.agentKw = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName("会话的结论写回任务下面").setDesc("任务下面有「🔗」行（绑着一个 Agent 会话）时：会话答完一轮或者被归档了，把它最后说的话写成这件任务下面的一行「💬」，下一轮答完再换成新的；它派过 subagent、开过 side chat 的，再写一行「🤖 子代理」。只在这篇笔记开着的时候写；想让它停就关掉这一项，或者删掉那一行 🔗")
       .addToggle((t) => t.setValue(s.resultBack !== false).onChange(async (v) => { s.resultBack = v; await this.plugin.saveData(s); }));
     num("「💬」行最多多少字", "多的在句子结尾处截断。完整的回复点 🔗 行回到会话里看", "resultMax", 40, 2000);
@@ -5834,4 +6049,4 @@ class SpiralSettings extends PluginSettingTab {
   }
 }
 
-module.exports.core = { parseHourClock, fmtHourClock, resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, SUB_LINE_RE, subInto, subUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS };
+module.exports.core = { parseHourClock, fmtHourClock, resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, kidIdent, kidMatch, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS };
