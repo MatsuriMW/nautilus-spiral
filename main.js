@@ -91,6 +91,48 @@ const RANGE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}\s*(?:-|–|—|~|～
 const SINGLE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}(?![\d])`);
 const CN_NUM = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
 
+// 「todos：」母块：一行只写「- todos：」（大小写、全角半角冒号都认，冒号后面可以接说明），它下面直接挂着的那一层子条目没写关键词的也当 TODO：
+//   照样排程、计时、改状态，改状态时关键词才真正写进那一行（1. 写稿 → 1. DOING 14:05 写稿）。子条目自己写了关键词 / 复选框的照它自己的；
+//   再往下一层是子条目的细节，不算。TODOseq、块去向认的是同一套写法
+const TODOS_HEAD_RE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*)?todos(?:\*\*)?\s*(?:[:：]|$)/i;
+const TODOS_KID_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/;
+const indW = (l) => /^\s*/.exec(l)[0].replace(/\t/g, "    ").length;
+function todosKidRest(rest) {
+  const s = rest.replace(STAMP_RE, "");
+  return !!s.trim() && !CHECKBOX_RE.test(s) && !/^(?:TODO|DOING|LATER|NOW|PAUSED|TOREVIEW|HITLIMIT|NEEDOK|QUEUED|ERRORED|DELEGATED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED|TODOFORAI|TODO4AI|TODO2AI|TODOTOAI)(?=\s|$)/i.test(s)
+    && !/^(?:⏱|🔗|💬|-{3,}\s*$)/.test(s) && !isSubMark(s);
+}
+// 第 n 行是不是 todos 母块下面没写关键词的子条目（往上找第一行缩进更浅的列表项，看它是不是「todos：」）
+function todosKid(lines, n) {
+  const m = TODOS_KID_RE.exec(lines[n] || "");
+  if (!m || !todosKidRest(m[2])) return false;
+  const w = indW(lines[n]);
+  for (let j = n - 1; j >= 0; j--) {
+    if (!lines[j].trim() || !TODOS_KID_RE.test(lines[j]) || indW(lines[j]) >= w) continue;
+    return TODOS_HEAD_RE.test(lines[j]);
+  }
+  return false;
+}
+// 读的时候在这些子条目的列表符号后面补一个 TODO（只在内存里补，不写回）
+const withTodo = (l) => l.replace(/^(\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?)/, "$1TODO ");
+function withTodos(lines) {
+  if (!lines.some((l) => TODOS_HEAD_RE.test(l))) return lines;
+  const out = lines.slice(), stack = [];   // stack：上面还没合上的列表项 { w, head }
+  let inCode = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*```/.test(l)) { inCode = !inCode; continue; }
+    if (inCode || !l.trim()) continue;
+    const m = TODOS_KID_RE.exec(l);
+    if (!m) continue;
+    const w = indW(l);
+    while (stack.length && stack[stack.length - 1].w >= w) stack.pop();
+    if (stack.length && stack[stack.length - 1].head && todosKidRest(m[2])) out[i] = withTodo(l);
+    stack.push({ w, head: TODOS_HEAD_RE.test(l) });
+  }
+  return out;
+}
+
 function tokenMinutes(h, mm, half, cnMin) {
   const m = mm !== undefined ? +mm : half ? 30 : cnMin !== undefined ? +cnMin : 0;
   return +h * 60 + m;
@@ -302,7 +344,7 @@ function linkMap(text, cfg) {
     const ind = /^\s*/.exec(lines[i])[0].replace(/\t/g, "    ").length;
     for (let j = i - 1; j >= 0; j--) {
       if (!lines[j].trim() || !LIST_RE.test(lines[j]) || /^\s*/.exec(lines[j])[0].replace(/\t/g, "    ").length >= ind) continue;
-      const it = parseJournal(lines[j].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task");
+      const it = parseJournal((todosKid(lines, j) ? withTodo(lines[j]) : lines[j]).replace(/^\s+/, ""), cfg).find((x) => x.kind === "task");
       if (it) out.set(l.sid, workKey(it.label));
       break;
     }
@@ -337,7 +379,7 @@ function parseClock(s, cfg) {
 function parseJournal(content, cfg) {
   const prio = cfg.priorityMarkers.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
   const items = [];
-  const lines = content.split("\n");
+  const lines = withTodos(content.split("\n"));   // todos 母块下面没写关键词的子条目当 TODO
   let inCode = false;
   lines.forEach((raw, line) => {
     if (/^\s*```/.test(raw)) { inCode = !inCode; return; }
@@ -5679,7 +5721,7 @@ module.exports = class NautilusSpiral extends Plugin {
       if (mine != null) {
         const c = childMark(lines, mine, () => ({})), ind = c ? /^\s*/.exec(lines[c.line])[0] : /^\s*/.exec(lines[mine])[0] + unit;
         const pt = splitTask(lines[mine]);
-        if (pt && !pt.cb && /^(TODO|LATER|WAITING|WAIT|TODOFORAI|TODO4AI|TODO2AI|TODOTOAI)$/.test(pt.kw || "")) lines[mine] = `${pt.prefix}DOING ${hm(d.created)} ${pt.rest}`.trimEnd();
+        if (pt && !pt.cb && (/^(TODO|LATER|WAITING|WAIT|TODOFORAI|TODO4AI|TODO2AI|TODOTOAI)$/.test(pt.kw || "") || !pt.kw && todosKid(lines, mine))) lines[mine] = `${pt.prefix}DOING ${hm(d.created)} ${pt.rest}`.trimEnd();
         lines.splice(mine + 1, 0, linkLine(ind, "claude", name, d.sid));
         return true;
       }
@@ -6026,7 +6068,7 @@ module.exports = class NautilusSpiral extends Plugin {
   bindSession(editor, off = false) {
     const cfg = this.settings;
     const n = editor.getCursor().line, raw = editor.getLine(n);
-    const it = parseJournal(raw.replace(/^\s+/, ""), cfg).find((i) => i.kind === "task");
+    const it = parseJournal((todosKid(editor.getValue().split("\n"), n) ? withTodo(raw) : raw).replace(/^\s+/, ""), cfg).find((i) => i.kind === "task");
     if (!it) { new OB.Notice("光标要放在一行任务上（TODO / DOING… 开头的列表项）"); return; }
     const lines = editor.getValue().split("\n");
     const had = linkUnder(lines, n);
