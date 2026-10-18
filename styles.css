@@ -392,12 +392,22 @@
 /* ---------------- 任务行下面的进度条 ----------------
    编辑器里 DOING 的那一行下面一行等宽字符：[#########-----------] 45%  监听 Claude · 在跑 · 改 main.js · 48k tok
    挂在那一行里面（不是单独一行），所以跟着这一行的缩进走；占满一整行宽的 inline-block，自己折到下一行（写成 block 的话行尾会多出一个空行）；# 的颜色：自己做的是 DOING 的红，监听着 Agent 的用那个 Agent 的颜色 */
-.naut-prog { display: inline-block; width: 100%; vertical-align: top; text-indent: 0; font-family: var(--font-monospace); font-size: 0.76em; line-height: 1.6; color: color-mix(in srgb, var(--text-muted) 80%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; -webkit-user-select: none; cursor: default; --naut-prog: #c8635f; animation: naut-prog-in .28s var(--naut-ease, ease-out) both; }
+.naut-prog { display: inline-flex; align-items: baseline; width: 100%; vertical-align: top; text-indent: 0; font-family: var(--font-monospace); font-size: 0.76em; line-height: 1.6; color: color-mix(in srgb, var(--text-muted) 80%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; -webkit-user-select: none; cursor: default; --naut-prog: #c8635f; animation: naut-prog-in .28s var(--naut-ease, ease-out) both; }
 .naut-prog[data-agent="claude"] { --naut-prog: #d97757; }
+/* 对上了 Claude 会话的：双击打开那个会话，悬停时字亮一点、底下出一道细线提示能点 */
+.naut-prog.is-linked { cursor: pointer; border-radius: 4px; transition: color .15s ease, background-color .15s ease; }
+.naut-prog.is-linked:hover { color: var(--text-normal); background: color-mix(in srgb, var(--naut-prog) 8%, transparent); }
+.naut-prog.is-linked:active { transform: scale(.995); }
+.cm-line.naut-said { cursor: default; }
 .naut-prog[data-agent="codex"] { --naut-prog: #62b0ea; }
 .naut-prog[data-agent="workbuddy"] { --naut-prog: #17a57f; }
 .naut-prog-bar { white-space: pre; color: var(--naut-prog); }
 .naut-prog-pct { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+.naut-prog-bar, .naut-prog-pct { flex: none; }
+.naut-prog-tail { flex: 1 1 auto; min-width: 0; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* token：数字 + 每 10 万一个方块，整块靠右 */
+.naut-prog-tok { flex: none; margin-left: auto; padding-left: 1ch; font-variant-numeric: tabular-nums; }
+.naut-prog-tok:empty { display: none; }
 .naut-prog[data-mode="wait"] .naut-prog-bar { opacity: .5; }
 .naut-prog[data-mode="run"] .naut-prog-tail { animation: naut-breathe 1.8s ease-in-out infinite; }
 @keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
@@ -436,6 +446,11 @@ input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px r
 .naut-ap-state.is-run { color: #4f7d5c; background: rgba(111, 159, 122, .15); }
 .naut-ap-state.is-wait, .naut-ap-state.is-perm { color: #8f5d40; background: rgba(168, 112, 79, .15); }
 .naut-ap-state.is-quiet { color: var(--text-muted); background: var(--background-modifier-border); }
+/* 出错停了 / 撞限额：和 TODOseq 里 ERRORED、HITLIMIT、QUEUED 渐到的颜色同一组 */
+.naut-ap-card.is-error { box-shadow: inset 2px 0 0 #93606b; }
+.naut-ap-state.is-error { color: #93606b; background: rgba(147, 96, 107, .14); }
+.naut-ap-state.is-limit { color: #8a5a8c; background: rgba(138, 90, 140, .13); }
+.naut-ap-state.is-queued { color: #5f7696; background: rgba(111, 134, 168, .15); }
 .naut-ap-card.is-run .naut-ap-dot { animation: naut-breathe 1.8s ease-in-out infinite; }
 .naut-ap-label { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .naut-ap-ago { color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -451,3 +466,4 @@ input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px r
 .naut-agent-pop.is-static .naut-ap-card { animation: none; }
 .naut-ap-empty, .naut-ap-more { padding: 6px 4px 2px; color: var(--text-faint); text-align: center; }
 .status-bar-item.naut-agents.is-idle { color: var(--text-faint); }
+

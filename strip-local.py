@@ -25,7 +25,7 @@ BEGIN = re.compile(r"^\s*(?://|/\*)\s*@local-begin\b")
 END = re.compile(r"^\s*(?://|/\*)\s*@local-end\b")
 LINE = re.compile(r"@local\s*(?:\*/)?\s*$")
 # 公开版里不该再出现的字眼：新加了只留本机的功能，把它的关键字补在这里
-LEFTOVER = re.compile(r"@local|长期项目|长期计划|long-projects|LP_SCRIPT|showProjects|projFolded|projRef|projOf|renderProjects|scheduleProjects|recomputeProjects|_lp[A-Z]\w*|\._lp\b|botTodo|pauseTodo")
+LEFTOVER = re.compile(r"@local|长期项目|长期计划|long-projects|LP_SCRIPT|showProjects|projFolded|projRef|projOf|renderProjects|scheduleProjects|recomputeProjects|_lp[A-Z]\w*|\._lp\b|botTodo|pauseTodo|📸|snapRun|takeSnapshot|restoreSnapshot|snapshotState|nautilus-snapshot|SnapModal|naut-shot|SNAP_PAGE|snapPageAdd|openSnapPage")
 
 
 def strip(text, name):

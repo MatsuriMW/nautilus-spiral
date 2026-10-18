@@ -46,9 +46,10 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 - **一行任务，一个会话。** 对上的办法有三种：任务下面有一行 `🔗`（绑定就写在正文里，这一块挪到哪、改了字都还认）；打开了自动记日记，机器替你对；或者会话的标题、你发的第一句话和这一行重名。命令「把这一行绑定到一个 Agent 会话…」手动写这一行 `🔗`。
 - **并列的几行，就是同时在跑的几个 Agent。** 几行 `DOING` 各挂各的会话、各有一条进度；螺旋内圈一个 Agent 一种颜色，画出它们同时在干活的时段。
-- **状态跟着会话走。** 在跑、等你回复、多久没动静，都是从会话日志里读的；会话停下来等你看，这一行自动改成 `TOREVIEW`，撞了用量限额改成 `HITLIMIT`，又动起来改回 `DOING`。会话在 Claude 桌面 app 或 Codex 里归档了，这一行走到 100%，自动记成 `DONE`。
+- **状态跟着会话走。** 在跑、等你回复、多久没动静，都是从会话日志里读的；会话停下来等你看，这一行自动改成 `TOREVIEW`，停在「允许吗？」上改成 `NEEDOK`，报错停了（过载、断网、上下文满了）改成 `ERRORED`，撞了用量限额改成 `HITLIMIT`、已经排进续跑队列的改成 `QUEUED`，又动起来改回 `DOING`。会话在 Claude 桌面 app 或 Codex 里归档了，这一行走到 100%，自动记成 `DONE`。
 - **它最后说的话回到大纲里。** 任务下面有 `🔗` 的，会话每答完一轮，最后那条回复压成一行 `💬` 写在任务下面：做完时是结论，停下来问你时是它问的那一句。下一轮答完换成新的，完整的回复点 `🔗` 回会话里看。
 - **会话派出去的 subagent、开着的 side chat 也看得见。** Claude Code 会话派了 subagent，进度条末尾多一截 `🤖 2 跑 1 完`，下面每个 subagent 一行：它的描述、在跑还是跑完了、最近一步、用了多少 token；在 Claude 桌面版里给这个会话开了 side chat，也各占一行（开着、开了多久）。会话每答完一轮，在 `💬` 下面再写一行 `🤖 子代理 3：查 runTmux ✓ 16k、查 cue() ✗ 停了 · side chat 1` 留档。数据都来自本机：subagent 的日志在会话目录的 `subagents/` 下；side chat 不落盘，只能看到桌面版为它起的那个 claude 进程，问了什么、在答还是等你、用了多少 token 都读不到。
+- **会话里开出来的会话按层级挂成子块。** 在 Claude 桌面版里，绑着的会话又开出新会话（侧栏里挂在它下面的），新会话写成这件任务的子块，下面一行它自己的 `🔗`，状态、进度条、`💬` 都各跟各的；再往下开的接着往下挂，层级和侧栏一样。你事先列好的子任务对得上新会话的标题，就直接绑那一块。
 - **状态栏报数。** 右下角一格 `🤖 2 在跑 · 1 等你`，点一下跳到等你的那一行。
 - **记录留在大纲里，能追回去。** 做完的任务下面是一行 `⏱ 20:12–21:09 · 共 57m · 885k tok · Claude`，末尾的 Claude 是链接，点了回到那个会话。
 - **发令交给配套的插件。** [块去向](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top)的 `⌥⌘S` 把一块连同子块发给 Claude CLI：开会话之前就定好会话号，在这一行下面记下 `🔗`，进度条随后开始走。选中几块并列的再发，每块各开一个会话（并列 = 并发）；选「子块各开一个」，母块当共同背景，每个子块一个会话，结论回到各自的子块下面（纵深 = 子会话）。会话可以开在终端窗口里，也可以放在后台的 tmux 里，或者用 `claude -p` 无头跑。不装它也行，把任务原样贴给 Agent 当第一句话就能对上。
@@ -134,7 +135,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 Obsidian 的密钥存储（系统钥匙串）里，不写进插件的 `data.json`；老版本 Obsidian 没有密钥存储时才退回 `data.json`。连接的那一会儿，插件在 `127.0.0.1` 的一个随机端口上等浏览器把授权码送回来，收到就关，最多等五分钟。
 
-**读库外的文件**，都是只读，而且只读设置里开着的那几个 Agent（不是主力的只读今天改过的会话文件）：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了）；另外看一眼本机进程列表，认出 side chat 的 claude 进程；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
+**读库外的文件**，都是只读，而且只读设置里开着的那几个 Agent（不是主力的只读今天改过的会话文件）：`~/.claude/projects`、`~/.config/claude/projects` 和 Claude 桌面 app 的 `claude-code-sessions` 文件夹（看哪些会话归档了、哪个会话是从哪个会话开出来的）；另外看一眼本机进程列表，认出 side chat 的 claude 进程；`~/.codex/sessions`、`~/.codex/archived_sessions` 和 `~/.codex/session_index.jsonl`（会话标题）；`~/.workbuddy/projects`。每天的汇总存在插件目录的 `ai-usage.json` 里。
 
 **写库外的文件**：`~/Library/Caches/nautilus-spiral/`，是第一次用到时在本机编出来的几个 Swift 小助手（读日历用的，和一个试验性的通知 App）。
 
