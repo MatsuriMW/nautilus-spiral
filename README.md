@@ -18,6 +18,17 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 **The interface is in Chinese**, and so is the full [guide](./docs/guide.zh-CN.md). This page covers what the plugin does, how to install it and what it touches outside your vault.
 
+## Recommended: use it with Agent Deck
+
+[Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) is the other half of this setup. Install both:
+
+| Plugin | Owns |
+|---|---|
+| Nautilus Spiral | The daily note and the plan: spiral scheduling, timing, capacity, reviews — and the agent tracking display (inner rings, status bar, progress rows, `🔗` bindings) |
+| Agent Deck | The AI write half: automatic journal logging, status write-back, `💬`, desktop child / side chat / subagent blocks, archive → `DONE`, and delegation from a task line |
+
+To hand over: open **Settings → 追踪 → 停用螺旋日程里的 AI 写入** in Agent Deck, then reload Nautilus Spiral. Nautilus stops writing but keeps its schedule and tracking display; Agent Deck owns the note writes. Without Agent Deck, the co-writing features below still run inside Nautilus itself.
+
 ## What it does
 
 - **A 12-hour dial that winds inward.** The outer end is the start of your day, the inner end is the end. Fixed events, planned to-dos, finished tasks and "now" are all on it. Hover any segment and the line above the spiral shows what it is, instantly.
@@ -30,7 +41,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 - **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
 - **Calendars, read-only.** Events from macOS Calendar and from Google Calendar (through the Google Calendar API, with an OAuth client you create yourself) can be laid onto the spiral as fixed events. Both can be on at once; the same event is kept once.
 - **Small sounds, two moods.** A soft tick when you click a segment or a row, and a short synthesized sound whenever a task changes state anywhere in the vault, whoever changed it (a hotkey, a task plugin, a board, typing). Moving forward (`TODO`, `DOING`, `DONE`) rises and stays soft; stopping or not making it (`PAUSED`, `WAITING`, `SUSPENDED`, `CANCELLED`, `FAILED`) falls, lower and rougher each step. No audio files; one switch turns it off.
-- **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI) and WorkBuddy, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one used (output plus fresh input; cache reads are listed separately). You pick which of the three you actually use, and one of them as your primary agent: the primary is tracked in full (all history, cross-day catch-up, the status bar), the others only for sessions active today.
+- **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI), WorkBuddy and DeepSeek Harness, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one used (output plus fresh input; cache reads are listed separately). You pick which of the four you actually use, and one of them as your primary agent: the primary is tracked in full (all history, cross-day catch-up, the status bar), the others only for sessions active today.
 - **A progress line under what you are doing.** In the editor, a `DOING` line gets one row of monospace text under it, filled with `#` like a terminal: `[#########-----------] 45%`. The number is the progress you wrote on the line (`60%`, `2/3`); failing that, the agent session that belongs to the line, if it keeps a to-do list of its own; failing that, time spent against your estimate. When a session is matched, the row also says whether it is running or waiting for you, what its last step was, and how many tokens it has used. You can bind a line to a session by hand, and archiving the session fills the row to 100% and marks the line `DONE`.
 - **Active and passive recording, together.** You record on purpose: the plan, the estimates, the states you set by hand. The machine records in the background as your assistant: when each agent session was really moving, and for how long. Both end up in the same daily note and on the same spiral.
 - **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `PAUSED` and the actual time spans, with the tokens the session used, are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app or in Codex is taken as your explicit signal, and that line is marked `DONE`. The same pass can be run by hand at any time (`⌃⌥L`, or the button beside 「人机协作」), whether or not the automatic one is on.

@@ -1,5 +1,5 @@
 /* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
-   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿），游戏是紫的，靠位置和粗细再区分一层 */
+   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝），游戏是紫的，靠位置和粗细再区分一层 */
 .naut-root, .naut-ai-modal, .naut-status-modal, .naut-agent-pop {
   --naut-event: #e3a924;
   --naut-task: #2b64c3;
@@ -8,6 +8,7 @@
   --naut-ai-claude: #d97757;
   --naut-ai-codex: #62b0ea;
   --naut-ai-workbuddy: #17a57f;
+  --naut-ai-dsh: #4d6bfe;
   --naut-ai: var(--naut-ai-claude);
   --naut-game: #b04fa8;
   --naut-done: var(--text-faint);
@@ -60,9 +61,11 @@
 .naut-by-claude { --naut-ai: var(--naut-ai-claude); }
 .naut-by-codex { --naut-ai: var(--naut-ai-codex); }
 .naut-by-workbuddy { --naut-ai: var(--naut-ai-workbuddy); }
+.naut-by-dsh { --naut-ai: var(--naut-ai-dsh); }
 .naut-bg-claude { background: var(--naut-ai-claude); }
 .naut-bg-codex { background: var(--naut-ai-codex); }
 .naut-bg-workbuddy { background: var(--naut-ai-workbuddy); }
+.naut-bg-dsh { background: var(--naut-ai-dsh); }
 .naut-game-line::before { background: var(--naut-game); }
 .naut-review-line::before { background: var(--naut-review); width: 8px; height: 8px; }
 
@@ -263,7 +266,7 @@
 
 /* ---------------- 开一轮专注：选大方向的框 ---------------- */
 /* 每个方向一种颜色（--c），选中的那张卡片和下面的「开始」按钮跟着它变 */
-.naut-focus-modal { --c: var(--naut-task); --naut-task: #2b64c3; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-game: #b04fa8; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
+.naut-focus-modal { --c: var(--naut-task); --naut-task: #2b64c3; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-ai-dsh: #4d6bfe; --naut-game: #b04fa8; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
 .naut-fm-title { font-size: 1.25em; font-weight: 700; }
 .naut-fm-sub { color: var(--text-muted); font-size: var(--font-ui-small); margin: 4px 0 14px; line-height: 1.5; }
 .naut-fm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }

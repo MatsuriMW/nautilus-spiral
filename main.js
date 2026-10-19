@@ -13,7 +13,8 @@ const DEFAULTS = {
   doneTimes: {},        // { "2026_09_29": { "任务文字": 872 } }，在 Bike 里改成 DONE 时记下的完成时间（分钟）
   autoOpened: false,
   showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
-  aiAgents: { claude: true, codex: true, workbuddy: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  aiAgents: { claude: true, codex: true, workbuddy: true, dsh: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  dshApiPort: 0,        // DSH 的 dsh-token-usage-stats API 端口：0 = 自动从 lsof 找；插件没开时保留库里上次的数
   aiPrimary: "claude",  // 主力 Agent：全量追踪（历史、跨天补记、状态栏）；其余开着的只追踪今天有动静的会话
   googleCal: false,       // 读 Google 日历里的事件当固定事件（只读，走 Google Calendar API）
   googleClientId: "",     // 你自己在 Google Cloud 里建的 OAuth 客户端（桌面应用）的 ID；客户端密钥和刷新令牌不放在这儿，在系统钥匙串里
@@ -75,7 +76,7 @@ const DEFAULTS = {
   codexPath: "codex",             // codex 命令行在哪：只写名字就到登录 shell 的 PATH 里找
   autoLogCodexModel: "",          // 用 codex 判断时的模型（codex exec 的 -m）；空 = Codex 自己的默认
   autoLogNotify: true,  // 自动记成 DONE / PAUSED 时发一条带按钮的通知，不对可以在通知上改
-  autoLogArchiveDone: true,   // 在 Claude 桌面 app 里归档了的会话，它那一行记成 DONE
+  autoLogArchiveDone: true,   // 在 Claude 桌面 app、Codex 或 DSH 里归档了的会话，它那一行记成 DONE
   autoLogSince: 0,      // 开启自动记录的时刻（毫秒）：这之前就停了的会话不补记
   autoLogState: {},     // { "2026_10_11": { 会话号: { key, label, dir, status, min, created, parkedAt, hold, gone, skip } } }
 };
@@ -211,12 +212,13 @@ function cleanLabel(s) {
 
 // 任务下面的「🔗」行：这件任务绑在哪个 Agent 会话上。绑定写在日记正文里，这一块挪到哪、发到哪天、改了字都还认；想解除就把这一行删掉。
 //   Claude 的写成链接「- 🔗 [Claude：会话标题](claude://resume?session=会话号)」，点了在 Claude 桌面版里打开那个会话；
-//   别的 Agent 没有这种链接，会话号写在反引号里「- 🔗 Codex：会话标题 `会话号`」
+//   DeepSeek Harness 目前只有 dsh://open（打开客户端），会话号留在反引号里；Codex / WorkBuddy 也只有会话号
 const LINK_LINE_RE = /^\s*[-*+]\s+🔗/;
 const SID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 const claudeLink = (sid) => `claude://resume?session=${sid}`;
 function linkLine(indent, agent, title, sid) {
   const name = String(title || "").replace(/[\[\]()`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || "会话";
+  if (agent === "dsh") return `${indent}- 🔗 [DeepSeek Harness：${name}](dsh://open) \`${sid}\``;
   return agent === "claude" ? `${indent}- 🔗 [Claude：${name}](${claudeLink(sid)})` : `${indent}- 🔗 ${agent === "codex" ? "Codex" : agent === "workbuddy" ? "WorkBuddy" : agent}：${name} \`${sid}\``;
 }
 // 读一行「🔗」：{ sid, agent }，不是就返回 null
@@ -224,7 +226,8 @@ function parseLink(line) {
   if (!LINK_LINE_RE.test(line)) return null;
   const m = SID_RE.exec(line);
   if (!m) return null;
-  return { sid: m[0], agent: /🔗\s*\[?\s*Codex/i.test(line) ? "codex" : /🔗\s*\[?\s*WorkBuddy/i.test(line) ? "workbuddy" : "claude" };
+  const agent = /🔗\s*\[?\s*Codex/i.test(line) ? "codex" : /🔗\s*\[?\s*WorkBuddy/i.test(line) ? "workbuddy" : /🔗\s*\[?\s*(DeepSeek Harness|DSH)/i.test(line) ? "dsh" : "claude";
+  return { sid: m[0], agent };
 }
 // 第 n 行那一项的直接子项（和它第一个子项同一层缩进的）里，第一个让 pick 返回东西的那一行：{ line, ...pick 返回的 }，没有返回 null
 function childMark(lines, n, pick) {
@@ -1491,6 +1494,7 @@ class GoogleCalendar {
 //   缓存命中 cache_read 只是每轮把上下文重读一遍，量最大但不代表干了活，只放在悬停提示里
 // Claude Code 默认 30 天删会话日志，所以汇总结果另存一份（ai-usage.json），日志删了历史还在。
 const AI_IDLE = 5;          // 同一会话两次活动间隔不超过 5 分钟，中间算在干活（跑长命令、等你确认都在内）
+const DSH_TOUCH = new Set(["user/message", "assistant/message", "tool/call", "tool/result", "turn/start", "turn/end", "step/start", "step/end"]);   // DSH 日志里算「这一刻在动」的事件
 const AI_FRESH_DAYS = 14;   // 最近这么多天的汇总会随日志重算，更早的定格不再改
 const AI_STORE_V = 4;       // ai-usage.json 的格式版本；升级时用现存日志把所有日子重算一遍（2 = 加了每个会话的明细 list，3 = 明细里加了工作目录 cwd，4 = 加了会话来自哪（Claude 桌面版 / 终端））
 
@@ -1503,8 +1507,8 @@ function aiDay(ms, cfg) {
   return { key: fmtKey(d, cfg), t: (ms - mid) / 60000 };   // t 和螺旋同一个坐标：当天 0 点起的分钟数，凌晨会超过 1440
 }
 
-// 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 绿
-const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy" };
+// 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝
+const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", dsh: "DeepSeek Harness" };
 const aiAgent = (x) => (x && AI_AGENTS[x.agent] ? x.agent : "claude");   // 旧记录没写来源的都是 Claude
 // 主力 Agent：全量追踪；没设过是 Claude
 const aiPrimary = (cfg) => (cfg && AI_AGENTS[cfg.aiPrimary] ? cfg.aiPrimary : "claude");
@@ -1516,6 +1520,7 @@ const aiWhere = (x) => {
   const a = aiAgent(x), app = x.app || "";
   if (a === "claude") return app === "cli" ? "终端" : "Claude 桌面版";   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
   if (a === "codex") return /desktop/i.test(app) ? "Codex 桌面版" : /tui|cli|exec/i.test(app) ? "Codex 终端" : "Codex";
+  if (a === "dsh") return "DeepSeek Harness";
   return AI_AGENTS[a];
 };
 
@@ -1581,15 +1586,16 @@ function aiStep(name, input) {
   const i = input || {}, n = String(name || "");
   const base = (x) => String(x || "").split("/").pop();
   const cut = (x) => { x = String(x || "").replace(/\s+/g, " ").trim(); return x.length > 36 ? x.slice(0, 35) + "…" : x; };
-  if (/^(Bash|shell|local_shell_call|exec_command|shell_command)$/.test(n)) return cut(i.description || (Array.isArray(i.command) ? i.command[i.command.length - 1] : i.command || i.cmd) || "跑命令");
-  if (/^(Edit|MultiEdit|NotebookEdit|apply_patch)$/.test(n)) return cut(`改 ${base(i.file_path || i.notebook_path) || "文件"}`);
-  if (n === "Write") return cut(`写 ${base(i.file_path)}`);
-  if (n === "Read") return cut(`读 ${base(i.file_path)}`);
-  if (n === "Grep" || n === "Glob") return cut(`找 ${i.pattern || ""}`);
-  if (n === "Agent" || n === "Task") return cut(`派出去：${i.description || ""}`);
-  if (n === "WebSearch") return cut(`搜 ${i.query || ""}`);
-  if (n === "WebFetch") return "读网页";
+  if (/^(Bash|shell|local_shell_call|exec_command|shell_command)$/i.test(n)) return cut(i.description || (Array.isArray(i.command) ? i.command[i.command.length - 1] : i.command || i.cmd) || "跑命令");
+  if (/^(Edit|MultiEdit|NotebookEdit|apply_patch|str_replace_editor)$/i.test(n)) return cut(`改 ${base(i.file_path || i.notebook_path || i.path) || "文件"}`);
+  if (/^(Write|create_file)$/i.test(n)) return cut(`写 ${base(i.file_path || i.path)}`);
+  if (/^(Read|view)$/i.test(n)) return cut(`读 ${base(i.file_path || i.path)}`);
+  if (/^(Grep|Glob|search)$/i.test(n)) return cut(`找 ${i.pattern || i.query || ""}`);
+  if (/^(Agent|Task|subagent)$/i.test(n)) return cut(`派出去：${i.description || ""}`);
+  if (/^(WebSearch|web_search)$/i.test(n)) return cut(`搜 ${i.query || ""}`);
+  if (/^(WebFetch|web_fetch)$/i.test(n)) return "读网页";
   if (n === "Skill") return cut(`用技能 ${i.skill || ""}`);
+  if (/^todo/i.test(n)) return "整理待办";
   return cut(n.startsWith("mcp__") ? n.split("__").pop() : n);
 }
 // Agent 自己列的待办做到第几步：[[状态, 这一步叫什么]…] → { done, total, cur }
@@ -1599,6 +1605,90 @@ const todoOf = (pairs) => {
   return { done: pairs.filter(([st]) => st === "completed").length, total: pairs.length, cur: String(cur).replace(/\s+/g, " ").slice(0, 36) };
 };
 
+// ---------------- DeepSeek Harness：读 dsh-token-usage-stats 的 API ----------------
+// DSH 桌面版每次启动会随机开一个本机端口；插件把跨会话的 token 统计算好后放在
+// /api/token-usage-stats。螺旋只取结果，不再自己解 ~/.dsh/sessions 里的 zstd 日志。
+// 端口用 lsof 找监听中的 DeepSeek 进程；也可以在设置里写死 dshApiPort。
+function dshApiPorts(cfg) {
+  return new Promise((resolve) => {
+    const ports = [];
+    if (cfg && +cfg.dshApiPort > 0) ports.push(+cfg.dshApiPort);
+    const cp = require("child_process");
+    const bin = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
+    cp.execFile(bin, ["-nP", "-iTCP", "-sTCP:LISTEN"], { timeout: 5000, maxBuffer: 4 << 20 }, (err, out) => {
+      if (!err && out) {
+        for (const line of out.split("\n")) {
+          if (!/^DeepSeek\s/.test(line) || !/\(LISTEN\)/.test(line)) continue;
+          const m = /:(\d+)\s+\(LISTEN\)/.exec(line);
+          if (m && !ports.includes(+m[1])) ports.push(+m[1]);
+        }
+      }
+      resolve(ports);
+    });
+  });
+}
+function dshApiGet(port, path, timeout = 8000) {
+  return new Promise((resolve, reject) => {
+    const req = require("http").get({ host: "127.0.0.1", port, path, timeout, headers: { accept: "application/json" } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => {
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+  });
+}
+// DSH 的归档不是往会话日志里写事件，而是记在 ~/.dsh/storages/workspace.json 的
+// global.archivedSessionIds 里；归档后会话日志还在，dsh-token-usage-stats 也照样统计。
+async function dshArchivedSessions() {
+  try {
+    const home = process.env.DSH_HOME || require("path").join(require("os").homedir(), ".dsh");
+    const p = require("path").join(home, "storages/workspace.json");
+    const d = JSON.parse(await require("fs").promises.readFile(p, "utf8"));
+    return new Set((d.global && d.global.archivedSessionIds) || []);
+  } catch (e) { return new Set(); }
+}
+// 插件的一天 → 螺旋的 by.dsh：产出 = output，读入 = uncached input + cache write，缓存命中单列；
+// 活跃时段只能用插件的按小时桶近似（插件只存聚合，不存每一步的时间）
+async function dshApiDay(port, cfg, key) {
+  const m = /^(\d{4})[_-](\d{2})[_-](\d{2})$/.exec(key);
+  if (!m) return null;
+  const cutoff = Number.isFinite(cfg.dayCutoff) ? cfg.dayCutoff : 8;
+  const from = new Date(+m[1], +m[2] - 1, +m[3], Math.floor(cutoff), Math.round((cutoff % 1) * 60)).getTime();
+  const to = from + 864e5 - 1;
+  const snap = await dshApiGet(port, `/api/token-usage-stats?from=${from}&to=${to}&granularity=hour`);
+  const t = snap.totals || {};
+  const out = t.outputTokens || 0, fresh = (t.uncachedInputTokens || 0) + (t.cacheWriteTokens || 0), cached = t.cacheReadTokens || 0;
+  if (!(out || fresh || cached || t.requestCount)) return null;
+  const mid = new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+  const segs = [];
+  for (const b of snap.series || []) {
+    const u = b.totals || {};
+    if (!((u.outputTokens || 0) + (u.uncachedInputTokens || 0) + (u.cacheReadTokens || 0))) continue;
+    // 插件只给按小时聚合，没有每一步的时刻：在每个有用量的小时中点画一分钟，够在螺旋内圈留个记号，
+    // 不把整小时都算成「在干活」（否则 DSH 的协作时长会虚高好几个小时）
+    const at = Math.max(cutoff * 60, Math.min(cutoff * 60 + 1439, (b.startTime + 18e5 - mid) / 60000));
+    segs.push([at, at + 1]);
+  }
+  const wall = segs.length;
+  const models = {};
+  for (const x of snap.models || []) models[x.model] = (models[x.model] || 0) + ((x.totals && x.totals.outputTokens) || 0);
+  const list = (snap.topSessions || []).map((x) => {
+    const u = x.totals || {};
+    const at = aiDay(x.lastTime || from, cfg).t;
+    return { sid: x.id, agent: "dsh", dir: "DeepSeek Harness", cwd: "", app: "dsh", title: x.title || "", text: "", min: 0,
+      out: u.outputTokens || 0, fresh: (u.uncachedInputTokens || 0) + (u.cacheWriteTokens || 0), cached: u.cacheReadTokens || 0, segs: [[at, at + 1]] };
+  });
+  const ds = { wall, agent: wall, out, fresh, cached, segs: segs.map(([a, b]) => [Math.round(a), Math.round(b)]),
+    calls: t.requestCount || 0, prompts: 0, models };
+  return { wall, agent: wall, sessions: list.length, prompts: 0, calls: t.requestCount || 0, out, fresh, cached,
+    segs: ds.segs, proj: { "DeepSeek Harness": { min: wall, out, agents: { dsh: wall } } }, models, list, by: { dsh: ds } };
+}
+
 class AiUsage {
   constructor(cfg) {
     this.cfg = cfg;
@@ -1606,6 +1696,41 @@ class AiUsage {
     this.files = new Map();   // path -> { size, offset, days: Map(key -> { sess: Map(sid -> {proj, ts[], text}), prompts }), msgs: Map(id -> 用量), titles: Map(sid -> 标题) }
     this.titles = new Map();  // Codex 的会话标题（不在会话文件里，另外读）
     this.subs = new Map();    // 会话号 -> Map(agentId -> 子代理)：这个会话派出去的 subagent，见 subOf
+    this.dshApi = new Map();  // 日记日 -> dsh-token-usage-stats 给的那一天的汇总（螺旋只接收这个）
+    this._dshApiKeys = new Set();   // 已经从 API 取过的日子；历史只取一次，今天每次都取
+    this._dshPort = 0;        // 上次找到的 DSH 端口，下次先试它
+  }
+
+  // DSH：从 dsh-token-usage-stats 的 /api/token-usage-stats 取一天（或几天）的汇总。
+  // 取不到就返回空集合，merge 时保留库里原来的 DSH 数，不会把已有记录冲掉
+  async fetchDshApi(days) {
+    if (!days.length) return new Set();
+    const ports = await dshApiPorts(this.cfg);
+    if (this._dshPort && !ports.includes(this._dshPort)) ports.unshift(this._dshPort);
+    let port = 0;
+    for (const p of ports) {
+      try { await dshApiGet(p, `/api/token-usage-stats?from=${Date.now() - 36e5}&to=${Date.now()}&granularity=hour`, 5000); port = p; break; }
+      catch (e) { /* 不是 DSH，或者插件没开 */ }
+    }
+    if (!port) { this._dshPort = 0; return new Set(); }
+    this._dshPort = port;
+    const touched = new Set();
+    for (const key of days) {
+      try {
+        const day = await dshApiDay(port, this.cfg, key);
+        if (day) { this.dshApi.set(key, day); this._dshApiKeys.add(key); touched.add(key); }
+      } catch (e) { /* 这一天取不到就保留原来的 */ }
+    }
+    return touched;
+  }
+  // 历史日子只取一次，今天每次扫描都重取（文件还在长）
+  dshDays(n) {
+    const today = aiDay(Date.now(), this.cfg).key, out = [];
+    for (let i = 0; i < n; i++) {
+      const key = aiDay(Date.now() - i * 864e5, this.cfg).key;
+      if (key === today || !this._dshApiKeys.has(key)) out.push(key);
+    }
+    return out;
   }
 
   // 不是主力的 Agent 只追踪今天：今天以前的动静不读进来（时长、token、在干什么都不算）。主力的照常全读
@@ -1702,6 +1827,7 @@ class AiUsage {
     for (const d of (process.env.CLAUDE_CONFIG_DIR || "").split(",").filter(Boolean)) r.push([path.join(d, "projects"), "claude"]);
     // Codex 归档一个会话，是把它的文件从 sessions 挪进 archived_sessions：两边都读，归档了的会话历史才不会断
     r.push([path.join(codexHome(), "sessions"), "codex"], [path.join(codexHome(), "archived_sessions"), "codex"], [path.join(home, ".workbuddy/projects"), "workbuddy"]);
+    // DeepSeek Harness 的用量走 dsh-token-usage-stats 的 API（见 fetchDshApi），不再直接读 ~/.dsh/sessions
     const on = new Set(aiOn(cfg)), seen = new Set();
     return r.filter(([d, a]) => on.has(a) && !seen.has(d) && seen.add(d));
   }
@@ -1802,6 +1928,7 @@ class AiUsage {
   // 把一个日志文件新追加的部分读进来（读过的不重读）
   async readNew(p, agent, st, touched) {
     const fs = require("fs"), path = require("path");
+    if (agent === "dsh") return this.readDsh(p, st, touched);   // zstd 压的，整份解压，见 readDsh
     let fc = this.files.get(p);
     // Codex / WorkBuddy 一个文件就是一个会话，文件名里带会话号
     if (!fc || st.size < fc.size) {
@@ -1856,7 +1983,7 @@ class AiUsage {
       for (const e of ents) {
         const p = path.join(dir, e.name);
         if (e.isDirectory() && depth < 4) out.push(...await walk(p, depth + 1));
-        else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(p);
+        else if (e.isFile() && /\.jsonl(\.zstd|\.zst)?$/.test(e.name)) out.push(p);
       }
       return out;
     };
@@ -1915,6 +2042,103 @@ class AiUsage {
     }
   }
 
+  // DeepSeek Harness：<DSH_HOME>/sessions/<工程>/session-<号>/session.v4.jsonl.zstd。
+  // 文件是 zstd 压的，而且由很多帧拼起来，只能整份解；每行一个事件，时间在事件自己的 time 上。
+  // 文件还在写的时候末尾可能是半帧：这一轮先跳过，下一轮再读。压缩后的文件没法从中间接着读，所以每次变了就整份重算。
+  async readDsh(p, st, touched) {
+    const fs = require("fs"), path = require("path");
+    let fc = this.files.get(p);
+    if (!fc || st.size < fc.size) {
+      const dir = path.basename(path.dirname(p));
+      const base = path.basename(p).replace(/\.jsonl(\.zstd|\.zst)?$/, "");
+      const sid = /^session-/.test(dir) ? dir : (/([0-9a-f]{8}-[0-9a-f-]{27})/.exec(base) || [])[1] || base;
+      this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent: "dsh", sid, id: sid, cwd: "", app: "dsh" });
+    }
+    let text;
+    try { text = Buffer.from(dshUnzstd(await fs.promises.readFile(p))).toString("utf8"); }
+    catch (e) { return; }   // 正在写，末尾半帧；下一轮再读
+    fc.size = st.size;
+    fc.days = new Map();
+    fc.msgs = new Map();
+    fc.titles = new Map();
+    fc.cwd = "";
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      this.ingestDsh(lines[i], fc, touched);
+      if (i % 2000 === 1999) await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  // DSH 的一行：session 头、标题、你发的原话、assistant/message（带这一轮的用量）、工具调用和轮次结束。
+  // 你发话 / 开始一轮 / 开始一步 / 调工具都算在动；一轮结束算等你。subagent 的用量已经算在父会话的 assistant/message 里，不另读
+  ingestDsh(line, fc, touched) {
+    if (!line) return;
+    let d;
+    try { d = JSON.parse(line); } catch (e) { return; }
+    const t = d.type, data = d.data || {}, ms = +d.time || 0;
+    if (t === "session") {
+      fc.sid = fc.id = d.id || fc.sid;
+      fc.cwd = d.cwd || fc.cwd;
+      fc.app = "dsh";
+      fc.createdAt = d.createdAt || fc.createdAt;
+      return;
+    }
+    if (!ms) return;
+    if (t === "session/title") {
+      const title = data.title;
+      if (title) fc.titles.set(fc.sid, String(title));
+      return;
+    }
+    if (!DSH_TOUCH.has(t) || this.stale("dsh", ms)) return;
+    const { key, day, s } = this.touchSess(fc, touched, ms, fc.sid, fc.cwd, "dsh");
+    const v = this.liveOf(fc.sid, "dsh", ms);
+    // 只算你亲手发的话：runtime context、技能目录、时间快照、审批提示都不是 prompt
+    if (t === "user/message") {
+      const content = data.message ? data.message.content : data.content;
+      const text = (Array.isArray(content) ? content : []).filter((b) => b && b.type === "text").map((b) => b.text || "").join("").trim();
+      if (text && data.source && data.source.kind === "user") {
+        this.addPrompt(day, s, text);
+        if (v) v.state = "run";
+      }
+      return;
+    }
+    if (t === "turn/start" || t === "step/start") {
+      if (v) { v.state = "run"; v.err = ""; }
+      return;
+    }
+    if (t === "tool/call") {
+      if (!v) return;
+      v.state = "run";
+      let a = {};
+      try { a = typeof data.arguments === "string" ? JSON.parse(data.arguments) : data.arguments || {}; } catch (e) { /* 参数不是 JSON 就只报工具名 */ }
+      if (/todo/i.test(String(data.name || "")) && Array.isArray(a.todos)) v.todo = todoOf(a.todos.map((x) => [x.status, x.content || x.activeForm]));
+      else v.step = aiStep(data.name, a);
+      return;
+    }
+    if (t === "assistant/message") {
+      const msg = data.message || {};
+      if (v) {
+        v.state = "run";
+        for (const b of Array.isArray(msg.content) ? msg.content : []) if (b.type === "tool-call" || b.type === "tool_use") v.step = aiStep(b.name, b.arguments || b.input);
+      }
+      const model = (msg.source && msg.source.model) || fc.model;
+      if (model) fc.model = model;
+      const u = data.usage;
+      if (!u || !(u.outputTokens || u.inputTokens || u.cacheReadTokens || u.cacheWriteTokens)) return;
+      const id = msg.id || `dsh:${fc.sid}:${d.seq ?? fc.msgs.size}`;
+      fc.msgs.set("dsh:" + id, { key, sid: fc.sid, proj: s.proj, model,
+        out: u.outputTokens || 0, fresh: (u.inputTokens || 0) + (u.cacheWriteTokens || 0), cached: u.cacheReadTokens || 0 });
+      return;
+    }
+    if (t === "turn/end") {
+      if (!v) return;
+      const reason = data.reason || {};
+      v.state = reason.kind === "error" ? "error" : "wait";
+      v.err = reason.kind === "error" ? String((reason.error && reason.error.message) || "").slice(0, 120) : "";
+      v.todo = null;
+    }
+  }
+
   // Codex：~/.codex/sessions/年/月/日/rollout-…-<会话号>.jsonl。token_count 事件给的是累计用量，取和上一次的差
   ingestCodex(line, fc, touched) {
     if (!line) return;
@@ -1955,6 +2179,7 @@ class AiUsage {
   ingest(line, fc, touched) {
     if (fc.agent === "workbuddy") return this.ingestWorkbuddy(line, fc, touched);
     if (fc.agent === "codex") return this.ingestCodex(line, fc, touched);
+    if (fc.agent === "dsh") return this.ingestDsh(line, fc, touched);
     // 父会话正忙时，subagent 的结束通知先进排队（queue-operation），再作为附件（queued_command）塞进下一轮，不是 user 行
     if (line && line.indexOf("<task-notification>") >= 0 && line.indexOf('"type":"user"') < 0 && line.indexOf('"isSidechain":true') < 0) {
       let q;
@@ -2016,7 +2241,7 @@ class AiUsage {
         else sess.set(sid, { proj: s.proj, cwd: s.cwd, app: s.app, agent: aiAgent(s), ts: [...s.ts], text: s.text, segs: [], min: 0, out: 0, fresh: 0, cached: 0 });
       }
     }
-    if (!sess.size) return null;
+    if (!sess.size) return this.dshApi.get(key) || null;
     // by = 按 Agent 分：{ claude: { wall, agent, out, segs } }
     const res = { wall: 0, agent: 0, sessions: sess.size, prompts, calls: 0, out: 0, fresh: 0, cached: 0, segs: [], proj: {}, models: {}, list: [], by: {} };
     const spans = [];
@@ -2073,7 +2298,8 @@ class AiUsage {
     // 每个会话一行：标题、开头说的话、目录、活跃的时段
     for (const [sid, s] of sess) res.list.push({ sid, agent: s.agent, dir: s.proj, cwd: s.cwd || "", app: s.app || "", title: titles.get(sid) || "", text: s.text.slice(0, 300),
       min: Math.round(s.min), out: s.out, fresh: s.fresh, cached: s.cached, segs: s.segs.map(([a, b]) => [Math.round(a), Math.round(b)]) });
-    return res;
+    const dsh = this.dshApi.get(key);
+    return dsh ? aiJoin(res, dsh) : res;
   }
 
   // 把碰到的日子写进汇总库；AI_FRESH_DAYS 天以前、库里已经有的日子定格不改（那时的日志可能已被 Claude Code 清掉一部分）
@@ -2165,6 +2391,13 @@ class AiSessionsModal extends OB.Modal {
     const cli = agent === "codex" || x.app === "cli";   // 默认按钮给哪个：Codex 和终端里的 Claude Code 回终端，其余回 Claude 桌面版
     const when = x.overlap != null ? `和这件重叠 ${dur(x.overlap)}` : x.stopped ? `最后在 ${clock(x.lastAt)}` : `${clock(x.lastAt)} 还在动`;
     box.createDiv({ cls: "naut-ai-sess-meta", text: `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）` });
+    if (agent === "dsh") {
+      // DSH 目前只有 dsh://open（打开客户端），不能定位到某个会话，所以另给一个复制会话号
+      const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
+      bar.createEl("button", { cls: "mod-cta", text: "打开 DeepSeek Harness" }).onclick = () => { require("child_process").execFile("/usr/bin/open", ["dsh://open"], () => {}); this.close(); };
+      bar.createEl("button", { text: "复制会话号" }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice("已复制：" + x.sid); };
+      return;
+    }
     if (agent === "workbuddy") return;
     const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
     const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
@@ -4210,10 +4443,30 @@ module.exports = class NautilusSpiral extends Plugin {
     this._aiBusy = true;
     try {
       const ai = (this._ai ||= new AiUsage(this.settings));
+      // 把库里已经记下的 DSH 汇总当作 API 的缓存：插件没开 / 端口暂时找不到时，不清空已有的数
+      if (!ai.dshApi.size) {
+        for (const [k, v] of Object.entries(this.aiStore.days || {})) {
+          if (!v || !v.by || !v.by.dsh) continue;
+          const d = aiPick(v, { aiAgents: { dsh: true }, aiPrimary: "dsh" });
+          if (d) { ai.dshApi.set(k, d); ai._dshApiKeys.add(k); }
+        }
+      }
       // 头一回（或汇总格式升级后）把现存日志全读一遍补历史；之后重启只读最近改过的
       const upgrade = this.aiStore.v !== AI_STORE_V;
       const since = this.aiStore.backfilled && !upgrade ? Date.now() - (AI_FRESH_DAYS + 2) * 864e5 : 0;
       const touched = await ai.scan(ai.files.size ? Date.now() - 2 * 864e5 : since);
+      // DSH 的数不在会话日志里自己算：只向 dsh-token-usage-stats 要结果
+      if (aiOn(this.settings).includes("dsh")) {
+        for (const k of await ai.fetchDshApi(ai.dshDays(AI_FRESH_DAYS))) touched.add(k);
+        // 归档集合刚多了一个 DSH 会话：不用等下一轮自动整理（默认 20 分钟），马上收尾那一行
+        try {
+          const dshArch = await dshArchivedSessions();
+          if (this._dshArch && [...dshArch].some((sid) => !this._dshArch.has(sid)) && this.settings.autoLog !== false && !this._autoBusy) {
+            window.setTimeout(() => this.autoLogRun().catch((e) => console.error("[螺旋日程] 归档后整理日记失败", e)), 800);
+          }
+          this._dshArch = dshArch;
+        } catch (e) { /* 读不到就等下一轮 */ }
+      }
       const changed = ai.merge(this.aiStore, touched, upgrade) || !this.aiStore.backfilled || upgrade || this._aiDirty;
       this._aiDirty = false;
       this.aiStore.backfilled = true;
@@ -5038,7 +5291,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // 前几天记下、到现在还挂着（DOING / 机器停下的 PAUSED，以及以前记的 SUSPENDED）的行：会话归档了，就在它当天的日记里补成 DONE。
   // 你自己改成 TODO / PAUSED 的不动。返回改了的（给提醒用）；日记正好在被改的那一天这一轮跳过，下一轮再来。
-  // 只补主力 Agent 的：非主力只追踪今天（以前的记录没写是哪个 Agent，按那天的汇总认，认不出来当 Claude）
+  // 只补主力 Agent 和 DSH 的：DSH 的历史也从插件 API 取，归档记号在 workspace.json 里，能认出来是哪个会话
   async autoArchivePast(arch, todayKey, dry, report) {
     const cfg = this.settings, primary = aiPrimary(cfg);
     const out = [];
@@ -5046,7 +5299,7 @@ module.exports = class NautilusSpiral extends Plugin {
       if (dayKey === todayKey) continue;
       const dayList = ((this.aiStore && this.aiStore.days[dayKey]) || {}).list || [];
       const agentOf = (sid, r) => r.agent || aiAgent(dayList.find((x) => x.sid === sid));
-      const hits = Object.entries(cfg.autoLogState[dayKey]).filter(([sid, r]) => arch.has(sid) && r.key && !r.skip && !r.gone && (r.status === "doing" || this.autoParked(r, r.status)) && agentOf(sid, r) === primary);
+      const hits = Object.entries(cfg.autoLogState[dayKey]).filter(([sid, r]) => arch.has(sid) && r.key && !r.skip && !r.gone && (r.status === "doing" || this.autoParked(r, r.status)) && (agentOf(sid, r) === primary || agentOf(sid, r) === "dsh"));
       if (!hits.length) continue;
       const file = this.app.vault.getAbstractFileByPath(`${cfg.folder}/${dayKey}.md`);
       if (!(file instanceof TFile)) continue;
@@ -5058,7 +5311,7 @@ module.exports = class NautilusSpiral extends Plugin {
       for (const [sid, rec] of hits) {
         const found = this.autoFind(text, rec.key);
         if (!found) { after.push(() => { rec.gone = true; }); continue; }
-        if (found.cur !== "doing" && !this.autoParked(rec, found.cur)) { after.push(() => { rec.status = found.cur; delete rec.autoPaused; }); continue; }
+        if (found.cur !== "doing" && found.cur !== "toreview" && !this.autoParked(rec, found.cur)) { after.push(() => { rec.status = found.cur; delete rec.autoPaused; }); continue; }
         const x = list.find((s) => s.sid === sid && s.segs && s.segs.length) || null;
         text = this.autoLine(text, rec, x, "done").text;
         const segs = (work[rec.key] || []).filter((s) => s[1] != null);
@@ -5098,9 +5351,10 @@ module.exports = class NautilusSpiral extends Plugin {
       snap = JSON.stringify(st);
       const since = cfg.autoLogSince ? aiDay(cfg.autoLogSince, cfg) : null;
       const lastOf = (x) => x.segs[x.segs.length - 1][1];
-      // 你在 Claude 桌面 app 或 Codex 里归档了的会话 = 做完了
+      // 你在 Claude 桌面 app、Codex 或 DSH 里归档了的会话 = 做完了
       const arch = cfg.autoLogArchiveDone !== false ? await archivedSessions(this._archCache ||= new Map()).catch(() => new Set()) : new Set();
       if (cfg.autoLogArchiveDone !== false && aiOn(cfg).includes("codex")) for (const sid of await AiUsage.codexArchived()) arch.add(sid);
+      if (cfg.autoLogArchiveDone !== false && aiOn(cfg).includes("dsh")) for (const sid of await dshArchivedSessions()) arch.add(sid);
       const todo = [], live = [];
       for (const x of day.list) {
         if (!x.segs || !x.segs.length) continue;
@@ -5168,8 +5422,15 @@ module.exports = class NautilusSpiral extends Plugin {
         const found = this.autoFind(text, rec.key);
         if (!found && !rec.fresh) { rec.gone = true; report.changes.push(`不再管：${rec.label}（这一行没了）`); continue; }
         const cur = found ? found.cur : null;
-        // 你自己标成 DONE 的：到此为止，把实际时段补在下面
-        if (cur === "done") { if (rec.status !== "done") clocks.add(rec.key); rec.status = "done"; continue; }
+        // 你自己标成 DONE 的：到此为止，把实际时段补在下面。
+        // 但如果这个会话已经归档了，而你又先手动标了 DONE，就什么都不做——不再改状态，也不补 ⏱
+        if (cur === "done") {
+          if (rec.status !== "done") {
+            if (!arch.has(x.sid)) clocks.add(rec.key);
+            rec.status = "done";
+          }
+          continue;
+        }
         // 你手动改过状态：照你改的记。你停下的，要等会话有了新动静才改回 DOING；你改成 DOING 的，两小时内不因为会话没动就暂停
         if (rec.status && cur !== rec.status) {
           if (cur === "doing") rec.hold = Date.now() + 2 * 3600e3; else rec.parkedAt = now;
@@ -5177,7 +5438,8 @@ module.exports = class NautilusSpiral extends Plugin {
         }
         const name = workKey(rec.label).replace(AUTO_MARK, "");
         // 你把这个会话归档了：算做完，标 DONE，实际时段补在下面。你自己改回 TODO / PAUSED 的行不动
-        if (arch.has(x.sid) && (fresh || cur === "doing" || this.autoParked(rec, cur))) {
+        // TOREVIEW 是机器在会话停下来时写的，归档了也该算 DONE；NEEDOK / ERRORED 等中间态先不动
+        if (arch.has(x.sid) && (fresh || cur === "doing" || cur === "toreview" || this.autoParked(rec, cur))) {
           text = resultInto(this.autoLine(text, rec, x, "done").text, x.sid, said.get(x.sid));
           rec.status = "done"; delete rec.fresh; delete rec.parkedAt; delete rec.hold; delete rec.autoPaused;
           clocks.add(rec.key);
@@ -5211,6 +5473,18 @@ module.exports = class NautilusSpiral extends Plugin {
           }
           rec.todosAdded = true;
         }
+      }
+      // DSH 归档了，但会话没进今天 API 的 top 5：autoLogState 还记着它那一行，直接按归档收尾
+      for (const [sid, rec] of Object.entries(st)) {
+        if (rec.agent !== "dsh" || !rec.key || rec.skip || rec.gone || !arch.has(sid)) continue;
+        if (day.list.some((x) => x.sid === sid)) continue;
+        const found = this.autoFind(text, rec.key);
+        if (!found || (found.cur !== "doing" && found.cur !== "toreview" && !this.autoParked(rec, found.cur))) continue;
+        text = this.autoLine(text, rec, null, "done").text;
+        rec.status = "done"; delete rec.fresh; delete rec.parkedAt; delete rec.hold; delete rec.autoPaused;
+        const name = workKey(rec.label).replace(AUTO_MARK, "");
+        digest.archived.push(name);
+        report.changes.push(`DONE（已归档，不在今天 top 5）：${rec.label}`);
       }
       // 3. 用时：各个会话真正在动的时段，记到它那一行名下（同一行接了几个会话就并起来）；暂停和做完的，时段写进日记正文
       const byKey = new Map(), who = new Map(), toks = new Map(), sids = new Map();
@@ -6035,6 +6309,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (cfg.autoLogArchiveDone === false) return out;
     for (const d of this._desk) if (d.archived) out.add(d.sid);
     if (aiOn(cfg).includes("codex")) try { for (const sid of await AiUsage.codexArchived()) out.add(sid); } catch (e) { /* 同上 */ }
+    if (aiOn(cfg).includes("dsh")) try { for (const sid of await dshArchivedSessions()) out.add(sid); } catch (e) { /* 同上 */ }
     return out;
   }
   // 归档了的会话对着的那一行：先让进度条走到 100% 停一下，再把这一行记成 DONE。一个会话的一行只试一次
@@ -6051,7 +6326,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!cm.dom.isConnected) return;
     const cfg = this.settings, text = cm.state.doc.toString();
     const found = this.autoFind(text, label);
-    if (!found || found.cur !== "doing") return;   // 这一行已经不是 DOING 了（你自己改了、挪走了）：不碰
+    if (!found || (found.cur !== "doing" && found.cur !== "toreview")) return;   // 这一行已经不是 DOING / TOREVIEW 了（你自己改了、挪走了）：不碰
     const day = this.aiStore && aiPick(this.aiStore.days[this.today().format(cfg.format)], cfg);
     const x = ((day && day.list) || []).find((s) => s.sid === sid && s.segs && s.segs.length) || null;
     let next = this.autoLine(text, { key: label, label, created: false }, x, "done").text;
@@ -6239,7 +6514,7 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(!!s.autoLog).onChange(async (v) => { s.autoLog = v; if (v) s.autoLogSince = Date.now(); await this.plugin.saveData(s); }));
     num("每隔几分钟整理一次", "", "autoLogEvery", 5, 240);
     num("多久没动算停了（分钟）", "会话这么久没有动静，就把它那一行从 DOING 改成 PAUSED，并把实际做的时段写在这一行下面（⏱ 开头的子项）；又动了改回 DOING", "autoLogIdle", 5, 600);
-    new Setting(containerEl).setName("归档的会话记成 DONE").setDesc("在 Claude 桌面 app 或 Codex 里把一个会话归档，就当这件事做完了：它那一行改成 DONE，完成时刻取会话最后有动静的时候，前几天还挂着的行也一起补上。你自己改回 TODO / PAUSED 的行不动。app 里开了「自动归档」的话，归档不代表做完，把这一项关掉")
+    new Setting(containerEl).setName("归档的会话记成 DONE").setDesc("在 Claude 桌面 app、Codex 或 DeepSeek Harness 里把一个会话归档，就当这件事做完了：它那一行改成 DONE，完成时刻取会话最后有动静的时候，前几天还挂着的行也一起补上。你自己改回 TODO / PAUSED 的行不动。app 里开了「自动归档」的话，归档不代表做完，把这一项关掉")
       .addToggle((t) => t.setValue(s.autoLogArchiveDone !== false).onChange(async (v) => { s.autoLogArchiveDone = v; await this.plugin.saveData(s); }));
     text("本机提醒的提示音", "系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "notifySound");
     new Setting(containerEl).setName("每周方向回顾").setDesc("周日晚上 9 点以后发一条：这一周各个大方向花了多久、占多少、和上周比。装了 Telegram Companion 就用它的机器人发，没有就发 Discord")
@@ -6302,18 +6577,21 @@ class SpiralSettings extends PluginSettingTab {
           d.setValue(aiPrimary(s)).onChange(async (v) => { s.aiPrimary = v; await this.plugin.saveData(s); reset(); this.display(); });
         });
       const fs = require("fs"), path = require("path"), home = require("os").homedir();
-      const where = { claude: [".claude/projects", "Claude Code 和 Claude 桌面版里的 Code 会话"], codex: [".codex/sessions", "Codex 桌面版和 codex 命令行，时长和 token 都读"], workbuddy: [".workbuddy/projects", "WorkBuddy 桌面版"] };
+      const where = { claude: [".claude/projects", "Claude Code 和 Claude 桌面版里的 Code 会话"], codex: [".codex/sessions", "Codex 桌面版和 codex 命令行，时长和 token 都读"], workbuddy: [".workbuddy/projects", "WorkBuddy 桌面版"], dsh: [".dsh/sessions", "DeepSeek Harness 的 token 由 dsh-token-usage-stats 插件统计，螺旋通过本机 API 读取"] };
       for (const k of Object.keys(AI_AGENTS)) {
         const [dir, what] = where[k];
         const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
         const main = k === aiPrimary(s);
-        new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? "（主力，全量追踪）" : "（只追踪今天的）"}`).setDesc(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`)
+        const desc = k === "dsh" ? `${what}（端口自动找；插件要在 DSH 里启用）` : `${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`;
+        new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? "（主力，全量追踪）" : "（只追踪今天的）"}`).setDesc(desc)
           .addToggle((t) => t.setValue(aiOn(s).includes(k)).setDisabled(main).onChange(async (v) => {
             s.aiAgents = { ...Object.fromEntries(Object.keys(AI_AGENTS).map((a) => [a, aiOn(s).includes(a)])), [k]: v };
             await this.plugin.saveData(s);
             reset();
           }));
       }
+      new Setting(containerEl).setName("DeepSeek Harness API 端口").setDesc("0 = 自动从 lsof 找 DSH 正在监听的端口；也可以填固定端口。DSH 里要启用 dsh-token-usage-stats 插件")
+        .addText((t) => t.setValue(String(s.dshApiPort || 0)).onChange(async (v) => { s.dshApiPort = Math.max(0, parseInt(v, 10) || 0); await this.plugin.saveData(s); reset(); }));
     }
     new Setting(containerEl).setName("记录游戏时间").setDesc("每分钟看一眼在不在玩，螺旋最里面一圈画绿线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录")
       .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
@@ -6322,4 +6600,633 @@ class SpiralSettings extends PluginSettingTab {
   }
 }
 
-module.exports.core = { parseHourClock, fmtHourClock, resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, kidIdent, kidMatch, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS };
+
+// ---------------- 解 zstd：DeepSeek Harness 的会话日志 ----------------
+// Obsidian 1.6 用的 Electron 30 还没有 zlib.zstd，这里内置 fzstd（MIT，https://github.com/101arrowz/fzstd）的解码器。
+// 整段包在一个函数里，免得里面的 fill / err 这些短名字和插件自己的撞上；fzstd 能连着解多个帧。
+const dshUnzstd = (() => {
+// node_modules/fzstd/esm/index.mjs
+var ab = ArrayBuffer;
+var u8 = Uint8Array;
+var u16 = Uint16Array;
+var i16 = Int16Array;
+var i32 = Int32Array;
+var slc = function(v, s, e) {
+  if (u8.prototype.slice)
+    return u8.prototype.slice.call(v, s, e);
+  if (s == null || s < 0)
+    s = 0;
+  if (e == null || e > v.length)
+    e = v.length;
+  var n = new u8(e - s);
+  n.set(v.subarray(s, e));
+  return n;
+};
+var fill = function(v, n, s, e) {
+  if (u8.prototype.fill)
+    return u8.prototype.fill.call(v, n, s, e);
+  if (s == null || s < 0)
+    s = 0;
+  if (e == null || e > v.length)
+    e = v.length;
+  for (; s < e; ++s)
+    v[s] = n;
+  return v;
+};
+var cpw = function(v, t, s, e) {
+  if (u8.prototype.copyWithin)
+    return u8.prototype.copyWithin.call(v, t, s, e);
+  if (s == null || s < 0)
+    s = 0;
+  if (e == null || e > v.length)
+    e = v.length;
+  while (s < e) {
+    v[t++] = v[s++];
+  }
+};
+var ec = [
+  "invalid zstd data",
+  "window size too large (>2046MB)",
+  "invalid block type",
+  "FSE accuracy too high",
+  "match distance too far back",
+  "unexpected EOF"
+];
+var err = function(ind, msg, nt) {
+  var e = new Error(msg || ec[ind]);
+  e.code = ind;
+  if (Error.captureStackTrace)
+    Error.captureStackTrace(e, err);
+  if (!nt)
+    throw e;
+  return e;
+};
+var rb = function(d, b, n) {
+  var i = 0, o = 0;
+  for (; i < n; ++i)
+    o |= d[b++] << (i << 3);
+  return o;
+};
+var b4 = function(d, b) {
+  return (d[b] | d[b + 1] << 8 | d[b + 2] << 16 | d[b + 3] << 24) >>> 0;
+};
+var rzfh = function(dat, w) {
+  var n3 = dat[0] | dat[1] << 8 | dat[2] << 16;
+  if (n3 == 3126568 && dat[3] == 253) {
+    var flg = dat[4];
+    var ss = flg >> 5 & 1, cc = flg >> 2 & 1, df = flg & 3, fcf = flg >> 6;
+    if (flg & 8)
+      err(0);
+    var bt = 6 - ss;
+    var db = df == 3 ? 4 : df;
+    var di = rb(dat, bt, db);
+    bt += db;
+    var fsb = fcf ? 1 << fcf : ss;
+    var fss = rb(dat, bt, fsb) + (fcf == 1 && 256);
+    var ws = fss;
+    if (!ss) {
+      var wb = 1 << 10 + (dat[5] >> 3);
+      ws = wb + (wb >> 3) * (dat[5] & 7);
+    }
+    if (ws > 2145386496)
+      err(1);
+    var buf = new u8((w == 1 ? fss || ws : w ? 0 : ws) + 12);
+    buf[0] = 1, buf[4] = 4, buf[8] = 8;
+    return {
+      b: bt + fsb,
+      y: 0,
+      l: 0,
+      d: di,
+      w: w && w != 1 ? w : buf.subarray(12),
+      e: ws,
+      o: new i32(buf.buffer, 0, 3),
+      u: fss,
+      c: cc,
+      m: Math.min(131072, ws)
+    };
+  } else if ((n3 >> 4 | dat[3] << 20) == 25481893) {
+    return b4(dat, 4) + 8;
+  }
+  err(0);
+};
+var msb = function(val) {
+  var bits = 0;
+  for (; 1 << bits <= val; ++bits)
+    ;
+  return bits - 1;
+};
+var rfse = function(dat, bt, mal) {
+  var tpos = (bt << 3) + 4;
+  var al = (dat[bt] & 15) + 5;
+  if (al > mal)
+    err(3);
+  var sz = 1 << al;
+  var probs = sz, sym = -1, re = -1, i = -1, ht = sz;
+  var buf = new ab(512 + (sz << 2));
+  var freq = new i16(buf, 0, 256);
+  var dstate = new u16(buf, 0, 256);
+  var nstate = new u16(buf, 512, sz);
+  var bb1 = 512 + (sz << 1);
+  var syms = new u8(buf, bb1, sz);
+  var nbits = new u8(buf, bb1 + sz);
+  while (sym < 255 && probs > 0) {
+    var bits = msb(probs + 1);
+    var cbt = tpos >> 3;
+    var msk = (1 << bits + 1) - 1;
+    var val = (dat[cbt] | dat[cbt + 1] << 8 | dat[cbt + 2] << 16) >> (tpos & 7) & msk;
+    var msk1fb = (1 << bits) - 1;
+    var msv = msk - probs - 1;
+    var sval = val & msk1fb;
+    if (sval < msv)
+      tpos += bits, val = sval;
+    else {
+      tpos += bits + 1;
+      if (val > msk1fb)
+        val -= msv;
+    }
+    freq[++sym] = --val;
+    if (val == -1) {
+      probs += val;
+      syms[--ht] = sym;
+    } else
+      probs -= val;
+    if (!val) {
+      do {
+        var rbt = tpos >> 3;
+        re = (dat[rbt] | dat[rbt + 1] << 8) >> (tpos & 7) & 3;
+        tpos += 2;
+        sym += re;
+      } while (re == 3);
+    }
+  }
+  if (sym > 255 || probs)
+    err(0);
+  var sympos = 0;
+  var sstep = (sz >> 1) + (sz >> 3) + 3;
+  var smask = sz - 1;
+  for (var s = 0; s <= sym; ++s) {
+    var sf = freq[s];
+    if (sf < 1) {
+      dstate[s] = -sf;
+      continue;
+    }
+    for (i = 0; i < sf; ++i) {
+      syms[sympos] = s;
+      do {
+        sympos = sympos + sstep & smask;
+      } while (sympos >= ht);
+    }
+  }
+  if (sympos)
+    err(0);
+  for (i = 0; i < sz; ++i) {
+    var ns = dstate[syms[i]]++;
+    var nb = nbits[i] = al - msb(ns);
+    nstate[i] = (ns << nb) - sz;
+  }
+  return [tpos + 7 >> 3, {
+    b: al,
+    s: syms,
+    n: nbits,
+    t: nstate
+  }];
+};
+var rhu = function(dat, bt) {
+  var i = 0, wc = -1;
+  var buf = new u8(292), hb = dat[bt];
+  var hw = buf.subarray(0, 256);
+  var rc = buf.subarray(256, 268);
+  var ri = new u16(buf.buffer, 268);
+  if (hb < 128) {
+    var _a = rfse(dat, bt + 1, 6), ebt = _a[0], fdt = _a[1];
+    bt += hb;
+    var epos = ebt << 3;
+    var lb = dat[bt];
+    if (!lb)
+      err(0);
+    var st1 = 0, st2 = 0, btr1 = fdt.b, btr2 = btr1;
+    var fpos = (++bt << 3) - 8 + msb(lb);
+    for (; ; ) {
+      fpos -= btr1;
+      if (fpos < epos)
+        break;
+      var cbt = fpos >> 3;
+      st1 += (dat[cbt] | dat[cbt + 1] << 8) >> (fpos & 7) & (1 << btr1) - 1;
+      hw[++wc] = fdt.s[st1];
+      fpos -= btr2;
+      if (fpos < epos)
+        break;
+      cbt = fpos >> 3;
+      st2 += (dat[cbt] | dat[cbt + 1] << 8) >> (fpos & 7) & (1 << btr2) - 1;
+      hw[++wc] = fdt.s[st2];
+      btr1 = fdt.n[st1];
+      st1 = fdt.t[st1];
+      btr2 = fdt.n[st2];
+      st2 = fdt.t[st2];
+    }
+    if (++wc > 255)
+      err(0);
+  } else {
+    wc = hb - 127;
+    for (; i < wc; i += 2) {
+      var byte = dat[++bt];
+      hw[i] = byte >> 4;
+      hw[i + 1] = byte & 15;
+    }
+    ++bt;
+  }
+  var wes = 0;
+  for (i = 0; i < wc; ++i) {
+    var wt = hw[i];
+    if (wt > 11)
+      err(0);
+    wes += wt && 1 << wt - 1;
+  }
+  var mb = msb(wes) + 1;
+  var ts = 1 << mb;
+  var rem = ts - wes;
+  if (rem & rem - 1)
+    err(0);
+  hw[wc++] = msb(rem) + 1;
+  for (i = 0; i < wc; ++i) {
+    var wt = hw[i];
+    ++rc[hw[i] = wt && mb + 1 - wt];
+  }
+  var hbuf = new u8(ts << 1);
+  var syms = hbuf.subarray(0, ts), nb = hbuf.subarray(ts);
+  ri[mb] = 0;
+  for (i = mb; i > 0; --i) {
+    var pv = ri[i];
+    fill(nb, i, pv, ri[i - 1] = pv + rc[i] * (1 << mb - i));
+  }
+  if (ri[0] != ts)
+    err(0);
+  for (i = 0; i < wc; ++i) {
+    var bits = hw[i];
+    if (bits) {
+      var code = ri[bits];
+      fill(syms, i, code, ri[bits] = code + (1 << mb - bits));
+    }
+  }
+  return [bt, {
+    n: nb,
+    b: mb,
+    s: syms
+  }];
+};
+var dllt = rfse(/* @__PURE__ */ new u8([
+  81,
+  16,
+  99,
+  140,
+  49,
+  198,
+  24,
+  99,
+  12,
+  33,
+  196,
+  24,
+  99,
+  102,
+  102,
+  134,
+  70,
+  146,
+  4
+]), 0, 6)[1];
+var dmlt = rfse(/* @__PURE__ */ new u8([
+  33,
+  20,
+  196,
+  24,
+  99,
+  140,
+  33,
+  132,
+  16,
+  66,
+  8,
+  33,
+  132,
+  16,
+  66,
+  8,
+  33,
+  68,
+  68,
+  68,
+  68,
+  68,
+  68,
+  68,
+  68,
+  36,
+  9
+]), 0, 6)[1];
+var doct = rfse(/* @__PURE__ */ new u8([
+  32,
+  132,
+  16,
+  66,
+  102,
+  70,
+  68,
+  68,
+  68,
+  68,
+  36,
+  73,
+  2
+]), 0, 5)[1];
+var b2bl = function(b, s) {
+  var len = b.length, bl = new i32(len);
+  for (var i = 0; i < len; ++i) {
+    bl[i] = s;
+    s += 1 << b[i];
+  }
+  return bl;
+};
+var llb = /* @__PURE__ */ new u8((/* @__PURE__ */ new i32([
+  0,
+  0,
+  0,
+  0,
+  16843009,
+  50528770,
+  134678020,
+  202050057,
+  269422093
+])).buffer, 0, 36);
+var llbl = /* @__PURE__ */ b2bl(llb, 0);
+var mlb = /* @__PURE__ */ new u8((/* @__PURE__ */ new i32([
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  16843009,
+  50528770,
+  117769220,
+  185207048,
+  252579084,
+  16
+])).buffer, 0, 53);
+var mlbl = /* @__PURE__ */ b2bl(mlb, 3);
+var dhu = function(dat, out, hu) {
+  var len = dat.length, ss = out.length, lb = dat[len - 1], msk = (1 << hu.b) - 1, eb = -hu.b;
+  if (!lb)
+    err(0);
+  var st = 0, btr = hu.b, pos = (len << 3) - 8 + msb(lb) - btr, i = -1;
+  for (; pos > eb && i < ss; ) {
+    var cbt = pos >> 3;
+    var val = (dat[cbt] | dat[cbt + 1] << 8 | dat[cbt + 2] << 16) >> (pos & 7);
+    st = (st << btr | val) & msk;
+    out[++i] = hu.s[st];
+    pos -= btr = hu.n[st];
+  }
+  if (pos != eb || i + 1 != ss)
+    err(0);
+};
+var dhu4 = function(dat, out, hu) {
+  var bt = 6;
+  var ss = out.length, sz1 = ss + 3 >> 2, sz2 = sz1 << 1, sz3 = sz1 + sz2;
+  dhu(dat.subarray(bt, bt += dat[0] | dat[1] << 8), out.subarray(0, sz1), hu);
+  dhu(dat.subarray(bt, bt += dat[2] | dat[3] << 8), out.subarray(sz1, sz2), hu);
+  dhu(dat.subarray(bt, bt += dat[4] | dat[5] << 8), out.subarray(sz2, sz3), hu);
+  dhu(dat.subarray(bt), out.subarray(sz3), hu);
+};
+var rzb = function(dat, st, out) {
+  var _a;
+  var bt = st.b;
+  var b0 = dat[bt], btype = b0 >> 1 & 3;
+  st.l = b0 & 1;
+  var sz = b0 >> 3 | dat[bt + 1] << 5 | dat[bt + 2] << 13;
+  var ebt = (bt += 3) + sz;
+  if (btype == 1) {
+    if (bt >= dat.length)
+      return;
+    st.b = bt + 1;
+    if (out) {
+      fill(out, dat[bt], st.y, st.y += sz);
+      return out;
+    }
+    return fill(new u8(sz), dat[bt]);
+  }
+  if (ebt > dat.length)
+    return;
+  if (btype == 0) {
+    st.b = ebt;
+    if (out) {
+      out.set(dat.subarray(bt, ebt), st.y);
+      st.y += sz;
+      return out;
+    }
+    return slc(dat, bt, ebt);
+  }
+  if (btype == 2) {
+    var b3 = dat[bt], lbt = b3 & 3, sf = b3 >> 2 & 3;
+    var lss = b3 >> 4, lcs = 0, s4 = 0;
+    if (lbt < 2) {
+      if (sf & 1)
+        lss |= dat[++bt] << 4 | (sf & 2 && dat[++bt] << 12);
+      else
+        lss = b3 >> 3;
+    } else {
+      s4 = sf;
+      if (sf < 2)
+        lss |= (dat[++bt] & 63) << 4, lcs = dat[bt] >> 6 | dat[++bt] << 2;
+      else if (sf == 2)
+        lss |= dat[++bt] << 4 | (dat[++bt] & 3) << 12, lcs = dat[bt] >> 2 | dat[++bt] << 6;
+      else
+        lss |= dat[++bt] << 4 | (dat[++bt] & 63) << 12, lcs = dat[bt] >> 6 | dat[++bt] << 2 | dat[++bt] << 10;
+    }
+    ++bt;
+    var buf = out ? out.subarray(st.y, st.y + st.m) : new u8(st.m);
+    var spl = buf.length - lss;
+    if (lbt == 0)
+      buf.set(dat.subarray(bt, bt += lss), spl);
+    else if (lbt == 1)
+      fill(buf, dat[bt++], spl);
+    else {
+      var hu = st.h;
+      if (lbt == 2) {
+        var hud = rhu(dat, bt);
+        lcs += bt - (bt = hud[0]);
+        st.h = hu = hud[1];
+      } else if (!hu)
+        err(0);
+      (s4 ? dhu4 : dhu)(dat.subarray(bt, bt += lcs), buf.subarray(spl), hu);
+    }
+    var ns = dat[bt++];
+    if (ns) {
+      if (ns == 255)
+        ns = (dat[bt++] | dat[bt++] << 8) + 32512;
+      else if (ns > 127)
+        ns = ns - 128 << 8 | dat[bt++];
+      var scm = dat[bt++];
+      if (scm & 3)
+        err(0);
+      var dts = [dmlt, doct, dllt];
+      for (var i = 2; i > -1; --i) {
+        var md = scm >> (i << 1) + 2 & 3;
+        if (md == 1) {
+          var rbuf = new u8([0, 0, dat[bt++]]);
+          dts[i] = {
+            s: rbuf.subarray(2, 3),
+            n: rbuf.subarray(0, 1),
+            t: new u16(rbuf.buffer, 0, 1),
+            b: 0
+          };
+        } else if (md == 2) {
+          _a = rfse(dat, bt, 9 - (i & 1)), bt = _a[0], dts[i] = _a[1];
+        } else if (md == 3) {
+          if (!st.t)
+            err(0);
+          dts[i] = st.t[i];
+        }
+      }
+      var _b = st.t = dts, mlt = _b[0], oct = _b[1], llt = _b[2];
+      var lb = dat[ebt - 1];
+      if (!lb)
+        err(0);
+      var spos = (ebt << 3) - 8 + msb(lb) - llt.b, cbt = spos >> 3, oubt = 0;
+      var lst = (dat[cbt] | dat[cbt + 1] << 8) >> (spos & 7) & (1 << llt.b) - 1;
+      cbt = (spos -= oct.b) >> 3;
+      var ost = (dat[cbt] | dat[cbt + 1] << 8) >> (spos & 7) & (1 << oct.b) - 1;
+      cbt = (spos -= mlt.b) >> 3;
+      var mst = (dat[cbt] | dat[cbt + 1] << 8) >> (spos & 7) & (1 << mlt.b) - 1;
+      for (++ns; --ns; ) {
+        var llc = llt.s[lst];
+        var lbtr = llt.n[lst];
+        var mlc = mlt.s[mst];
+        var mbtr = mlt.n[mst];
+        var ofc = oct.s[ost];
+        var obtr = oct.n[ost];
+        cbt = (spos -= ofc) >> 3;
+        var ofp = 1 << ofc;
+        var off = ofp + ((dat[cbt] | dat[cbt + 1] << 8 | dat[cbt + 2] << 16 | dat[cbt + 3] << 24) >>> (spos & 7) & ofp - 1);
+        cbt = (spos -= mlb[mlc]) >> 3;
+        var ml = mlbl[mlc] + ((dat[cbt] | dat[cbt + 1] << 8 | dat[cbt + 2] << 16) >> (spos & 7) & (1 << mlb[mlc]) - 1);
+        cbt = (spos -= llb[llc]) >> 3;
+        var ll = llbl[llc] + ((dat[cbt] | dat[cbt + 1] << 8 | dat[cbt + 2] << 16) >> (spos & 7) & (1 << llb[llc]) - 1);
+        cbt = (spos -= lbtr) >> 3;
+        lst = llt.t[lst] + ((dat[cbt] | dat[cbt + 1] << 8) >> (spos & 7) & (1 << lbtr) - 1);
+        cbt = (spos -= mbtr) >> 3;
+        mst = mlt.t[mst] + ((dat[cbt] | dat[cbt + 1] << 8) >> (spos & 7) & (1 << mbtr) - 1);
+        cbt = (spos -= obtr) >> 3;
+        ost = oct.t[ost] + ((dat[cbt] | dat[cbt + 1] << 8) >> (spos & 7) & (1 << obtr) - 1);
+        if (off > 3) {
+          st.o[2] = st.o[1];
+          st.o[1] = st.o[0];
+          st.o[0] = off -= 3;
+        } else {
+          var idx = off - (ll != 0);
+          if (idx) {
+            off = idx == 3 ? st.o[0] - 1 : st.o[idx];
+            if (idx > 1)
+              st.o[2] = st.o[1];
+            st.o[1] = st.o[0];
+            st.o[0] = off;
+          } else
+            off = st.o[0];
+        }
+        for (var i = 0; i < ll; ++i) {
+          buf[oubt + i] = buf[spl + i];
+        }
+        oubt += ll, spl += ll;
+        var stin = oubt - off;
+        if (stin < 0) {
+          var len = -stin;
+          var bs = st.e + stin;
+          if (len > ml)
+            len = ml;
+          for (var i = 0; i < len; ++i) {
+            buf[oubt + i] = st.w[bs + i];
+          }
+          oubt += len, ml -= len, stin = 0;
+        }
+        for (var i = 0; i < ml; ++i) {
+          buf[oubt + i] = buf[stin + i];
+        }
+        oubt += ml;
+      }
+      if (oubt != spl) {
+        while (spl < buf.length) {
+          buf[oubt++] = buf[spl++];
+        }
+      } else
+        oubt = buf.length;
+      if (out)
+        st.y += oubt;
+      else
+        buf = slc(buf, 0, oubt);
+    } else if (out) {
+      st.y += lss;
+      if (spl) {
+        for (var i = 0; i < lss; ++i) {
+          buf[i] = buf[spl + i];
+        }
+      }
+    } else if (spl)
+      buf = slc(buf, spl);
+    st.b = ebt;
+    return buf;
+  }
+  err(2);
+};
+var cct = function(bufs, ol) {
+  if (bufs.length == 1)
+    return bufs[0];
+  var buf = new u8(ol);
+  for (var i = 0, b = 0; i < bufs.length; ++i) {
+    var chk = bufs[i];
+    buf.set(chk, b);
+    b += chk.length;
+  }
+  return buf;
+};
+function decompress(dat, buf) {
+  var bufs = [], nb = +!buf;
+  var bt = 0, ol = 0;
+  for (; dat.length; ) {
+    var st = rzfh(dat, nb || buf);
+    if (typeof st == "object") {
+      if (nb) {
+        buf = null;
+        if (st.w.length == st.u) {
+          bufs.push(buf = st.w);
+          ol += st.u;
+        }
+      } else {
+        bufs.push(buf);
+        st.e = 0;
+      }
+      for (; !st.l; ) {
+        var blk = rzb(dat, st, buf);
+        if (!blk)
+          err(5);
+        if (buf)
+          st.e = st.y;
+        else {
+          bufs.push(blk);
+          ol += blk.length;
+          cpw(st.w, 0, blk.length);
+          st.w.set(blk, st.w.length - blk.length);
+        }
+      }
+      bt = st.b + st.c * 4;
+    } else
+      bt = st;
+    dat = dat.subarray(bt);
+  }
+  return cct(bufs, ol);
+}
+
+  return decompress;
+})();
+
+module.exports.core = { parseHourClock, fmtHourClock, resultText, resultInto, resultUnder, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, kidIdent, kidMatch, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, linkMap, SOUNDS, dshArchivedSessions };
