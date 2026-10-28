@@ -18,16 +18,14 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 **The interface is in Chinese**, and so is the full [guide](./docs/guide.zh-CN.md). This page covers what the plugin does, how to install it and what it touches outside your vault.
 
-## Recommended: use it with Agent Deck
+## Two ways to use it: tasks only, or tasks plus agent records
 
-[Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) is the other half of this setup. Install both:
-
-| Plugin | Owns |
+| Installed | What you get |
 |---|---|
-| Nautilus Spiral | The daily note and the plan: spiral scheduling, timing, capacity, reviews — and the agent tracking display (inner rings, status bar, progress rows, `🔗` bindings) |
-| Agent Deck | The AI write half: automatic journal logging, status write-back, `💬`, desktop child / side chat / subagent blocks, archive → `DONE`, and delegation from a task line |
+| Nautilus Spiral alone | Task management: the spiral schedule, timing, capacity, pause rules, mainline, review and desktop widgets. No agent needed |
+| Plus [Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) | Agent records: automatic journal logging, status write-back, `💬`, desktop child / side chat / subagent blocks, archive → `DONE`, and delegation from a task line. Nautilus draws those lines (inner rings, progress rows, `🔗` bindings, permission / error alerts) |
 
-To hand over: open **Settings → 追踪 → 停用螺旋日程里的 AI 写入** in Agent Deck, then reload Nautilus Spiral. Nautilus stops writing but keeps its schedule and tracking display; Agent Deck owns the note writes. Without Agent Deck, the co-writing features below still run inside Nautilus itself.
+Nautilus Spiral never writes agent sessions into your note; that half belongs to Agent Deck alone. Without Agent Deck, Nautilus is a task manager. It still reads the local agent session logs to show collaboration time and tokens under the capacity bar; turn off 「显示人机协作」 in settings if you have no use for it.
 
 ## What it does
 
@@ -41,11 +39,11 @@ To hand over: open **Settings → 追踪 → 停用螺旋日程里的 AI 写入*
 - **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
 - **Calendars, read-only.** Events from macOS Calendar and from Google Calendar (through the Google Calendar API, with an OAuth client you create yourself) can be laid onto the spiral as fixed events. Both can be on at once; the same event is kept once.
 - **Small sounds, two moods.** A soft tick when you click a segment or a row, and a short synthesized sound whenever a task changes state anywhere in the vault, whoever changed it (a hotkey, a task plugin, a board, typing). Moving forward (`TODO`, `DOING`, `DONE`) rises and stays soft; stopping or not making it (`PAUSED`, `WAITING`, `SUSPENDED`, `CANCELLED`, `FAILED`) falls, lower and rougher each step. No audio files; one switch turns it off.
-- **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI), WorkBuddy and DeepSeek Harness, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one used (output plus fresh input; cache reads are listed separately). You pick which of the four you actually use, and one of them as your primary agent: the primary is tracked in full (all history, cross-day catch-up, the status bar), the others only for sessions active today.
-- **A progress line under what you are doing.** In the editor, a `DOING` line gets one row of monospace text under it, filled with `#` like a terminal: `[#########-----------] 45%`. The number is the progress you wrote on the line (`60%`, `2/3`); failing that, the agent session that belongs to the line, if it keeps a to-do list of its own; failing that, time spent against your estimate. When a session is matched, the row also says whether it is running or waiting for you, what its last step was, and how many tokens it has used. You can bind a line to a session by hand, and archiving the session fills the row to 100% and marks the line `DONE`.
+- **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI), WorkBuddy and DeepSeek Harness, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one used (output plus fresh input; cache reads are listed separately). You pick which of the four you actually use, and one of them as your primary agent: the primary is tracked in full (all history), the others only for sessions active today.
+- **A progress line under what you are doing.** In the editor, a `DOING` line gets one row of monospace text under it, filled with `#` like a terminal: `[#########-----------] 45%`. The number is the progress you wrote on the line (`60%`, `2/3`); failing that, the agent session that belongs to the line, if it keeps a to-do list of its own; failing that, time spent against your estimate. When a session is matched, the row also says whether it is running or waiting for you, what its last step was, and how many tokens it has used. You can bind a line to a session by hand, and archiving the session fills the row to 100%.
 - **Active and passive recording, together.** You record on purpose: the plan, the estimates, the states you set by hand. The machine records in the background as your assistant: when each agent session was really moving, and for how long. Both end up in the same daily note and on the same spiral.
-- **Human–agent co-writing (optional, off by default).** While an agent session is active, the matching line in your daily note becomes `DOING`; after 40 idle minutes it becomes `PAUSED` and the actual time spans, with the tokens the session used, are written under it. The plugin does not decide on its own that something is `DONE`; archiving a session in the Claude desktop app or in Codex is taken as your explicit signal, and that line is marked `DONE`. The same pass can be run by hand at any time (`⌃⌥L`, or the button beside 「人机协作」), whether or not the automatic one is on.
-- **Weekly direction review.** Each session is filed under a broad direction; on Sunday night you get the week's split.
+- **Writing back to the note is Agent Deck's job.** Turning a line `DOING` while its session runs, `TOREVIEW` / `PAUSED` when it stops, writing its last words as `💬` and marking it `DONE` when archived are all done by [Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) (see "Two ways to use it" above); Nautilus reads the logs and draws them.
+- **Main quests, and four desktop widgets.** Mark the one to three things that matter most today with `[#A]`: they are planned first, drawn in their own colour, and the status bar keeps the next one in view. Before a main quest starts you are asked for its goal (what "done" looks like), written under the task as a `🎯 目标：` line; no goal, no start. A slider under each main-quest block sets its progress, written into the line when you let go. Companion macOS widgets (source in `widgets/`, built and installed by you) show today's main quests with the next one's goal and the last seven days' completion; what is `DOING` in today's note and for how long; every open `TODO`, `LATER` and `- [ ]` in the vault, most recently edited notes first; and a Gantt chart of the plan note (named 「上班计划」 by default and created if missing), five weeks from this Monday, drawn from list items with `🛫` start and `📅` due dates. They work on the desktop and in the Notification Center sidebar: the circle in front of a row marks it done in the note (tap again to undo), the row's name jumps back to that line in Obsidian, and a button in the corner refreshes on demand.
 
 ## The journal outline as a dashboard for your agents
 
@@ -55,17 +53,16 @@ To hand over: open **Settings → 追踪 → 停用螺旋日程里的 AI 写入*
 
 A daily note is an outline, and one task line stands for one agent session. Nautilus Spiral turns that outline into a dashboard for the agents' work: which one is running, which one is waiting for you, how many tokens each has used and what it said last, all written under the task's own line.
 
-- **One task line, one session.** There are three ways to pair them. A `🔗` line under the task holds the binding in the note itself, so it survives moving the block or rewording the task. With human–agent co-writing on, the plugin pairs them for you. Otherwise a session is matched when its title, or the first thing you said to it, repeats the line. The command 「把这一行绑定到一个 Agent 会话…」 writes the `🔗` line by hand.
+- **One task line, one session.** There are three ways to pair them. A `🔗` line under the task holds the binding in the note itself, so it survives moving the block or rewording the task. Lines logged by Agent Deck are paired directly. Otherwise a session is matched when its title, or the first thing you said to it, repeats the line. The command 「把这一行绑定到一个 Agent 会话…」 writes the `🔗` line by hand.
 - **Sibling lines are agents running side by side.** Several `DOING` lines each have their own session and their own progress row, and the inner rings of the spiral show, one colour per agent, when they were working at the same time.
-- **The state follows the session.** Running, waiting for your reply, or quiet for how long: all read from the session logs. When a session stops and waits for you, its line turns `TOREVIEW`; stuck on a permission prompt, `NEEDOK`; stopped on an error that isn't a usage limit (overloaded, network drop, context full), `ERRORED`; when it hits the usage limit, `HITLIMIT`, or `QUEUED` once a resume script has queued it for after the reset; once it moves again, back to `DOING`. Archive the session in the Claude desktop app or in Codex and the row fills to 100% and the line is marked `DONE`.
-- **What the agent said last comes back into the outline.** For a task with a `🔗` line, each time the session finishes a turn its last reply is squeezed into one `💬` line under the task: the conclusion when it is done, or the question it stopped to ask you. The next turn replaces it, and the full reply is one click on `🔗` away.
-- **Subagents and side chats show up too.** When a Claude Code session dispatches subagents, the progress row ends with `🤖 2 跑 1 完` (two running, one done) and each subagent gets a line below it: its description, running or finished, its latest step and the tokens it used. A side chat opened on that session in the Claude desktop app gets a line as well (open, and for how long). Each time the session finishes a turn, a `🤖 子代理 3：查 runTmux ✓ 16k、查 cue() ✗ 停了 · side chat 1` line is written under the `💬` line as a record. Everything is read locally: subagent logs sit under `subagents/` in the session's folder. A side chat is not written to disk, so all the plugin can see is the claude process the desktop app starts for it; what you asked, whether it is answering, and its tokens stay unknown.
-- **Sessions opened from a session nest as child blocks.** When a bound session in the Claude desktop app opens new sessions (the ones listed under it in the sidebar), each becomes a child block of the task with its own `🔗` line, so its state, progress row and `💬` line follow that session. Sessions opened from those nest one level deeper, matching the sidebar. If you already listed a subtask whose text matches the new session's title, that block gets bound instead of a new one being added.
-- **The status bar keeps count.** One cell reads `🤖 2 在跑 · 1 等你` (two running, one waiting for you); click it to jump to the line that is waiting.
-- **The record stays in the outline and leads back.** A finished task has `⏱ 20:12–21:09 · 共 57m · 885k tok · Claude` under it, and the final "Claude" is a link that reopens that session.
+- **The state follows the session.** Running, waiting for your reply, or quiet for how long: all read from the session logs and shown on the progress row. When a session stops on a permission prompt or errors out, Nautilus sends a system notification that jumps to the line. Switching the line's keyword (`TOREVIEW`, `NEEDOK`, `ERRORED`, `HITLIMIT`, `QUEUED`) and marking it `DONE` on archive are done by Agent Deck.
+- **What the agent said last comes back into the outline.** Each time a session finishes a turn, Agent Deck squeezes its last reply into one `💬` line under the task; Nautilus shows that line faded, and a double-click opens the session.
+- **Subagents and side chats show up too.** When a Claude Code session dispatches subagents, the progress row ends with `🤖 2 跑 1 完` (two running, one done) and each subagent gets a line below it: its description, running or finished, its latest step and the tokens it used. A side chat opened on that session in the Claude desktop app gets a line as well (open, and for how long). Everything is read locally: subagent logs sit under `subagents/` in the session's folder. A side chat is not written to disk, so all the plugin can see is the claude process the desktop app starts for it; what you asked, whether it is answering, and its tokens stay unknown.
+- **Sessions opened from a session nest as child blocks.** When a bound session in the Claude desktop app opens new sessions, Agent Deck writes each as a child block of the task with its own `🔗` line, and Nautilus draws a progress row for each.
+- **The record stays in the outline and leads back.** A finished task has `⏱ 20:12–21:09 · 共 57m · 885k tok · Claude` under it, and the final "Claude" is a link that reopens that session (written by Agent Deck for the sessions it logs).
 - **Dispatch is left to a companion plugin.** [块去向 (done-to-top)](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top) sends a block and its children to the Claude CLI with `⌥⌘S`. It fixes the session ID before the session starts and writes the `🔗` line under the task, so the progress row starts moving right away. Select several sibling blocks and each one gets its own session (siblings run in parallel). Choose 「子块各开一个」 and the parent becomes shared background while every child block gets a session, with each conclusion landing under its own child (depth becomes sub-sessions). Sessions can open in Terminal windows, sit in a background tmux session, or run headless with `claude -p`. Without the plugin, pasting the task as your first message to the agent is enough for the match.
 
-What it does not do: it does not schedule. Dispatched sessions each run on their own, with no queue, no retries and no ordering between them. Only the last reply comes back, as one line; the files an agent changed and its full reply stay out of the outline. Sub-session conclusions land under their own child blocks and are not rolled up into the parent. The `💬` line is written only while the note is open.
+What it does not do: it does not schedule. Dispatched sessions each run on their own, with no queue, no retries and no ordering between them. Only the last reply comes back, as one line; the files an agent changed and its full reply stay out of the outline. Sub-session conclusions land under their own child blocks and are not rolled up into the parent.
 
 ## Optional execution layer
 
@@ -82,7 +79,7 @@ The difference from Nautilus Log: there is no single master switch and no popove
 
 - **Desktop only.** Developed and used on macOS. The spiral, planning and time tracking are plain Obsidian; calendar, dialogs, sounds, focus prompts and game tracking are macOS-only. Windows and Linux are untested.
 - **Daily notes written as lists**, one file per day. Folder and file name format are settings (defaults: `日记/`, `YYYY_MM_DD`).
-- Optional: Xcode Command Line Tools (for the macOS calendar helper), Raycast (Focus), the `claude` or `codex` CLI (co-writing), a Google account and your own Google Cloud OAuth client (Google Calendar).
+- Optional: Xcode Command Line Tools (for the macOS calendar helper), Raycast (Focus), a Google account and your own Google Cloud OAuth client (Google Calendar).
 
 ## Installation
 
@@ -96,7 +93,7 @@ The core needs three things; everything else is optional and listed in the [guid
 2. In today's note, write a couple of list items: `- 14:00-15:00 meeting` and `- TODO reply to mail 20m`.
 3. Open the spiral from the ribbon icon or the command 「打开螺旋日程」.
 
-Two rules that edit your note are on by default: at most 3 tasks may be `DOING` at once, and a `DOING` task untouched for 3 hours becomes `PAUSED`. Set either to 0 to turn it off. If you do not use Raycast, switch off 「同时开 Raycast 专注」.
+Two rules that edit your note are on by default: at most 3 tasks may be `DOING` at once (blocks an agent is working on do not count), and a `DOING` task untouched for 3 hours becomes `PAUSED`. Set either to 0 to turn it off. If you do not use Raycast, switch off 「同时开 Raycast 专注」.
 
 ## Works with Telegram Companion
 
@@ -108,8 +105,7 @@ Nothing leaves your computer unless you turn on one of the optional features bel
 
 | What | When | Where it goes |
 |---|---|---|
-| Session titles, your last few prompts, the end of the last reply, and your open task lines | Only with "co-writing" on, when a new session appears or one goes idle | One local CLI under its own login: `claude` (Anthropic) if it is installed, otherwise `codex` (OpenAI). You can fix the choice in settings. Runs of 12 or more digits are removed first |
-| The weekly direction review (text); the spiral image when you ask for it from your phone | Only if Telegram Companion is installed and set up | Telegram Bot API, through your own bot. The bot token is read from Telegram Companion's settings and is not stored by this plugin |
+| The spiral image when you ask for it from your phone | Only if Telegram Companion is installed and set up | Telegram Bot API, through your own bot. The bot token is read from Telegram Companion's settings and is not stored by this plugin |
 | Reminders, including task names | Only if you set a Discord channel | Your own local `notify-discord` script and the webhook it holds |
 | Requests for your calendar list and the day's events; nothing is written to the calendar | Only if you turn on Google Calendar and connect an account | Google: `accounts.google.com` (you sign in and consent in your browser), `oauth2.googleapis.com` (tokens), `www.googleapis.com` (Calendar API). The only scope requested is `calendar.readonly`, through an OAuth client of type "Desktop app" that you create in your own Google Cloud project; the plugin ships no shared key |
 
@@ -117,9 +113,9 @@ Google Calendar needs a Google account. The client secret and the refresh token 
 
 Files read outside the vault, all read-only, and only for the agents switched on in settings (for agents other than the primary, only session files changed today): `~/.claude/projects`, `~/.config/claude/projects` and the Claude desktop app's `claude-code-sessions` folder (which sessions are archived, and which session each one was opened from); it also checks the local process list to spot side chat processes; `~/.codex/sessions`, `~/.codex/archived_sessions` and `~/.codex/session_index.jsonl` (session titles); `~/.workbuddy/projects`. A daily summary is kept in the plugin folder as `ai-usage.json`.
 
-Files written outside the vault: `~/Library/Caches/nautilus-spiral/` (small Swift helpers compiled on first use, for the calendar and an experimental notification app).
+Files written outside the vault: `~/Library/Caches/nautilus-spiral/` (small Swift helpers compiled on first use, for the calendar and an experimental notification app). With "export data for widgets" on, also `~/Library/Application Support/Nautilus Spiral/widgets.json` (today's main quests, what is in progress, open to-dos across the vault, and the plan's Gantt rows, for the widgets), after which `open` is called on `nautilus-widgets://reload` to refresh them; taps on a widget's done / undo circle land in `inbox/` in the same folder and are deleted once applied.
 
-Local programs it starts: `osascript` (dialogs), `swiftc` and `codesign` (building the helpers), `afplay` (sounds), `open` (Raycast deeplinks and bringing Obsidian forward), `ps` and `sh` (game tracking), and `claude` or `codex` when co-writing is on (plus your login shell once, to locate `codex` if it is not in a usual place).
+Local programs it starts: `osascript` (dialogs), `swiftc` and `codesign` (building the helpers), `afplay` (sounds), `open` (Raycast deeplinks, bringing Obsidian forward, refreshing the widgets), `ps` and `sh` (game tracking).
 
 ## Where the idea comes from
 

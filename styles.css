@@ -1,9 +1,10 @@
 /* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
    内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝），游戏是紫的，靠位置和粗细再区分一层 */
-.naut-root, .naut-ai-modal, .naut-status-modal, .naut-agent-pop {
+.naut-root, .naut-ai-modal, .naut-status-modal {
   --naut-event: #e3a924;
   --naut-task: #2b64c3;
   --naut-prio: #d03739;
+  --naut-main: #2f9e44;   /* 主线（[#A]）：绿，和黄 / 蓝 / 红 / 青都分得开 */
   --naut-review: #31b0c6;
   --naut-ai-claude: #d97757;
   --naut-ai-codex: #62b0ea;
@@ -91,6 +92,8 @@
 .naut-event { stroke: var(--naut-event); }
 .naut-task { stroke: var(--naut-task); }
 .naut-prio { stroke: var(--naut-prio); }
+.naut-main { stroke: var(--naut-main); }
+.naut-seg.naut-main-done { stroke: color-mix(in srgb, var(--naut-main) 45%, var(--naut-done)); }
 .naut-done { stroke: var(--naut-done); }
 .naut-seg.naut-review { stroke: var(--naut-review); }
 .naut-done-event { opacity: 0.45; }
@@ -139,6 +142,8 @@
 .naut-row.is-event { border-left-color: var(--naut-event); }
 .naut-row.is-task { border-left-color: var(--naut-task); }
 .naut-row.is-prio { border-left-color: var(--naut-prio); }
+.naut-row.is-main { border-left-color: var(--naut-main); }
+.naut-row.is-main.is-done { border-left-color: color-mix(in srgb, var(--naut-main) 45%, var(--naut-done)); }
 .naut-row.is-over { border-left-color: var(--naut-prio); color: var(--naut-prio); }
 .naut-row.is-done { border-left-color: var(--naut-done); color: var(--text-muted); }
 .naut-row.is-review { border-left-color: var(--naut-review); }
@@ -148,6 +153,7 @@
 /* 进行中的那一行：时间前面一个跟着呼吸的小圆点 */
 .naut-row.is-doing .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
 .naut-row.is-doing.is-prio .naut-time::before { background: var(--naut-prio); }
+.naut-row.is-doing.is-main .naut-time::before { background: var(--naut-main); }
 
 /* 列表里能折叠的小节标题、小字说明 */
 .naut-proj-head { cursor: pointer; user-select: none; }
@@ -283,7 +289,6 @@
 .naut-fm-emoji { display: inline-block; font-size: 26px; line-height: 1.2; transition: transform .2s var(--naut-ease); }
 .naut-fm-card.is-on .naut-fm-emoji { transform: scale(1.15) rotate(-6deg); }
 .naut-fm-name { font-weight: 700; margin-top: 6px; }
-.naut-fm-today { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .naut-fm-chips { display: flex; gap: 8px; margin-top: 14px; }
 .naut-fm-chips .naut-fm-chip { flex: 1; border-radius: 999px; box-shadow: none; border: 1.5px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); cursor: pointer;
   transition: background-color .16s, border-color .16s, color .16s; }
@@ -303,16 +308,10 @@
 /* 在做事：计时；连着做过了番茄钟阈值变红，开太久像是忘了关就提醒检查。没在做：今天的容量，超载 / 空档不足时变橙 */
 .status-bar-item.naut-status { font-variant-numeric: tabular-nums; transition: color .3s ease; }
 .status-bar-item.naut-status.is-warning { color: var(--color-orange); }
-/* Agent 汇总那一格：有会话在等你时换成低饱和的赭色、慢慢呼吸；数变了轻轻跳一下（只动 transform 和透明度） */
-.status-bar-item.naut-agents { font-variant-numeric: tabular-nums; transition: color .3s ease; transform-origin: 50% 60%; }
-.status-bar-item.naut-agents.is-waiting { color: #a8704f; animation: naut-breathe 3.2s ease-in-out infinite; }
-.status-bar-item.naut-agents.is-bump { animation: naut-agents-bump .36s var(--naut-ease, ease-out); }
-.status-bar-item.naut-agents.is-waiting.is-bump { animation: naut-agents-bump .36s var(--naut-ease, ease-out), naut-breathe 3.2s ease-in-out .36s infinite; }
-@keyframes naut-agents-bump { 0% { transform: translateY(0) scale(1); } 40% { transform: translateY(-2px) scale(1.06); } 100% { transform: none; } }
 .status-bar-item.naut-status.is-overdue { color: var(--text-error); }
 .status-bar-item.naut-status.is-forgotten { color: var(--text-error); font-weight: 600; animation: naut-breathe 2.8s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .status-bar-item.naut-status, .status-bar-item.naut-agents { animation: none !important; transition: none !important; }
+  .status-bar-item.naut-status { animation: none !important; transition: none !important; }
 }
 
 /* ---------------- ⌃⌥V 现在怎样 ---------------- */
@@ -382,15 +381,9 @@
   .naut-status-modal *, .naut-status-modal *::before { animation: none !important; transition: none !important; }
 }
 
-/* 「人机协作」标题右边的「整理进日记」 */
 .naut-sec-ai { display: flex; align-items: center; justify-content: space-between; }
-.naut-log-now { font-size: var(--font-ui-smaller); height: 20px; padding: 0 8px; border-radius: 999px; box-shadow: none; border: 1px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); cursor: pointer; transition: color .16s, border-color .16s, background-color .16s, transform .12s var(--naut-ease); }
-.naut-log-now:hover:not(:disabled) { color: var(--naut-ai); border-color: color-mix(in srgb, var(--naut-ai) 55%, transparent); background: color-mix(in srgb, var(--naut-ai) 8%, transparent); }
-.naut-log-now:active:not(:disabled) { transform: scale(.94); }
-.naut-log-now:disabled { opacity: .6; animation: naut-breathe 1.4s ease-in-out infinite; }
 /* 人机协作里的项目行能点开看会话 */
 .naut-row.naut-ai-row { cursor: pointer; }
-.naut-auto-err { color: var(--color-orange); cursor: help; }
 
 /* ---------------- 任务行下面的进度条 ----------------
    编辑器里 DOING 的那一行下面一行等宽字符：[#########-----------] 45%  监听 Claude · 在跑 · 改 main.js · 48k tok
@@ -414,13 +407,28 @@
 .naut-prog[data-mode="wait"] .naut-prog-bar { opacity: .5; }
 .naut-prog[data-mode="run"] .naut-prog-tail { animation: naut-breathe 1.8s ease-in-out infinite; }
 @keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
-/* 任务下面的「💬」行（绑着的会话最后说的话）：字放淡；刚写上来时底色亮一下再褪掉（只动底色，不动版式） */
+/* 任务下面的「💬」行（Agent Deck 写的会话结论）：字放淡 */
 .cm-line.naut-said { color: var(--text-muted); }
-.cm-line.naut-said.is-new { animation: naut-said-in 2.4s ease-out both; }
-@keyframes naut-said-in { from { background-color: rgba(217, 119, 87, .18); } to { background-color: transparent; } }
-@media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail, .cm-line.naut-said.is-new { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail { animation: none !important; } }
 /* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
-input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px rgba(200, 99, 95, .25) !important; }
+/* 主线进度条：紧贴在主线块第一行下面，细轨、灰绿，不抢正文；悬停或拖动时才清楚一点 */
+.naut-main-slider { display: block; max-width: 240px; margin: 0 0 3px; text-indent: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); --naut-ms: color-mix(in srgb, #2f9e44 35%, var(--text-faint)); --slider-thumb-width: 7px; --slider-thumb-height: 7px; --slider-thumb-radius: 50%; --slider-thumb-y: 1.5px; --slider-track-height: 2px; --slider-thumb-border-width: 1.5px; --slider-thumb-border-color: var(--naut-ms); animation: naut-prog-in .3s ease-out both; }
+.naut-ms-row { display: flex; align-items: center; gap: 6px; line-height: 1.4; transition: color .2s ease; }
+.naut-ms-row + .naut-ms-row { margin-top: 2px; }
+.naut-ms-row:hover, .naut-ms-row:focus-within { color: var(--text-muted); --naut-ms: color-mix(in srgb, #2f9e44 45%, var(--text-muted)); }
+.naut-ms-name { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.naut-main-slider input.naut-ms-range { flex: 1; min-width: 80px; height: 2px; margin: 0; padding: 4px 0; box-sizing: content-box; border-radius: 1px; -webkit-appearance: none; appearance: none; cursor: pointer; background: linear-gradient(to right, var(--naut-ms) var(--v, 0%), color-mix(in srgb, var(--text-faint) 30%, transparent) var(--v, 0%)) content-box; }
+.naut-main-slider input.naut-ms-range::-webkit-slider-thumb { -webkit-appearance: none; width: 7px; height: 7px; margin-top: 1.5px; border-radius: 50%; background: var(--background-primary); border: 1.5px solid var(--naut-ms); box-shadow: 0 0 0 1.5px var(--background-primary); transition: transform .15s ease; }
+.naut-main-slider input.naut-ms-range:hover::-webkit-slider-thumb { transform: scale(1.25); }
+.naut-main-slider input.naut-ms-range:active::-webkit-slider-thumb { transform: scale(1.45); }
+.naut-ms-val { flex: none; width: 2.6em; text-align: right; font-size: .92em; font-variant-numeric: tabular-nums; }
+.naut-ms-done { color: var(--text-faint); }
+.cm-line > .naut-main-slider + br { display: none; }   /* 行尾是挂件时 CodeMirror 补的 <br> 会多出一行空白 */
+/* 先定目标的弹框：沿用专注弹框的标题和说明，输入框和按钮依次升上来 */
+.naut-goal-input { width: 100%; resize: vertical; min-height: 4.5em; font-size: var(--font-ui-medium); line-height: 1.5; animation: naut-rise .32s ease-out .05s backwards; }
+.naut-goal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; animation: naut-rise .32s ease-out .12s backwards; }
+@media (prefers-reduced-motion: reduce) { .naut-main-slider, .naut-goal-input, .naut-goal-btns { animation: none !important; } .naut-main-slider input.naut-ms-range::-webkit-slider-thumb { transition: none; } }
+:is(input, textarea).naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px rgba(200, 99, 95, .25) !important; }
 
 /* 进度条下面那几行：左边一格图标、文字从同一条线开始，数字等宽；细账在悬停提示里 */
 .naut-cap-row { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); align-items: baseline; margin-top: 3px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; cursor: help; }
@@ -431,42 +439,26 @@ input.naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px r
 .naut-cap-val > span { transition: color .3s ease; }
 .naut-cap-val .naut-sw { margin: 0 0 0 6px; }
 .naut-cap-val .naut-sw + .naut-sw { margin-left: 3px; }
+/* 🎯 主线那一行：●◐○ 用主线的绿 */
+.naut-cap-row.naut-cap-main.mod-clickable { color: var(--text-normal); cursor: pointer; }   /* 有主线时才可点；还没定主线的那句照常灰 */
+.naut-main-pips { color: var(--naut-main); letter-spacing: 1px; }
 .naut-cap-row.is-error .naut-cap-val { white-space: normal; color: var(--text-error); }
-/* 状态栏 Agent 那一格点开的详情面板：贴在它正上方，一张会话一张卡片。只动透明度和 transform */
-.naut-agent-pop { position: fixed; z-index: var(--layer-menu, 60); width: min(380px, calc(100vw - 24px)); max-height: 62vh; overflow-y: auto; padding: 10px 10px 8px; border-radius: 12px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); box-shadow: 0 10px 28px rgba(0, 0, 0, .12), 0 2px 6px rgba(0, 0, 0, .06); font-size: var(--font-ui-smaller); color: var(--text-normal); transform-origin: 100% 100%; animation: naut-ap-in .2s var(--naut-ease) both; }
-.naut-agent-pop.is-leaving { animation: naut-ap-out .15s ease-in both; pointer-events: none; }
-@keyframes naut-ap-in { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
-@keyframes naut-ap-out { to { opacity: 0; transform: translateY(4px) scale(.98); } }
-.naut-ap-head { display: flex; justify-content: space-between; align-items: baseline; padding: 0 4px 7px; font-weight: 600; }
-.naut-ap-count { color: var(--text-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
-.naut-ap-list { display: flex; flex-direction: column; gap: 6px; }
-.naut-ap-card { padding: 8px 10px 8px; border-radius: 9px; background: var(--background-secondary); cursor: pointer; transition: background-color .15s ease, transform .15s ease; animation: naut-rise .28s var(--naut-ease) backwards; animation-delay: calc(var(--naut-i, 0) * 30ms); }
-.naut-ap-card:hover { background: var(--background-modifier-hover); transform: translateY(-1px); }
-.naut-ap-card.is-wait, .naut-ap-card.is-perm { box-shadow: inset 2px 0 0 #a8704f; }
-.naut-ap-top { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
-.naut-ap-dot { width: 7px; height: 7px; border-radius: 50%; }
-.naut-ap-state { font-size: .9em; line-height: 1.5; padding: 0 5px; border-radius: 4px; }
-.naut-ap-state.is-run { color: #4f7d5c; background: rgba(111, 159, 122, .15); }
-.naut-ap-state.is-wait, .naut-ap-state.is-perm { color: #8f5d40; background: rgba(168, 112, 79, .15); }
-.naut-ap-state.is-quiet { color: var(--text-muted); background: var(--background-modifier-border); }
-/* 出错停了 / 撞限额：和 TODOseq 里 ERRORED、HITLIMIT、QUEUED 渐到的颜色同一组 */
-.naut-ap-card.is-error { box-shadow: inset 2px 0 0 #93606b; }
-.naut-ap-state.is-error { color: #93606b; background: rgba(147, 96, 107, .14); }
-.naut-ap-state.is-limit { color: #8a5a8c; background: rgba(138, 90, 140, .13); }
-.naut-ap-state.is-queued { color: #5f7696; background: rgba(111, 134, 168, .15); }
-.naut-ap-card.is-run .naut-ap-dot { animation: naut-breathe 1.8s ease-in-out infinite; }
-.naut-ap-label { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.naut-ap-ago { color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.naut-ap-line { margin-top: 3px; padding-left: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.naut-ap-step { color: var(--text-normal); }
-.naut-ap-bar { margin: 5px 0 0 13px; height: 3px; border-radius: 2px; background: var(--background-modifier-border); overflow: hidden; }
-.naut-ap-fill { height: 100%; transform-origin: 0 50%; transition: transform .4s var(--naut-ease); }
-.naut-ap-said { margin: 5px 0 0 13px; padding: 5px 8px; border-radius: 6px; background: var(--background-primary); color: var(--text-normal); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.naut-ap-acts { display: flex; gap: 6px; margin: 6px 0 0 13px; }
-.naut-ap-acts button { font-size: .92em; padding: 2px 9px; height: auto; }
-@media (prefers-reduced-motion: reduce) { .naut-agent-pop, .naut-ap-card, .naut-ap-dot { animation: none !important; } }
 
-.naut-agent-pop.is-static .naut-ap-card { animation: none; }
-.naut-ap-empty, .naut-ap-more { padding: 6px 4px 2px; color: var(--text-faint); text-align: center; }
-.status-bar-item.naut-agents.is-idle { color: var(--text-faint); }
 
+/* 界面图标：emoji 显示成 Lucide（main.js「界面图标」一节）。跟字号走，和文字基线对齐 */
+.naut-ico { display: inline-flex; vertical-align: -0.14em; margin: 0 0.12em; color: var(--text-muted); }
+.naut-ico svg { width: 1em; height: 1em; stroke-width: 2; }
+.naut-ico[data-tone="red"] { color: var(--color-red); }
+.naut-ico[data-tone="green"] { color: var(--color-green); }
+.naut-ico[data-tone="orange"] { color: var(--color-orange); }
+.naut-ico[data-tone] svg { fill: currentColor; }
+.naut-ico[data-emoji="🗄"] { color: var(--color-purple); }
+/* token：每 10 万一个数据库图标 */
+.naut-tok-dbs { display: inline-flex; gap: 1px; margin-left: 0.35em; vertical-align: -0.12em; color: var(--color-purple); opacity: .8; }
+.naut-tok-dbs:empty { display: none; }
+.naut-tok-db { display: inline-flex; animation: naut-db-in .28s ease calc(var(--naut-db-i, 0) * 18ms) both; }
+.naut-tok-db svg { width: 0.85em; height: 0.85em; stroke-width: 2.2; }
+/* 实心的一个 = 100 万：盖子和柱身填满，中间那道弧用底色描一笔，看得出是 database */
+.naut-tok-db.is-full svg :is(ellipse, path) { fill: currentColor; }
+.naut-tok-db.is-full svg path:last-child { fill: none; stroke: var(--background-primary); stroke-width: 1.6; }
+@keyframes naut-db-in { from { opacity: 0; transform: translateY(2px) scale(.7); } to { opacity: 1; transform: none; } }

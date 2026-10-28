@@ -3,3 +3,8 @@ data.json
 ai-usage.json
 game-log.json
 node_modules/
+widgets/build/
+widgets/*.xcodeproj/
+widgets/App/Info.plist
+widgets/Widget/Info.plist
+widgets/Widget/Widget.entitlements
