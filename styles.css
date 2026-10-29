@@ -1,17 +1,18 @@
 /* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
-   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝），游戏是紫的，靠位置和粗细再区分一层 */
+   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝），游戏是紫的，靠位置和粗细再区分一层。
+   Agent 以外的几种设置里能改：改过的由插件挂在 body 上（--naut-c-xxx），没改过用这里的默认值，和 main.js 的 COLORS 一致 */
 .naut-root, .naut-ai-modal, .naut-status-modal {
-  --naut-event: #e3a924;
-  --naut-task: #2b64c3;
-  --naut-prio: #d03739;
-  --naut-main: #2f9e44;   /* 主线（[#A]）：绿，和黄 / 蓝 / 红 / 青都分得开 */
-  --naut-review: #31b0c6;
+  --naut-event: var(--naut-c-event, #e3a924);
+  --naut-task: var(--naut-c-task, #2b64c3);
+  --naut-prio: var(--naut-c-prio, #d03739);
+  --naut-main: var(--naut-c-main, #e60012);   /* 主线（[#A]）：大红 */
+  --naut-review: var(--naut-c-review, #31b0c6);
   --naut-ai-claude: #d97757;
   --naut-ai-codex: #62b0ea;
   --naut-ai-workbuddy: #17a57f;
   --naut-ai-dsh: #4d6bfe;
   --naut-ai: var(--naut-ai-claude);
-  --naut-game: #b04fa8;
+  --naut-game: var(--naut-c-game, #b04fa8);
   --naut-done: var(--text-faint);
   --naut-now: var(--text-normal);
   --naut-ease: cubic-bezier(.2, .7, .2, 1);
@@ -411,11 +412,11 @@
 .cm-line.naut-said { color: var(--text-muted); }
 @media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail { animation: none !important; } }
 /* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
-/* 主线进度条：紧贴在主线块第一行下面，细轨、灰绿，不抢正文；悬停或拖动时才清楚一点 */
-.naut-main-slider { display: block; max-width: 240px; margin: 0 0 3px; text-indent: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); --naut-ms: color-mix(in srgb, #2f9e44 35%, var(--text-faint)); --slider-thumb-width: 7px; --slider-thumb-height: 7px; --slider-thumb-radius: 50%; --slider-thumb-y: 1.5px; --slider-track-height: 2px; --slider-thumb-border-width: 1.5px; --slider-thumb-border-color: var(--naut-ms); animation: naut-prog-in .3s ease-out both; }
+/* 主线进度条：紧贴在主线块第一行下面，细轨、主线色调淡，不抢正文；悬停或拖动时才清楚一点 */
+.naut-main-slider { display: block; max-width: 240px; margin: 0 0 3px; text-indent: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); --naut-ms: color-mix(in srgb, var(--naut-c-main, #e60012) 35%, var(--text-faint)); --slider-thumb-width: 7px; --slider-thumb-height: 7px; --slider-thumb-radius: 50%; --slider-thumb-y: 1.5px; --slider-track-height: 2px; --slider-thumb-border-width: 1.5px; --slider-thumb-border-color: var(--naut-ms); animation: naut-prog-in .3s ease-out both; }
 .naut-ms-row { display: flex; align-items: center; gap: 6px; line-height: 1.4; transition: color .2s ease; }
 .naut-ms-row + .naut-ms-row { margin-top: 2px; }
-.naut-ms-row:hover, .naut-ms-row:focus-within { color: var(--text-muted); --naut-ms: color-mix(in srgb, #2f9e44 45%, var(--text-muted)); }
+.naut-ms-row:hover, .naut-ms-row:focus-within { color: var(--text-muted); --naut-ms: color-mix(in srgb, var(--naut-c-main, #e60012) 45%, var(--text-muted)); }
 .naut-ms-name { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .naut-main-slider input.naut-ms-range { flex: 1; min-width: 80px; height: 2px; margin: 0; padding: 4px 0; box-sizing: content-box; border-radius: 1px; -webkit-appearance: none; appearance: none; cursor: pointer; background: linear-gradient(to right, var(--naut-ms) var(--v, 0%), color-mix(in srgb, var(--text-faint) 30%, transparent) var(--v, 0%)) content-box; }
 .naut-main-slider input.naut-ms-range::-webkit-slider-thumb { -webkit-appearance: none; width: 7px; height: 7px; margin-top: 1.5px; border-radius: 50%; background: var(--background-primary); border: 1.5px solid var(--naut-ms); box-shadow: 0 0 0 1.5px var(--background-primary); transition: transform .15s ease; }

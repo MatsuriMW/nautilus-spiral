@@ -70,6 +70,16 @@ const DEFAULTS = {
   discordCmd: "~/.local/bin/notify-discord",
   askVia: "dialog",     // 到点问做完没有：dialog = 弹到最前面的系统对话框；notification = 带按钮的系统通知（试验：要系统允许本机编的小 App 发通知）
   notifySound: "Pop",   // 在本机弹提醒时响哪个声音：系统声音的名字（/System/Library/Sounds 里的，Pop、Glass、Ping…）或一个声音文件的路径；空 = 不响
+  colors: {},           // { main: "#rrggbb" }：设置里改过的颜色，没改过的不存，用 COLORS 的默认值
+};
+// 螺旋上各类的颜色（设置里能改）：[设置里的名字, 默认值]。默认值和 styles.css 开头的一致；Agent 的颜色跟各家自己的界面走，不放进来
+const COLORS = {
+  main: ["主线", "#e60012"],
+  event: ["固定事件", "#e3a924"],
+  task: ["待办", "#2b64c3"],
+  prio: ["重要 / 超出", "#d03739"],
+  review: ["复习卡片", "#31b0c6"],
+  game: ["游戏时间", "#b04fa8"],
 };
 
 // ---------------- 解析 ----------------
@@ -2870,7 +2880,7 @@ class SpiralView extends ItemView {
     if (games.length) {
       const by = {};
       for (const [a, b, n] of games) by[n] = (by[n] || 0) + b - a;
-      notes.push(`🎮 游戏 ${dur(unionMin(games))}` + (Object.keys(by).length > 1 || !by.Steam ? "：" + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([n, m]) => `${n} ${dur(m)}`).join(" · ") : "") + "（螺旋内圈的绿线）");
+      notes.push(`🎮 游戏 ${dur(unionMin(games))}` + (Object.keys(by).length > 1 || !by.Steam ? "：" + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([n, m]) => `${n} ${dur(m)}`).join(" · ") : "") + "（螺旋内圈的细线）");
     }
     if (cfg.showUnrecorded !== false && upto - S1 >= 10) {
       const past = upto - S1, len = (segs) => segs.reduce((k, [a, b]) => k + b - a, 0);
@@ -3380,8 +3390,9 @@ const lucideWatch = (plugin, win) => {
 module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    this.applyColors();
     lucideWatch(this, window);
-    this.registerEvent(this.app.workspace.on("window-open", (w) => lucideWatch(this, w.win)));
+    this.registerEvent(this.app.workspace.on("window-open", (w) => { lucideWatch(this, w.win); this.applyColors(w.doc); }));
     this.states = new Map();   // path -> Map(label -> state)，用来发现「刚改成 DONE」
     this.cal = new MacCalendar();
     this.gcal = new GoogleCalendar({
@@ -5931,7 +5942,18 @@ module.exports = class NautilusSpiral extends Plugin {
     await leaf.openFile(file, { eState: { line } });
   }
 
-  onunload() { window.clearTimeout(this._reloadT); }
+  // 改过的颜色挂成 body 上的 --naut-c-xxx，styles.css 从这儿取；没改过的去掉，退回 CSS 里的默认值
+  applyColors(doc = document) {
+    for (const k in COLORS) {
+      const v = (this.settings.colors || {})[k];
+      if (v) doc.body.style.setProperty(`--naut-c-${k}`, v); else doc.body.style.removeProperty(`--naut-c-${k}`);
+    }
+  }
+
+  onunload() {
+    window.clearTimeout(this._reloadT);
+    for (const k in COLORS) document.body.style.removeProperty(`--naut-c-${k}`);
+  }
 };
 
 
@@ -6041,8 +6063,21 @@ class SpiralSettings extends PluginSettingTab {
         .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
     text("提醒发到 Discord 的哪个频道", "填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停、欢迎回来、自动记成做完 / 暂停、专注到点）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "discordChannel");
     text("本机提醒的提示音", "系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "notifySound");
+    containerEl.createEl("h3", { text: "🎨 颜色" });
+    containerEl.createEl("p", { cls: "setting-item-description", text: "螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 淡蓝……），不在这里改" });
+    const colorDesc = { main: "块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", event: "日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", task: "其余待办", prio: "带重要标记的任务，也用在排不下、超时的提示上", review: "做完的「复习卡片 N 张」", game: "螺旋最里面一圈的游戏时间" };
+    for (const [k, [name, d]] of Object.entries(COLORS)) {
+      const set = async (v) => {
+        s.colors = Object.assign({}, s.colors);
+        if (v && v.toLowerCase() !== d) s.colors[k] = v; else delete s.colors[k];
+        await this.plugin.saveData(s); this.plugin.applyColors();
+      };
+      new Setting(containerEl).setName(name).setDesc(colorDesc[k])
+        .addColorPicker((c) => c.setValue((s.colors || {})[k] || d).onChange(set))
+        .addExtraButton((b) => b.setIcon("rotate-ccw").setTooltip("恢复默认").onClick(async () => { await set(""); this.display(); }));
+    }
     containerEl.createEl("h3", { text: "🎯 主线" });
-    new Setting(containerEl).setName("主线").setDesc("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（日记整理把多出来的降成 [#B]）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上用绿色画；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate")
+    new Setting(containerEl).setName("主线").setDesc("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（日记整理把多出来的降成 [#B]）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上单独上色（默认大红，在上面「🎨 颜色」里改）；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate")
       .addToggle((t) => t.setValue(s.showMain !== false).onChange(async (v) => { s.showMain = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); this.plugin.refresh(); }));
     text("主线提醒时刻", "到这几个时刻主线还没做完、手上也没在做主线，发一条提醒（和别的提醒一样：配了 Discord 发 Discord，没配在本机弹）。24 小时制，逗号分隔，空着 = 不提醒", "mainNudge");
     containerEl.createEl("h3", { text: "🗓 macOS 小组件" });
@@ -6108,7 +6143,7 @@ class SpiralSettings extends PluginSettingTab {
       new Setting(containerEl).setName("DeepSeek Harness API 端口").setDesc("0 = 自动从 lsof 找 DSH 正在监听的端口；也可以填固定端口。DSH 里要启用 dsh-token-usage-stats 插件")
         .addText((t) => t.setValue(String(s.dshApiPort || 0)).onChange(async (v) => { s.dshApiPort = Math.max(0, parseInt(v, 10) || 0); await this.plugin.saveData(s); reset(); }));
     }
-    new Setting(containerEl).setName("记录游戏时间").setDesc("每分钟看一眼在不在玩，螺旋最里面一圈画绿线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录")
+    new Setting(containerEl).setName("记录游戏时间").setDesc("每分钟看一眼在不在玩，螺旋最里面一圈画一条细线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录")
       .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     text("游戏进程关键词", "进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "gameProcs");
     text("在最前面才算的 App", "这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "gameFrontApps");
