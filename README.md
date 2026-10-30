@@ -131,6 +131,10 @@ The thought underneath: time is a real river. You cannot hold it, but you can un
 
 This plugin takes one more step along that line. Part of the "record" book is handed to the machine. You still record actively: the plan, the estimates, the states you change by hand. Meanwhile the agents you work with keep their own session logs, and the plugin reads those as a passive record: which minutes were really worked. Statuses and conclusions come from you; time spans and durations come from the machine, which stays an assistant: it never decides that something is done, and it leaves alone any line you have edited yourself.
 
+## Feedback and updates
+
+To follow new features, send feedback or keep up with progress, follow me on Twitter: [@Matsurimywaifu](https://x.com/Matsurimywaifu).
+
 ## Credits
 
 [Nautilus](https://github.com/tombarys/roam-depot-nautilus) by Tomáš Baránek, and its descendants [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) and [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), for the spiral day planner and "give every minute a job". The time-budget idea goes back to the [YNAB Method](https://www.ynab.com/the-four-rules/); this plugin is not affiliated with YNAB. Obsidian already has two ports of the Nautilus line: [Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) and [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger).

@@ -148,6 +148,10 @@ Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 O
 
 **会启动的本机程序**：`osascript`（对话框）、`swiftc` 和 `codesign`（编小助手）、`afplay`（提示音）、`open`（Raycast 链接、把 Obsidian 叫到前面、叫小组件刷新）、`ps` 和 `sh`（游戏时间）。
 
+## 反馈与后续
+
+想追踪后续功能、反馈问题、关注后续进展，欢迎关注我的 Twitter：[@Matsurimywaifu](https://x.com/Matsurimywaifu)。
+
 ## 致谢
 
 - Tomáš Baránek 的 [Nautilus](https://github.com/tombarys/roam-depot-nautilus)：最初的螺旋日计划。
