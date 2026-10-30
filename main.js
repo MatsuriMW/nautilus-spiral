@@ -5446,7 +5446,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (this.kw.size > 80) this.kw.delete(this.kw.keys().next().value);   // 只留最近碰过的几十篇
     if (!prev) return;
     const changes = this.kwFresh(file.path, kwChanges(prev, cur));
-    if (changes.length && changes.length <= 3) this.sound(kwCue(changes));
+    if (changes.length && changes.length <= 3) this.kwSound(kwCue(changes));
   }
   // 编辑器里的改动（⌘/、点关键词、手敲）当场就响：写盘要等停手两秒，等它再响就不跟手了。
   // 只看落在一行之内的改动，一次动了三行以上的、整段替换的（粘贴、同步、重新载入）不管，那些留给写盘那一路
@@ -5466,7 +5466,7 @@ module.exports = class NautilusSpiral extends Plugin {
       if (!changes.length || lines > 3) return;
       const info = u.state.field(OB.editorInfoField, false);
       const fresh = this.kwFresh(info && info.file ? info.file.path : "", changes);
-      if (fresh.length) this.sound(kwCue(fresh));
+      if (fresh.length) this.kwSound(kwCue(fresh));
     });
   }
   // 同一行的同一次变化，编辑器和写盘两路都会看到（前后差两秒），只响一次：记下每一行上次响的是变成什么，一分钟内再报同一个就不响
@@ -5923,6 +5923,11 @@ module.exports = class NautilusSpiral extends Plugin {
   // 界面上的小音效（设置里可以关）。Obsidian 不在最前面时不响：那时候日记多半是别的东西在改
   sound(name) {
     if (this.settings.uiSound !== false && document.hasFocus()) blip(name);
+  }
+  // 任务状态切换的音效。装着 Logseq Style Tasks（TODOseq 的 fork，自带同一套状态音效）时归它放，这里不响，免得一次切换响两遍
+  kwSound(name) {
+    if (this.app.plugins?.enabledPlugins?.has("logseq-style-tasks")) return;
+    this.sound(name);
   }
 
   // 按天记的几份记录：完成时间、计时留 45 天，主线完成率留 90 天
