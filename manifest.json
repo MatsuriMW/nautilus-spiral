@@ -1,9 +1,9 @@
 {
   "id": "nautilus-spiral",
   "name": "Nautilus Spiral",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "minAppVersion": "1.4.0",
-  "description": "A spiral day planner driven by your daily note: events stay pinned, to-dos flow from now into the free gaps, and time spent in AI agent sessions can be logged back as DOING and PAUSED tasks. Interface in Chinese.",
+  "description": "A spiral day planner driven by your daily note: events stay pinned, to-dos flow from now into the free gaps, and time spent in AI agent sessions can be logged back as DOING and PAUSED tasks. Interface in English and Chinese.",
   "author": "MatsuriMW",
   "authorUrl": "https://github.com/MatsuriMW",
   "isDesktopOnly": true

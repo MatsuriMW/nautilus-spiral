@@ -1,5 +1,8 @@
 const OB = require("obsidian");
 const { Plugin, ItemView, PluginSettingTab, Setting, TFile, moment, debounce } = OB;
+// 界面语言跟着 Obsidian：中文界面显示中文，其余一律英文（新版有 getLanguage()，旧版看 moment 的语言）
+const ZH = String(OB.getLanguage?.() || moment.locale() || "en").toLowerCase().startsWith("zh");
+const T = (zh, en) => (ZH ? zh : en);
 
 const VIEW_TYPE = "nautilus-spiral";
 const DEFAULTS = {
@@ -7,7 +10,7 @@ const DEFAULTS = {
   dayEnd: 32,           // 螺旋和排程到几点结束，超过 24 表示次日凌晨（32 = 次日早上 8 点；个人作息夜里会一直干活，早上七八点才睡）
   dayCutoff: 8,         // 日记的日期分界：这个时刻之前还算前一天。存的是小时数，可以带小数（4.5 = 04:30）；设置里按 24 小时制的时刻填
   defaultDur: 15,       // 没写时长的任务按多少分钟算
-  folder: "日记",
+  folder: T("日记", "Journal"),
   format: "YYYY_MM_DD",
   priorityMarkers: "[[important]], [[重要]], ⭐, ‼️",
   doneTimes: {},        // { "2026_09_29": { "任务文字": 872 } }，在 Bike 里改成 DONE 时记下的完成时间（分钟）
@@ -36,7 +39,7 @@ const DEFAULTS = {
   // 它按这几个判断螺旋还写不写日记，没有这几项就以为螺旋还在写，自己就让开不写了
   autoLog: false, agentKw: false, resultBack: false,
   widgets: false,         // 给 macOS 小组件导出数据：今天的主线、计划甘特图（配套的小组件 App 在仓库的 widgets/ 里，要自己编译安装）
-  widgetPlan: "上班计划.md",  // 甘特图画哪篇计划：列表项里写了 🛫 开始 / ⏳ 计划 / 📅 截止日期的各画一条；没有这一篇就新建一篇
+  widgetPlan: T("上班计划.md", "Plan.md"),  // 甘特图画哪篇计划：列表项里写了 🛫 开始 / ⏳ 计划 / 📅 截止日期的各画一条；没有这一篇就新建一篇
   uiSound: true,          // 界面上的小音效：开始做、做完、停下、回放起止各一声很轻的合成音（Obsidian 不在最前面时不响）
   workLog: {},          // { "2026_09_30": { "任务文字": [[开始, 结束 | null]] } }：任务每一段「进行中」的时间（null = 还在做），中断再续就是好几段
   dayBounds: {},        // { "2026_09_30": { start: 610, end: 1650 } }：在螺旋上拖出来的这天实际开始 / 结束时间（分钟，凌晨 > 1440）
@@ -58,14 +61,14 @@ const DEFAULTS = {
   doingLimit: 3,        // 同时最多几件 DOING：再开始一件，就把最早开始的那件改成 PAUSED。0 = 不限
   staleHours: 3,        // DOING 超过几小时没动过（这一行和下面的子项都没改）就改成 PAUSED。0 = 不管
   doingTouch: {},       // { workKey: { sig, at } }：每件 DOING 最后一次被动过的时刻
-  breakWords: "吃饭, 锻炼",   // 日记里新写一条只有这几个字的条目 = 去吃饭 / 锻炼了：所有 DOING 改成 PAUSED，计时停
+  breakWords: T("吃饭, 锻炼", "lunch, dinner, workout"),   // 日记里新写一条只有这几个字的条目 = 去吃饭 / 锻炼了：所有 DOING 改成 PAUSED，计时停
   breakApps: "Obsidian, Claude, Terminal, iTerm2, Ghostty, Warp",
   breakMinAway: 20,     // 吃饭 / 锻炼至少多久（分钟）才开始判断「回来了」
   parallelDoing: true,
   showReview: true,     // 列表底部「📏 预估 vs 实际」，容量条上「按以往约多久」
   reviewDays: 30,       // 复盘看最近几天（计时记录保留 45 天）  // 几件 DOING 并行排：一起从现在开始，重叠在同一段时间里，只占最长那件的时间   // 在这些 App 里持续操作几分钟 = 回来了，问要不要切回 DOING
   breakState: null,     // { word, since, path, keys, labels, focus, active }：正在吃饭 / 锻炼
-  focusDirs: "🧩 工具, 🎬 创作, 💼 工作",   // 开一轮专注时选的大方向（逗号分隔，最多 4 个，开头可以带一个表情）
+  focusDirs: T("🧩 工具, 🎬 创作, 💼 工作", "🧩 Tools, 🎬 Creative, 💼 Work"),   // 开一轮专注时选的大方向（逗号分隔，最多 4 个，开头可以带一个表情）
   discordChannel: "",   // 提醒中枢：不用你回答的提醒发到 Discord 的哪个频道（本机 notify-discord 脚本认的频道名）；空着 = 不发，只在本机弹
   discordCmd: "~/.local/bin/notify-discord",
   askVia: "dialog",     // 到点问做完没有：dialog = 弹到最前面的系统对话框；notification = 带按钮的系统通知（试验：要系统允许本机编的小 App 发通知）
@@ -74,12 +77,12 @@ const DEFAULTS = {
 };
 // 螺旋上各类的颜色（设置里能改）：[设置里的名字, 默认值]。默认值和 styles.css 开头的一致；Agent 的颜色跟各家自己的界面走，不放进来
 const COLORS = {
-  main: ["主线", "#e60012"],
-  event: ["固定事件", "#e3a924"],
-  task: ["待办", "#2b64c3"],
-  prio: ["重要 / 超出", "#d03739"],
-  review: ["复习卡片", "#31b0c6"],
-  game: ["游戏时间", "#b04fa8"],
+  main: [T("主线", "Mainline"), "#e60012"],
+  event: [T("固定事件", "Fixed events"), "#e3a924"],
+  task: [T("待办", "To-dos"), "#2b64c3"],
+  prio: [T("重要 / 超出", "Important / over"), "#d03739"],
+  review: [T("复习卡片", "Flashcard review"), "#31b0c6"],
+  game: [T("游戏时间", "Gaming"), "#b04fa8"],
 };
 
 // ---------------- 解析 ----------------
@@ -232,7 +235,7 @@ const LINK_LINE_RE = /^\s*[-*+]\s+🔗/;
 const SID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 const claudeLink = (sid) => `claude://resume?session=${sid}`;
 function linkLine(indent, agent, title, sid) {
-  const name = String(title || "").replace(/[\[\]()`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || "会话";
+  const name = String(title || "").replace(/[\[\]()`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || T("会话", "Session");
   if (agent === "dsh") return `${indent}- 🔗 [DeepSeek Harness：${name}](dsh://open) \`${sid}\``;
   return agent === "claude" ? `${indent}- 🔗 [Claude：${name}](${claudeLink(sid)})` : `${indent}- 🔗 ${agent === "codex" ? "Codex" : agent === "workbuddy" ? "WorkBuddy" : agent}：${name} \`${sid}\``;
 }
@@ -301,7 +304,7 @@ function kidUnder(lines, n) {
 
 // 任务下面那一行「⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · 48k tok · Claude」读回来（最后的 Claude 可以是指向那个会话的链接）：
 //   { segs: [[开始, 结束]…], total: 合计分钟（没写就是 null）, who: 谁记的（"Claude" / "Claude / Codex"，你自己做的没有）, partial: 段数太多只写了后面几段 }
-// 机器写的是上面这个样子；你自己改、自己写的也认：时段之间用顿号、逗号、分号、空格都行，起止之间用 – - ~ 到 都行，合计写「共 57m」「共 1小时21分」都行
+// 机器写的是上面这个样子；你自己改、自己写的也认：时段之间用顿号、逗号、分号、空格都行，起止之间用 – - ~ 到 都行，合计写「共 57m」「共 1小时21分」都行（英文界面写的是「total 57m」，也认）
 function parseClock(s, cfg) {
   const segs = [];
   for (const m of s.matchAll(/(\d{1,2})[:：](\d{2})\s*(?:[–—~～-]|到|至)\s*(\d{1,2})[:：](\d{2})/g)) {
@@ -311,7 +314,7 @@ function parseClock(s, cfg) {
     if (b > a) segs.push([a, b]);
   }
   if (!segs.length) return null;
-  const tm = /共\s*(?:(\d+)\s*(?:h|小时))?\s*(?:(\d+)\s*(?:m|min|分钟?))?/.exec(s);
+  const tm = /(?:共|\btotal)\s*(?:(\d+)\s*(?:h|小时))?\s*(?:(\d+)\s*(?:m|min|分钟?))?/.exec(s);
   const total = tm && (tm[1] || tm[2]) ? (+tm[1] || 0) * 60 + (+tm[2] || 0) : null;
   // 最后一个「·」后面要是没有数字，就是谁记的。写成链接的（[Claude](claude://resume?session=…)）取链接上的字，会话号另外拿出来
   const sm = /\]\([^)]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[^)]*\)/.exec(s);
@@ -519,9 +522,9 @@ function mainNext(M) {
 // ●◐○✕：做完 / 在做 / 没开始 / 没做成，一件 A 级任务一个
 const mainPips = (M) => M.tasks.map((t) => (t.state === "done" ? "●" : t.state === "doing" ? "◐" : t.state === "failed" ? "✕" : "○")).join("");
 
-// 主线任务的目标：这件任务下面的一行「- 🎯 目标：做到什么程度算完」。和 🔗 / ⏱ 一样是记号行，不是任务也不是事件（里面写了时刻也不算），
+// 主线任务的目标：这件任务下面的一行「- 🎯 目标：做到什么程度算完」（英文界面写成「🎯 Goal: …」）。和 🔗 / ⏱ 一样是记号行，不是任务也不是事件（里面写了时刻也不算），
 // 状态音效不响；块去向把这一块发给 Agent 时照常带上，目标正好当它的验收标准
-const GOAL_RE = /^🎯\s*目标\s*[:：]\s*(.*)$/u;
+const GOAL_RE = /^🎯\s*(?:目标|Goal)\s*[:：]\s*(.*)$/iu;
 const isGoal = (s) => GOAL_RE.test(s);
 const isMarkText = (s) => /^(?:⏱|🔗|💬)/.test(s) || isSubMark(s) || isGoal(s);
 // 第 n 行那件任务自己的目标（只认直接子项）：{ line, text }，没写返回 null
@@ -572,11 +575,11 @@ function openTasks(content) {
 const todoDone = (raw) => raw.replace(OPEN_TASK_RE, (x, a, k, rest) => `${a}${k === "[ ]" ? "[x]" : "DONE"} ${rest}`);
 // 没有计划笔记时新建的那一篇
 const planTemplate = (today) => [
-  "- 说明：这一篇是螺旋日程「计划甘特图」小组件画的计划，改这里，桌面上的甘特图跟着变",
-  "\t- 写法：任务行写短标题加 🛫 开始、📅 截止，只写一个日期的是那一天的节点；做完勾上（或写 ✅ 日期）；细节写在下一级，小组件不画；顶格那一行是分组",
-  "- 这几天",
-  `\t- [ ] 第一件事 🛫 ${today.format("YYYY-MM-DD")} 📅 ${today.clone().add(4, "days").format("YYYY-MM-DD")}`,
-  `\t- [ ] 一个节点 📅 ${today.clone().add(7, "days").format("YYYY-MM-DD")}`,
+  T("- 说明：这一篇是螺旋日程「计划甘特图」小组件画的计划，改这里，桌面上的甘特图跟着变", "- About: the \"Plan Gantt\" widget of Nautilus Spiral draws the plan in this note. Edit it here and the Gantt chart on your desktop follows"),
+  T("\t- 写法：任务行写短标题加 🛫 开始、📅 截止，只写一个日期的是那一天的节点；做完勾上（或写 ✅ 日期）；细节写在下一级，小组件不画；顶格那一行是分组", "\t- How to write it: give each task line a short title plus 🛫 start and 📅 due; a line with only one date is a milestone on that day; check it off when done (or write ✅ date); details go one level down and are not drawn; top-level lines are groups"),
+  T("- 这几天", "- Next few days"),
+  T(`\t- [ ] 第一件事 🛫 ${today.format("YYYY-MM-DD")} 📅 ${today.clone().add(4, "days").format("YYYY-MM-DD")}`, `\t- [ ] First thing 🛫 ${today.format("YYYY-MM-DD")} 📅 ${today.clone().add(4, "days").format("YYYY-MM-DD")}`),
+  T(`\t- [ ] 一个节点 📅 ${today.clone().add(7, "days").format("YYYY-MM-DD")}`, `\t- [ ] A milestone 📅 ${today.clone().add(7, "days").format("YYYY-MM-DD")}`),
   "",
 ].join("\n");
 
@@ -869,14 +872,14 @@ function capacity(items, plan, cfg, now, dayRel, bounds = {}) {
   const unplaced = Math.round(plan.unplaced || 0);
   const whole = totalAvailable > 0 ? totalAvailable : available;
   const left = Math.min(100, free > 0 ? Math.max(1, whole > 0 ? Math.round(free / whole * 100) : 0) : 0);
-  const status = overload > 0 ? { key: "overload", label: "超载", value: overload }
-    : unplaced > 0 ? { key: "fragmented", label: "空档不足", value: unplaced }
-    : { key: "remaining", label: "余量", value: free };
+  const status = overload > 0 ? { key: "overload", label: T("超载", "Overload"), value: overload }
+    : unplaced > 0 ? { key: "fragmented", label: T("空档不足", "No gap fits"), value: unplaced }
+    : { key: "remaining", label: T("余量", "Spare"), value: free };
   const tone = overload > 0 || unplaced > 0 ? "warning" : free > 0 ? "positive" : "neutral";
   const burning = dayRel === 0 && now >= S && now < E ? (events.some((e) => e.state !== "done" && now >= e.start && now < e.end) ? "events" : "available") : null;
   return { available, totalAvailable, fixed: plan.eventLeft, totalFixed, demand, overload, free, unplaced, left, status, tone, burning };
 }
-const capSummary = (c) => `已计划 ${dur(c.demand)} · ${c.status.label} ${dur(c.status.value)} · 剩余 ${c.left}%`;
+const capSummary = (c) => T(`已计划 ${dur(c.demand)} · ${c.status.label} ${dur(c.status.value)} · 剩余 ${c.left}%`, `Planned ${dur(c.demand)} · ${c.status.label} ${dur(c.status.value)} · ${c.left}% free`);
 
 // 已经过去的时间里没有任何记录的那几段：[S, min(E, upto)] 减去有记录的区间的并集。
 // 它只是排程上的事实，不等于那段时间被浪费了
@@ -915,7 +918,7 @@ function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
   return { rows, summary: { totalCount: rows.length, completedCount: rows.filter((r) => r.done).length, comparedCount: compared.length, plannedMinutes, actualMinutes, varianceMinutes: actualMinutes - plannedMinutes } };
 }
 const signed = (m) => (m > 0 ? `+${dur(m)}` : m < 0 ? `−${dur(-m)}` : "±0");
-const reviewLine = (s) => `已完成 ${s.completedCount}/${s.totalCount} · 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`;
+const reviewLine = (s) => T(`已完成 ${s.completedCount}/${s.totalCount} · 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`, `Done ${s.completedCount}/${s.totalCount} · compared ${s.comparedCount}: estimated ${dur(s.plannedMinutes)} · actual ${dur(s.actualMinutes)} · off by ${signed(s.varianceMinutes)}`);
 // 状态栏上的计时：分:秒，过了一小时是 时:分:秒
 const elapsedText = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600); return h ? `${h}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`; };
 let hatchSeq = 0;   // 每个螺旋的斜纹图案一个号，几个视图同时开着不串
@@ -1025,7 +1028,7 @@ function focusMinutes(t, cfg) {
 // 系统对话框（osascript）：Obsidian 在后台也会弹到最前面。返回点的按钮，没回答（超时）返回 ""
 const asStr = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
 async function dialog(msg, buttons, def, wait) {
-  const script = `activate\ndisplay dialog ${asStr(msg)} with title "螺旋日程" buttons {${buttons.map(asStr).join(", ")}} default button ${asStr(def)} giving up after ${wait}`;
+  const script = `activate\ndisplay dialog ${asStr(msg)} with title ${asStr(T("螺旋日程", "Nautilus Spiral"))} buttons {${buttons.map(asStr).join(", ")}} default button ${asStr(def)} giving up after ${wait}`;
   const r = await run("/usr/bin/osascript", ["-e", script], (wait + 60) * 1000);
   if (/gave up:true/.test(r.stdout)) return "";
   return (/button returned:([^,\n]*)/.exec(r.stdout) || [])[1] || "";
@@ -1033,7 +1036,7 @@ async function dialog(msg, buttons, def, wait) {
 // 多选列表：返回勾上的那几项；点取消返回 []；没回答（半小时超时）返回 null
 async function pickList(prompt, items, ok, cancel, defaults = []) {
   const def = defaults.length ? ` default items {${defaults.map(asStr).join(", ")}}` : "";
-  const script = `activate\nset r to choose from list {${items.map(asStr).join(", ")}} with title "螺旋日程" with prompt ${asStr(prompt)}${def} OK button name ${asStr(ok)} cancel button name ${asStr(cancel)} with multiple selections allowed and empty selection allowed\nif r is false then return "__CANCEL__"\nset AppleScript's text item delimiters to linefeed\nreturn r as text`;
+  const script = `activate\nset r to choose from list {${items.map(asStr).join(", ")}} with title ${asStr(T("螺旋日程", "Nautilus Spiral"))} with prompt ${asStr(prompt)}${def} OK button name ${asStr(ok)} cancel button name ${asStr(cancel)} with multiple selections allowed and empty selection allowed\nif r is false then return "__CANCEL__"\nset AppleScript's text item delimiters to linefeed\nreturn r as text`;
   const r = await run("/usr/bin/osascript", ["-e", script], 1800e3);
   if (r.code !== 0) return null;
   const out = r.stdout.replace(/\n$/, "");
@@ -1126,8 +1129,8 @@ const NOTIFY_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>md.obsidian.nautilus-spiral.notify</string>
-<key>CFBundleName</key><string>螺旋日程</string>
-<key>CFBundleDisplayName</key><string>螺旋日程</string>
+<key>CFBundleName</key><string>${T("螺旋日程", "Nautilus Spiral")}</string>
+<key>CFBundleDisplayName</key><string>${T("螺旋日程", "Nautilus Spiral")}</string>
 <key>CFBundleExecutable</key><string>spiral-notify</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -1149,7 +1152,7 @@ function notifyTool() {
     await fs.promises.chmod(exe, 0o755);
     await fs.promises.writeFile(path.join(app, "Contents/Info.plist"), NOTIFY_PLIST);
     const r = await run("/usr/bin/codesign", ["--force", "--sign", "-", app], 60000);
-    if (r.code !== 0) { await fs.promises.rm(app, { recursive: true, force: true }); throw new Error("通知小助手签名失败：" + r.stderr.slice(0, 300)); }
+    if (r.code !== 0) { await fs.promises.rm(app, { recursive: true, force: true }); throw new Error(T("通知小助手签名失败：", "Could not sign the notification helper: ") + r.stderr.slice(0, 300)); }
     return app;
   })().catch((e) => { notifyApp = null; throw e; });
   return notifyApp;
@@ -1342,7 +1345,7 @@ function swiftTool(name, src) {
     await fs.promises.mkdir(dir, { recursive: true });
     await fs.promises.writeFile(`${bin}.swift`, src);
     const r = await run("/usr/bin/swiftc", ["-O", "-o", bin, `${bin}.swift`], 300000);
-    if (r.code !== 0 || !fs.existsSync(bin)) throw new Error("编译小助手失败（需要 Xcode 命令行工具：xcode-select --install）\n" + r.stderr.slice(0, 500));
+    if (r.code !== 0 || !fs.existsSync(bin)) throw new Error(T("编译小助手失败（需要 Xcode 命令行工具：xcode-select --install）\n", "Could not compile the helper (it needs the Xcode command line tools: xcode-select --install)\n") + r.stderr.slice(0, 500));
     return bin;
   })().catch((e) => { swiftBins.delete(name); throw e; }));
   return swiftBins.get(name);
@@ -1357,8 +1360,8 @@ class MacCalendar {
   async call(args) {
     const r = await run(await swiftTool("calendar", CAL_SWIFT), args.map(String));
     let data;
-    try { data = JSON.parse(r.stdout); } catch (e) { throw new Error(r.stderr || "日历小助手没有输出"); }
-    if (data && data.error === "denied") throw new Error("没有日历权限：到「系统设置 → 隐私与安全性 → 日历」里给 Obsidian 打开「完全访问」");
+    try { data = JSON.parse(r.stdout); } catch (e) { throw new Error(r.stderr || T("日历小助手没有输出", "The calendar helper returned nothing")); }
+    if (data && data.error === "denied") throw new Error(T("没有日历权限：到「系统设置 → 隐私与安全性 → 日历」里给 Obsidian 打开「完全访问」", "No calendar access: in System Settings → Privacy & Security → Calendars, give Obsidian Full Access"));
     if (data && data.error) throw new Error(data.error);
     return data;
   }
@@ -1388,7 +1391,7 @@ class GoogleCalendar {
 
   // 连接：开端口 → 开浏览器 → 等授权码 → 换令牌。timeout 秒内没完成就算了
   async connect(timeout = 300) {
-    if (!this.host.clientId() || !this.host.get("secret")) throw new Error("先填客户端 ID 和客户端密钥");
+    if (!this.host.clientId() || !this.host.get("secret")) throw new Error(T("先填客户端 ID 和客户端密钥", "Fill in the client ID and client secret first"));
     const crypto = require("crypto"), http = require("http");
     const b64 = (buf) => buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     const verifier = b64(crypto.randomBytes(48)), state = b64(crypto.randomBytes(16));
@@ -1398,21 +1401,21 @@ class GoogleCalendar {
     const redirect = `http://127.0.0.1:${server.address().port}`;
     try {
       const code = await new Promise((ok, bad) => {
-        const timer = setTimeout(() => bad(new Error("等了太久，没有收到授权")), timeout * 1000);
+        const timer = setTimeout(() => bad(new Error(T("等了太久，没有收到授权", "Waited too long without receiving authorization"))), timeout * 1000);
         server.on("request", (req, res) => {
           const u = new URL(req.url, redirect);
           if (!u.searchParams.has("code") && !u.searchParams.has("error")) { res.writeHead(404); res.end(); return; }
           const good = u.searchParams.get("state") === state && u.searchParams.has("code");
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(`<!doctype html><meta charset="utf-8"><title>螺旋日程</title><body style="font:16px/1.6 -apple-system,sans-serif;text-align:center;padding-top:18vh">${good ? "连上了，可以关掉这个页面，回到 Obsidian。" : "没有连上：" + (u.searchParams.get("error") || "授权信息对不上") + "。回到 Obsidian 再试一次。"}</body>`);
+          res.end(`<!doctype html><meta charset="utf-8"><title>${T("螺旋日程", "Nautilus Spiral")}</title><body style="font:16px/1.6 -apple-system,sans-serif;text-align:center;padding-top:18vh">${good ? T("连上了，可以关掉这个页面，回到 Obsidian。", "Connected. You can close this page and go back to Obsidian.") : T("没有连上：", "Not connected: ") + (u.searchParams.get("error") || T("授权信息对不上", "authorization does not match")) + T("。回到 Obsidian 再试一次。", ". Go back to Obsidian and try again.")}</body>`);
           clearTimeout(timer);
-          good ? ok(u.searchParams.get("code")) : bad(new Error(u.searchParams.get("error") === "access_denied" ? "你在浏览器里拒绝了授权" : "授权信息对不上：" + (u.searchParams.get("error") || "state 不一致")));
+          good ? ok(u.searchParams.get("code")) : bad(new Error(u.searchParams.get("error") === "access_denied" ? T("你在浏览器里拒绝了授权", "You declined authorization in the browser") : T("授权信息对不上：", "Authorization does not match: ") + (u.searchParams.get("error") || T("state 不一致", "state mismatch"))));
         });
         this.host.open(this.authUrl(redirect, challenge, state));
       });
       const r = await this.host.http({ url: "https://oauth2.googleapis.com/token", method: "POST", contentType: "application/x-www-form-urlencoded",
         body: new URLSearchParams({ client_id: this.host.clientId(), client_secret: this.host.get("secret"), code, code_verifier: verifier, grant_type: "authorization_code", redirect_uri: redirect }).toString() });
-      if (r.status !== 200 || !r.json.refresh_token) throw new Error("换令牌失败：" + ((r.json && (r.json.error_description || r.json.error)) || r.status));
+      if (r.status !== 200 || !r.json.refresh_token) throw new Error(T("换令牌失败：", "Could not exchange the token: ") + ((r.json && (r.json.error_description || r.json.error)) || r.status));
       this.host.set("refresh", r.json.refresh_token);
       this.access = { token: r.json.access_token, until: Date.now() + (r.json.expires_in - 60) * 1000 };
       this.cals = null;
@@ -1424,13 +1427,13 @@ class GoogleCalendar {
   async token() {
     if (this.access && Date.now() < this.access.until) return this.access.token;
     const refresh = this.host.get("refresh");
-    if (!refresh) throw new Error("还没连接 Google 账号");
+    if (!refresh) throw new Error(T("还没连接 Google 账号", "No Google account connected yet"));
     const r = await this.host.http({ url: "https://oauth2.googleapis.com/token", method: "POST", contentType: "application/x-www-form-urlencoded",
       body: new URLSearchParams({ client_id: this.host.clientId(), client_secret: this.host.get("secret"), refresh_token: refresh, grant_type: "refresh_token" }).toString() });
     if (r.status !== 200 || !r.json.access_token) {
       // 授权被撤销或者过期了：要重新连接
-      if (r.json && r.json.error === "invalid_grant") { this.host.set("refresh", ""); throw new Error("Google 的授权失效了，到设置里重新连接"); }
-      throw new Error("刷新 Google 令牌失败：" + ((r.json && (r.json.error_description || r.json.error)) || r.status));
+      if (r.json && r.json.error === "invalid_grant") { this.host.set("refresh", ""); throw new Error(T("Google 的授权失效了，到设置里重新连接", "Google authorization has expired; reconnect in settings")); }
+      throw new Error(T("刷新 Google 令牌失败：", "Could not refresh the Google token: ") + ((r.json && (r.json.error_description || r.json.error)) || r.status));
     }
     this.access = { token: r.json.access_token, until: Date.now() + (r.json.expires_in - 60) * 1000 };
     return this.access.token;
@@ -1438,8 +1441,8 @@ class GoogleCalendar {
 
   async api(path, params = {}) {
     const r = await this.host.http({ url: `https://www.googleapis.com/calendar/v3${path}?${new URLSearchParams(params).toString()}`, method: "GET", headers: { Authorization: "Bearer " + await this.token() } });
-    if (r.status === 401) { this.access = null; throw new Error("Google 说令牌无效，下一次会重新取"); }
-    if (r.status !== 200) throw new Error("Google 日历：" + ((r.json && r.json.error && r.json.error.message) || r.status));
+    if (r.status === 401) { this.access = null; throw new Error(T("Google 说令牌无效，下一次会重新取", "Google says the token is invalid; a new one will be fetched next time")); }
+    if (r.status !== 200) throw new Error(T("Google 日历：", "Google Calendar: ") + ((r.json && r.json.error && r.json.error.message) || r.status));
     return r.json;
   }
 
@@ -1514,8 +1517,8 @@ const codexHome = () => process.env.CODEX_HOME || require("path").join(require("
 // 这个会话是在哪开的
 const aiWhere = (x) => {
   const a = aiAgent(x), app = x.app || "";
-  if (a === "claude") return app === "cli" ? "终端" : "Claude 桌面版";   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
-  if (a === "codex") return /desktop/i.test(app) ? "Codex 桌面版" : /tui|cli|exec/i.test(app) ? "Codex 终端" : "Codex";
+  if (a === "claude") return app === "cli" ? T("终端", "Terminal") : T("Claude 桌面版", "Claude desktop");   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
+  if (a === "codex") return /desktop/i.test(app) ? T("Codex 桌面版", "Codex desktop") : /tui|cli|exec/i.test(app) ? T("Codex 终端", "Codex terminal") : "Codex";
   if (a === "dsh") return "DeepSeek Harness";
   return AI_AGENTS[a];
 };
@@ -1582,16 +1585,16 @@ function aiStep(name, input) {
   const i = input || {}, n = String(name || "");
   const base = (x) => String(x || "").split("/").pop();
   const cut = (x) => { x = String(x || "").replace(/\s+/g, " ").trim(); return x.length > 36 ? x.slice(0, 35) + "…" : x; };
-  if (/^(Bash|shell|local_shell_call|exec_command|shell_command)$/i.test(n)) return cut(i.description || (Array.isArray(i.command) ? i.command[i.command.length - 1] : i.command || i.cmd) || "跑命令");
-  if (/^(Edit|MultiEdit|NotebookEdit|apply_patch|str_replace_editor)$/i.test(n)) return cut(`改 ${base(i.file_path || i.notebook_path || i.path) || "文件"}`);
-  if (/^(Write|create_file)$/i.test(n)) return cut(`写 ${base(i.file_path || i.path)}`);
-  if (/^(Read|view)$/i.test(n)) return cut(`读 ${base(i.file_path || i.path)}`);
-  if (/^(Grep|Glob|search)$/i.test(n)) return cut(`找 ${i.pattern || i.query || ""}`);
-  if (/^(Agent|Task|subagent)$/i.test(n)) return cut(`派出去：${i.description || ""}`);
-  if (/^(WebSearch|web_search)$/i.test(n)) return cut(`搜 ${i.query || ""}`);
-  if (/^(WebFetch|web_fetch)$/i.test(n)) return "读网页";
-  if (n === "Skill") return cut(`用技能 ${i.skill || ""}`);
-  if (/^todo/i.test(n)) return "整理待办";
+  if (/^(Bash|shell|local_shell_call|exec_command|shell_command)$/i.test(n)) return cut(i.description || (Array.isArray(i.command) ? i.command[i.command.length - 1] : i.command || i.cmd) || T("跑命令", "Running a command"));
+  if (/^(Edit|MultiEdit|NotebookEdit|apply_patch|str_replace_editor)$/i.test(n)) return cut(T(`改 ${base(i.file_path || i.notebook_path || i.path) || "文件"}`, `Editing ${base(i.file_path || i.notebook_path || i.path) || "a file"}`));
+  if (/^(Write|create_file)$/i.test(n)) return cut(T(`写 ${base(i.file_path || i.path)}`, `Writing ${base(i.file_path || i.path)}`));
+  if (/^(Read|view)$/i.test(n)) return cut(T(`读 ${base(i.file_path || i.path)}`, `Reading ${base(i.file_path || i.path)}`));
+  if (/^(Grep|Glob|search)$/i.test(n)) return cut(T(`找 ${i.pattern || i.query || ""}`, `Searching ${i.pattern || i.query || ""}`));
+  if (/^(Agent|Task|subagent)$/i.test(n)) return cut(T(`派出去：${i.description || ""}`, `Delegating: ${i.description || ""}`));
+  if (/^(WebSearch|web_search)$/i.test(n)) return cut(T(`搜 ${i.query || ""}`, `Searching the web for ${i.query || ""}`));
+  if (/^(WebFetch|web_fetch)$/i.test(n)) return T("读网页", "Reading a web page");
+  if (n === "Skill") return cut(T(`用技能 ${i.skill || ""}`, `Using skill ${i.skill || ""}`));
+  if (/^todo/i.test(n)) return T("整理待办", "Updating to-dos");
   return cut(n.startsWith("mcp__") ? n.split("__").pop() : n);
 }
 // Agent 自己列的待办做到第几步：[[状态, 这一步叫什么]…] → { done, total, cur }
@@ -2360,7 +2363,7 @@ class AiSessionsModal extends OB.Modal {
     const { contentEl } = this;
     contentEl.addClass("naut-ai-modal");
     contentEl.createEl("h3", { text: this.title });
-    contentEl.createDiv({ cls: "naut-proj-note", text: "「在 Claude 里打开」用 claude://resume 在 Claude 桌面版里打开那个会话；「在终端里继续」在会话的工作目录里运行 claude --resume（Codex 的会话是 codex resume）。WorkBuddy 的会话要回它自己的窗口里找。" });
+    contentEl.createDiv({ cls: "naut-proj-note", text: T("「在 Claude 里打开」用 claude://resume 在 Claude 桌面版里打开那个会话；「在终端里继续」在会话的工作目录里运行 claude --resume（Codex 的会话是 codex resume）。WorkBuddy 的会话要回它自己的窗口里找。", "\"Open in Claude\" opens the session in the Claude desktop app via claude://resume; \"Continue in terminal\" runs claude --resume in the session's working directory (codex resume for Codex sessions). WorkBuddy sessions have to be found in WorkBuddy's own window.") });
     for (const g of this.groups) {
       if (g.name) {
         const h = contentEl.createDiv({ cls: "naut-ai-group" });
@@ -2368,12 +2371,12 @@ class AiSessionsModal extends OB.Modal {
         if (g.sub) h.createSpan({ cls: "naut-muted", text: ` · ${g.sub}` });
       }
       const rel = g.list.filter((x) => x.related), weak = g.list.filter((x) => !x.related);
-      if (!rel.length) contentEl.createDiv({ cls: "naut-proj-note", text: weak.length ? "没有看起来相关的会话（标题和你发的话里都没有任务名里的词）" : "这段时间里没有 Agent 会话" });
+      if (!rel.length) contentEl.createDiv({ cls: "naut-proj-note", text: weak.length ? T("没有看起来相关的会话（标题和你发的话里都没有任务名里的词）", "No session looks related (no word from the task name appears in a title or in what you sent)") : T("这段时间里没有 Agent 会话", "No agent sessions in this period") });
       for (const x of rel) this.session(contentEl, x);
       // 只是时间重叠的会话收起来，要看再点开
       if (weak.length) {
         const more = contentEl.createEl("details", { cls: "naut-ai-more" });
-        more.createEl("summary", { text: `同一时段的其它会话（${weak.length}）` });
+        more.createEl("summary", { text: T(`同一时段的其它会话（${weak.length}）`, `Other sessions in the same period (${weak.length})`) });
         for (const x of weak) this.session(more, x);
       }
     }
@@ -2382,28 +2385,28 @@ class AiSessionsModal extends OB.Modal {
     const agent = aiAgent(x);
     const box = parent.createDiv({ cls: `naut-ai-sess naut-by-${agent}` + (x.related ? "" : " is-weak") });
     const first = (x.text || "").split(" / ")[0];
-    box.createDiv({ cls: "naut-ai-sess-title", text: x.title || first.slice(0, 120) || "（没有标题）" });
+    box.createDiv({ cls: "naut-ai-sess-title", text: x.title || first.slice(0, 120) || T("（没有标题）", "(untitled)") });
     if (x.title && first) box.createDiv({ cls: "naut-ai-sess-text", text: first.slice(0, 200) });
     const cli = agent === "codex" || x.app === "cli";   // 默认按钮给哪个：Codex 和终端里的 Claude Code 回终端，其余回 Claude 桌面版
-    const when = x.overlap != null ? `和这件重叠 ${dur(x.overlap)}` : x.stopped ? `最后在 ${clock(x.lastAt)}` : `${clock(x.lastAt)} 还在动`;
-    box.createDiv({ cls: "naut-ai-sess-meta", text: `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 🗄 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）` });
+    const when = x.overlap != null ? T(`和这件重叠 ${dur(x.overlap)}`, `Overlaps this task by ${dur(x.overlap)}`) : x.stopped ? T(`最后在 ${clock(x.lastAt)}`, `Last active ${clock(x.lastAt)}`) : T(`${clock(x.lastAt)} 还在动`, `Still active at ${clock(x.lastAt)}`);
+    box.createDiv({ cls: "naut-ai-sess-meta", text: T(`${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 🗄 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）`, `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · ${dur(x.min)} in this session that day · used 🗄 ${fmtTok(tokUsed(x))} tok (output ${fmtTok(x.out)}${x.fresh != null ? ` · input ${fmtTok(x.fresh)}` : ""})`) });
     if (agent === "dsh") {
       // DSH 目前只有 dsh://open（打开客户端），不能定位到某个会话，所以另给一个复制会话号
       const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
-      bar.createEl("button", { cls: "mod-cta", text: "打开 DeepSeek Harness" }).onclick = () => { require("child_process").execFile("/usr/bin/open", ["dsh://open"], () => {}); this.close(); };
-      bar.createEl("button", { text: "复制会话号" }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice("已复制：" + x.sid); };
+      bar.createEl("button", { cls: "mod-cta", text: T("打开 DeepSeek Harness", "Open DeepSeek Harness") }).onclick = () => { require("child_process").execFile("/usr/bin/open", ["dsh://open"], () => {}); this.close(); };
+      bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
       return;
     }
     if (agent === "workbuddy") return;
     const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
     const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
     if (agent === "claude") {
-      const desk = bar.createEl("button", { cls: cli ? "" : "mod-cta", text: "在 Claude 里打开" });
+      const desk = bar.createEl("button", { cls: cli ? "" : "mod-cta", text: T("在 Claude 里打开", "Open in Claude") });
       desk.onclick = () => { require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${x.sid}`], () => {}); this.close(); };
     }
-    const term = bar.createEl("button", { cls: cli ? "mod-cta" : "", text: "在终端里继续" });
+    const term = bar.createEl("button", { cls: cli ? "mod-cta" : "", text: T("在终端里继续", "Continue in terminal") });
     term.onclick = () => { run("/usr/bin/osascript", ["-e", `tell application "Terminal"\nactivate\ndo script ${asStr(cmd)}\nend tell`]); this.close(); };
-    bar.createEl("button", { text: "复制命令" }).onclick = async () => { await navigator.clipboard.writeText(cmd); new OB.Notice("已复制：" + cmd); };
+    bar.createEl("button", { text: T("复制命令", "Copy command") }).onclick = async () => { await navigator.clipboard.writeText(cmd); new OB.Notice(T("已复制：", "Copied: ") + cmd); };
   }
   onClose() { this.contentEl.empty(); }
 }
@@ -2425,24 +2428,24 @@ class StatusModal extends OB.Modal {
     const head = rise(contentEl.createDiv({ cls: "naut-st-head" }));
     this.clockEl = head.createDiv({ cls: "naut-st-clock", text: moment().format("HH:mm") });
     const hr = head.createDiv({ cls: "naut-st-headright" });
-    hr.createDiv({ cls: "naut-st-date", text: d.date.format("M月D日 dddd") });
+    hr.createDiv({ cls: "naut-st-date", text: d.date.format(T("M月D日 dddd", "dddd, MMM D")) });
     const frac = Math.max(0, Math.min(1, (d.now - d.S) / (d.E - d.S)));
-    hr.createDiv({ cls: "naut-st-sub", text: `${clock(d.S)} → ${d.E >= 1440 ? "次日 " : ""}${clock(d.E)} · 已过 ${Math.round(frac * 100)}%` });
+    hr.createDiv({ cls: "naut-st-sub", text: T(`${clock(d.S)} → ${d.E >= 1440 ? "次日 " : ""}${clock(d.E)} · 已过 ${Math.round(frac * 100)}%`, `${clock(d.S)} → ${d.E >= 1440 ? "next day " : ""}${clock(d.E)} · ${Math.round(frac * 100)}% gone`) });
     const day = rise(contentEl.createDiv({ cls: "naut-st-day" }));
     day.createDiv({ cls: "naut-st-day-fill", attr: { style: `width:${(frac * 100).toFixed(1)}%` } });
     day.createDiv({ cls: "naut-st-day-now", attr: { style: `left:${(frac * 100).toFixed(1)}%` } });
 
     if (!d.file) {
-      rise(contentEl.createDiv({ cls: "naut-st-empty", text: `今天（${d.dayKey}）还没有日记` }));
+      rise(contentEl.createDiv({ cls: "naut-st-empty", text: T(`今天（${d.dayKey}）还没有日记`, `No daily note for today (${d.dayKey}) yet`) }));
     } else {
       // 容量：三块数字 + 一行预算
       const C = d.C;
       const tiles = rise(contentEl.createDiv({ cls: "naut-st-tiles" }));
       const tile = (label, value, tone, tip) => { const t = tiles.createDiv({ cls: `naut-st-tile is-${tone}`, attr: tip ? { "aria-label": tip } : {} }); t.createDiv({ cls: "naut-st-tile-v", text: value }); t.createDiv({ cls: "naut-st-tile-l", text: label }); };
-      tile("已计划", dur(C.demand), "neutral", "没做完的待办一共还要多久");
-      tile(C.status.label, dur(C.status.value), C.status.key === "remaining" ? (C.free > 0 ? "positive" : "neutral") : "warning", C.status.key === "overload" ? "已计划的比可安排的时间多出这么多" : C.status.key === "fragmented" ? "总时间够，但没有一段连续的空档放得下" : "排完已计划的以后还空着这么多");
-      tile("剩余", `${C.left}%`, C.tone, "余量 ÷ 全天可安排的时间");
-      rise(contentEl.createDiv({ cls: "naut-st-budget", text: `${C.burning === "available" ? "🔥 " : ""}可安排 ${dur(C.available)} / ${dur(C.totalAvailable)} · ${C.burning === "events" ? "🔥 " : ""}事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}` }));
+      tile(T("已计划", "Planned"), dur(C.demand), "neutral", T("没做完的待办一共还要多久", "Time still needed for unfinished to-dos"));
+      tile(C.status.label, dur(C.status.value), C.status.key === "remaining" ? (C.free > 0 ? "positive" : "neutral") : "warning", C.status.key === "overload" ? T("已计划的比可安排的时间多出这么多", "How far planned work exceeds the time you can schedule") : C.status.key === "fragmented" ? T("总时间够，但没有一段连续的空档放得下", "Enough time in total, but no single free gap is long enough") : T("排完已计划的以后还空着这么多", "Time still free after everything planned is placed"));
+      tile(T("剩余", "Free"), `${C.left}%`, C.tone, T("余量 ÷ 全天可安排的时间", "Spare ÷ schedulable time for the whole day"));
+      rise(contentEl.createDiv({ cls: "naut-st-budget", text: T(`${C.burning === "available" ? "🔥 " : ""}可安排 ${dur(C.available)} / ${dur(C.totalAvailable)} · ${C.burning === "events" ? "🔥 " : ""}事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}`, `${C.burning === "available" ? "🔥 " : ""}Schedulable ${dur(C.available)} / ${dur(C.totalAvailable)} · ${C.burning === "events" ? "🔥 " : ""}Events ${dur(C.fixed)} / ${dur(C.totalFixed)}`) }));
 
       // 在做的
       const sec = (title, n) => rise(contentEl.createDiv({ cls: "naut-st-sec" })).createSpan({ text: n != null ? `${title} ${n}` : title });
@@ -2455,43 +2458,43 @@ class StatusModal extends OB.Modal {
         return rt;
       };
       this.timers = [];
-      if (d.session || d.brk || d.doing.length) sec("在做", d.doing.length || null);
+      if (d.session || d.brk || d.doing.length) sec(T("在做", "Doing"), d.doing.length || null);
       if (d.session) for (const t of d.session.tasks) {
-        const el = row("is-focus", "⏱", `专注 · ${short(t.label)}`, "", null);
-        this.timers.push(() => el.setText(Date.now() < t.end ? `还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}` : "到点了"));
+        const el = row("is-focus", "⏱", T(`专注 · ${short(t.label)}`, `Focus · ${short(t.label)}`), "", null);
+        this.timers.push(() => el.setText(Date.now() < t.end ? T(`还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}`, `${dur(Math.ceil((t.end - Date.now()) / 60e3))} left`) : T("到点了", "Time's up")));
       }
-      if (d.brk) row("is-break", breakIcon(d.brk.word), `${d.brk.word}中 · ${moment(d.brk.since).format("HH:mm")} 起`, dur(Math.max(1, Math.round((Date.now() - d.brk.since) / 60e3))), null);
+      if (d.brk) row("is-break", breakIcon(d.brk.word), T(`${d.brk.word}中 · ${moment(d.brk.since).format("HH:mm")} 起`, `${d.brk.word} · since ${moment(d.brk.since).format("HH:mm")}`), dur(Math.max(1, Math.round((Date.now() - d.brk.since) / 60e3))), null);
       for (const x of d.doing) {
         const el = row("is-doing" + (x.auto ? " is-auto" : ""), "", short(x.item.label), "", x.item);
         if (x.since) this.timers.push(() => el.setText(elapsedText(Date.now() - x.since)));
-        else el.setText(x.spent >= 1 ? `已做 ${dur(x.spent)}` : "进行中");
+        else el.setText(x.spent >= 1 ? T(`已做 ${dur(x.spent)}`, `${dur(x.spent)} done`) : T("进行中", "In progress"));
       }
 
       // 接下来（固定事件和排进去的待办，按时间）
       const upcoming = [...d.events.map((e) => ({ at: Math.max(e.start, d.now), kind: "event", item: e, right: `${clock(e.start)}–${clock(e.end)}` })),
-        ...d.next.map((t) => ({ at: t.segments[t.workedN][0], kind: t.prio ? "prio" : "task", item: t, right: t.remaining < t.dur - 1 ? `剩 ${dur(t.remaining)}` : dur(t.dur) }))].sort((a, b) => a.at - b.at).slice(0, 6);
-      if (upcoming.length) sec("接下来");
-      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? "进行中" : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item);
-      if (d.over.length) row("is-over", "—", `排不下 ${d.over.length} 件：${d.over.slice(0, 3).map((t) => short(t.label)).join("、")}${d.over.length > 3 ? "…" : ""}`, "", d.over[0]);
-      if (d.suspended.length) row("is-paused", "💤", `搁置 ${d.suspended.length} 件：${d.suspended.slice(0, 3).map((t) => short(t.label)).join("、")}${d.suspended.length > 3 ? "…" : ""}`, "", d.suspended[0]);
-      if (!d.doing.length && !d.session && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: "今天没有排着的事了" }));
+        ...d.next.map((t) => ({ at: t.segments[t.workedN][0], kind: t.prio ? "prio" : "task", item: t, right: t.remaining < t.dur - 1 ? T(`剩 ${dur(t.remaining)}`, `${dur(t.remaining)} left`) : dur(t.dur) }))].sort((a, b) => a.at - b.at).slice(0, 6);
+      if (upcoming.length) sec(T("接下来", "Up next"));
+      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? T("进行中", "Now") : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item);
+      if (d.over.length) row("is-over", "—", T(`排不下 ${d.over.length} 件：${d.over.slice(0, 3).map((t) => short(t.label)).join("、")}${d.over.length > 3 ? "…" : ""}`, `${d.over.length} won't fit: ${d.over.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.over.length > 3 ? "…" : ""}`), "", d.over[0]);
+      if (d.suspended.length) row("is-paused", "💤", T(`搁置 ${d.suspended.length} 件：${d.suspended.slice(0, 3).map((t) => short(t.label)).join("、")}${d.suspended.length > 3 ? "…" : ""}`, `${d.suspended.length} parked: ${d.suspended.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.suspended.length > 3 ? "…" : ""}`), "", d.suspended[0]);
+      if (!d.doing.length && !d.session && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: T("今天没有排着的事了", "Nothing else scheduled today") }));
 
       // 今天的成绩
-      sec("今天");
+      sec(T("今天", "Today"));
       const chips = rise(contentEl.createDiv({ cls: "naut-st-chips" }));
       const chip = (text, cls = "") => chips.createSpan({ cls: `naut-st-chip ${cls}`, text });
-      chip(`✅ 做完 ${d.done} · 还有 ${d.open}`);
-      if (d.review && d.review.comparedCount) chip(`📋 偏差 ${signed(d.review.varianceMinutes)}`, d.review.varianceMinutes > 0 ? "is-over" : "");
-      if (d.ai) { const c = chip(""); for (const k of Object.keys(AI_AGENTS)) if (d.ai.by && d.ai.by[k] && d.ai.by[k].wall) c.createSpan({ cls: `naut-sw naut-bg-${k}` }); c.appendText(`🤖 协作 ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`); }
+      chip(T(`✅ 做完 ${d.done} · 还有 ${d.open}`, `✅ ${d.done} done · ${d.open} open`));
+      if (d.review && d.review.comparedCount) chip(T(`📋 偏差 ${signed(d.review.varianceMinutes)}`, `📋 Off by ${signed(d.review.varianceMinutes)}`), d.review.varianceMinutes > 0 ? "is-over" : "");
+      if (d.ai) { const c = chip(""); for (const k of Object.keys(AI_AGENTS)) if (d.ai.by && d.ai.by[k] && d.ai.by[k].wall) c.createSpan({ cls: `naut-sw naut-bg-${k}` }); c.appendText(T(`🤖 协作 ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`, `🤖 Agents ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`)); }
       if (d.games) chip(`🎮 ${dur(d.games)}`);
     }
 
     // 这会儿最可能要按的
     const bar = rise(contentEl.createDiv({ cls: "naut-st-btns" }));
     const btn = (text, key, fn, cta) => { const b = bar.createEl("button", { cls: cta ? "mod-cta" : "", text }); if (key) b.createSpan({ cls: "naut-kbd", text: key }); b.onclick = () => { plugin.sound("tick"); this.close(); fn(); }; };
-    if (d.file && d.next.length && !d.doing.length) btn("▶ 开始下一件", plugin.hotkeyText("start-next"), () => plugin.startNext(), true);
-    btn("打开螺旋", plugin.hotkeyText("open"), () => plugin.activate(), !(d.file && d.next.length && !d.doing.length));
-    btn("Agent 会话", plugin.hotkeyText("doing-ai"), () => plugin.showDoingAi());
+    if (d.file && d.next.length && !d.doing.length) btn(T("▶ 开始下一件", "▶ Start next"), plugin.hotkeyText("start-next"), () => plugin.startNext(), true);
+    btn(T("打开螺旋", "Open spiral"), plugin.hotkeyText("open"), () => plugin.activate(), !(d.file && d.next.length && !d.doing.length));
+    btn(T("Agent 会话", "Agent sessions"), plugin.hotkeyText("doing-ai"), () => plugin.showDoingAi());
 
     const tick = () => { this.clockEl.setText(moment().format("HH:mm")); for (const f of this.timers || []) f(); };
     tick();
@@ -2521,28 +2524,28 @@ class BoundsModal extends OB.Modal {
     const S = cfg.dayStart * 60, E = cfg.dayEnd * 60;
     const isToday = this.date.isSame(this.plugin.today(), "day");
     contentEl.addClass("naut-bounds-modal");
-    contentEl.createEl("h3", { text: `${this.date.format("M月D日 ddd")} · 起床和收工` });
+    contentEl.createEl("h3", { text: T(`${this.date.format("M月D日 ddd")} · 起床和收工`, `${this.date.format("ddd, MMM D")} · Start and end of day`) });
     const inputs = {};
     const row = (kind, name, def) => {
       const r = contentEl.createDiv({ cls: "naut-bounds-row" });
       r.createSpan({ cls: "naut-bounds-name", text: name });
-      const inp = r.createEl("input", { type: "text", placeholder: kind === "end" ? "还没收工就空着" : `默认 ${clock(def)}` });
+      const inp = r.createEl("input", { type: "text", placeholder: kind === "end" ? T("还没收工就空着", "Leave empty until you stop for the day") : T(`默认 ${clock(def)}`, `Default ${clock(def)}`) });
       inp.value = b[kind] != null ? clock(b[kind]) : "";
       inputs[kind] = inp;
-      if (isToday) r.createEl("button", { text: "现在" }).onclick = () => { inp.value = moment().format("HH:mm"); inp.focus(); };
-      r.createEl("button", { text: "默认" }).onclick = () => { inp.value = ""; inp.focus(); };
+      if (isToday) r.createEl("button", { text: T("现在", "Now") }).onclick = () => { inp.value = moment().format("HH:mm"); inp.focus(); };
+      r.createEl("button", { text: T("默认", "Default") }).onclick = () => { inp.value = ""; inp.focus(); };
       inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.isComposing) { ev.preventDefault(); save(); } });
     };
-    row("start", "☀️ 起床", S);
-    row("end", "🌙 收工", E);
-    contentEl.createDiv({ cls: "naut-proj-note", text: "两项都可以空着：只填起床也行，收工等真收工了再填（或者 Telegram 发「睡了」）。空着就按原来的默认算。写法：10:30、1030、10点半；凌晨收工写 2:30，算到当天夜里。" });
+    row("start", T("☀️ 起床", "☀️ Start"), S);
+    row("end", T("🌙 收工", "🌙 End"), E);
+    contentEl.createDiv({ cls: "naut-proj-note", text: T("两项都可以空着：只填起床也行，收工等真收工了再填（或者 Telegram 发「睡了」）。空着就按原来的默认算。写法：10:30、1030、10点半；凌晨收工写 2:30，算到当天夜里。", "Both can be left empty: fill in the start now and the end once you actually stop. Empty means the default. Write 10:30 or 1030; if you stop after midnight, write 2:30 and it counts toward that same night.") });
     const err = contentEl.createDiv({ cls: "naut-bounds-err" });
     const bar = contentEl.createDiv({ cls: "naut-ai-sess-btns" });
     const read = (kind) => {
       const v = inputs[kind].value;
       if (!v.trim()) return { t: null };
       const p = parseClockInput(v);
-      if (p == null) return { bad: `看不懂「${v.trim()}」，写成 10:30 或 10点半` };
+      if (p == null) return { bad: T(`看不懂「${v.trim()}」，写成 10:30 或 10点半`, `Can't read "${v.trim()}"; write it as 10:30 or 1030`) };
       // 起床照写的算，比螺旋起点还早就按起点记（和 Telegram「起了」一样）；收工凌晨的算到当天夜里（写 26:30 也行）
       const t = kind === "end" && p < 1440 ? normalize(p, cfg) : p;
       return { t: Math.max(S, Math.min(E, t)), clamped: t < S || t > E };
@@ -2551,7 +2554,7 @@ class BoundsModal extends OB.Modal {
       const st = read("start"), en = read("end");
       if (st.bad || en.bad) { err.setText(st.bad || en.bad); return; }
       const s1 = st.t ?? S, e1 = en.t ?? E;
-      if (e1 - s1 < 30) { err.setText(`收工 ${clock(e1)} 得比起床 ${clock(s1)} 晚至少半小时`); return; }
+      if (e1 - s1 < 30) { err.setText(T(`收工 ${clock(e1)} 得比起床 ${clock(s1)} 晚至少半小时`, `End ${clock(e1)} must be at least half an hour after start ${clock(s1)}`)); return; }
       const all = (cfg.dayBounds ||= {});
       const nb = {};
       if (st.t != null) nb.start = st.t;
@@ -2559,12 +2562,12 @@ class BoundsModal extends OB.Modal {
       if (Object.keys(nb).length) all[dayKey] = nb; else delete all[dayKey];
       await this.plugin.saveData(cfg);
       this.plugin.refresh();
-      const note = [st, en].some((x) => x.clamped) ? `（超出螺旋 ${clock(S)}–${clock(E)} 的部分按边上算）` : "";
+      const note = [st, en].some((x) => x.clamped) ? T(`（超出螺旋 ${clock(S)}–${clock(E)} 的部分按边上算）`, ` (anything outside the spiral's ${clock(S)}–${clock(E)} is clamped to its edge)`) : "";
       new OB.Notice(`${this.date.format("M/D")} ☀️ ${clock(s1)} → 🌙 ${clock(e1)}${note}`);
       this.close();
     };
-    bar.createEl("button", { cls: "mod-cta", text: "保存" }).onclick = save;
-    bar.createEl("button", { text: "取消" }).onclick = () => this.close();
+    bar.createEl("button", { cls: "mod-cta", text: T("保存", "Save") }).onclick = save;
+    bar.createEl("button", { text: T("取消", "Cancel") }).onclick = () => this.close();
     setTimeout(() => inputs.start.focus(), 0);
   }
   onClose() { this.contentEl.empty(); }
@@ -2579,12 +2582,12 @@ class GoalModal extends OB.Modal {
   onOpen() {
     const { contentEl } = this;
     this.modalEl.addClass("naut-focus-modal", "naut-goal-modal");
-    contentEl.createDiv({ cls: "naut-fm-title", text: "🎯 先定目标" });
-    contentEl.createDiv({ cls: "naut-fm-sub", text: `主线「${this.label}」做到什么程度算完成？写一句能验收的话，开始以后就照着它做。` });
-    const input = contentEl.createEl("textarea", { cls: "naut-goal-input", attr: { rows: "3", placeholder: "比如：简历 PDF 投出 3 份，项目页的二维码能扫开" } });
+    contentEl.createDiv({ cls: "naut-fm-title", text: T("🎯 先定目标", "🎯 Set a goal first") });
+    contentEl.createDiv({ cls: "naut-fm-sub", text: T(`主线「${this.label}」做到什么程度算完成？写一句能验收的话，开始以后就照着它做。`, `When is the mainline task "${this.label}" done? Write one sentence you can check against, and work toward it once you start.`) });
+    const input = contentEl.createEl("textarea", { cls: "naut-goal-input", attr: { rows: "3", placeholder: T("比如：简历 PDF 投出 3 份，项目页的二维码能扫开", "e.g. Resume PDF sent to 3 companies; the QR code on the project page scans") } });
     const bar = contentEl.createDiv({ cls: "naut-goal-btns" });
-    const later = bar.createEl("button", { text: "先不开始" });
-    const ok = bar.createEl("button", { cls: "mod-cta", text: "定下来，开始" });
+    const later = bar.createEl("button", { text: T("先不开始", "Not yet") });
+    const ok = bar.createEl("button", { cls: "mod-cta", text: T("定下来，开始", "Set it and start") });
     const go = () => {
       const t = input.value.replace(/\s+/g, " ").trim();
       if (!t) { input.addClass("naut-bad-input"); input.focus(); return; }
@@ -2616,10 +2619,10 @@ class FocusModal extends OB.Modal {
     const dirs = plugin.dirs();
     let cur = Math.max(0, dirs.findIndex((d) => d.name === cfg.lastDir));
     let mins = DIR_MINS.includes(cfg.lastDirMinutes) ? cfg.lastDirMinutes : DIR_MINS[0];
-    contentEl.createDiv({ cls: "naut-fm-title", text: "开一轮专注" });
+    contentEl.createDiv({ cls: "naut-fm-title", text: T("开一轮专注", "Start a focus round") });
     contentEl.createDiv({ cls: "naut-fm-sub", text: this.why.app
-      ? `你在「${this.why.app}」待了 ${dur(Math.max(1, Math.round((this.why.stay || 0) / 60)))}。选一个方向，回来干活：`
-      : "选这一轮的大方向就行。具体做了哪几件不用勾，Agent 会话会自动记进日记、算进用时。" });
+      ? T(`你在「${this.why.app}」待了 ${dur(Math.max(1, Math.round((this.why.stay || 0) / 60)))}。选一个方向，回来干活：`, `You've been in ${this.why.app} for ${dur(Math.max(1, Math.round((this.why.stay || 0) / 60)))}. Pick a direction and get back to work:`)
+      : T("选这一轮的大方向就行。具体做了哪几件不用勾，Agent 会话会自动记进日记、算进用时。", "Just pick the broad direction for this round. No need to tick off what you did; agent sessions are logged into the daily note and counted automatically.") });
     const grid = contentEl.createDiv({ cls: "naut-fm-grid" });
     const cards = dirs.map((d, i) => {
       const card = grid.createDiv({ cls: "naut-fm-card", attr: { style: `--c:${DIR_COLORS[i % DIR_COLORS.length]};--naut-i:${i}` } });
@@ -2632,18 +2635,18 @@ class FocusModal extends OB.Modal {
     });
     const chips = contentEl.createDiv({ cls: "naut-fm-chips" });
     const chipEls = DIR_MINS.map((m) => {
-      const c = chips.createEl("button", { cls: "naut-fm-chip", text: `${m} 分钟` });
+      const c = chips.createEl("button", { cls: "naut-fm-chip", text: T(`${m} 分钟`, `${m} min`) });
       c.onclick = () => { mins = m; paint(); };
       return c;
     });
     const bar = contentEl.createDiv({ cls: "naut-fm-bar" });
-    bar.createEl("button", { cls: "naut-fm-no", text: "不用了" }).onclick = () => this.close();
+    bar.createEl("button", { cls: "naut-fm-no", text: T("不用了", "No thanks") }).onclick = () => this.close();
     const ok = bar.createEl("button", { cls: "naut-fm-go" });
     const paint = () => {
       cards.forEach((c, i) => c.toggleClass("is-on", i === cur));
       chipEls.forEach((c, i) => c.toggleClass("is-on", DIR_MINS[i] === mins));
       this.modalEl.style.setProperty("--c", DIR_COLORS[cur % DIR_COLORS.length]);
-      ok.setText(`▶ ${dirs[cur].name} · ${mins} 分钟`);
+      ok.setText(T(`▶ ${dirs[cur].name} · ${mins} 分钟`, `▶ ${dirs[cur].name} · ${mins} min`));
     };
     const go = () => { this.pick = { dir: dirs[cur], minutes: mins }; this.close(); };
     ok.onclick = go;
@@ -2667,13 +2670,13 @@ class BindModal extends OB.FuzzySuggestModal {
   constructor(app, list, today, current, done) {
     super(app);
     this.list = list; this.today = today; this.current = current; this.done = done;
-    this.setPlaceholder("绑到哪个会话…（搜标题、你发的第一句话、目录）");
+    this.setPlaceholder(T("绑到哪个会话…（搜标题、你发的第一句话、目录）", "Bind to which session… (search titles, your first message, folders)"));
   }
   getItems() { return this.list; }
   getItemText(x) {
     const first = (x.text || "").split(" / ")[0];
     const when = x.day === this.today ? clock(x.segs[x.segs.length - 1][1]) : x.day.replace(/\D+/g, "-").slice(5);
-    return `${x.sid === this.current ? "🔗 " : ""}${x.title || first.slice(0, 40) || "（没有标题）"}　${aiWhere(x)} · ${x.dir} · ${when} · ${fmtTok(tokUsed(x))} tok`;
+    return T(`${x.sid === this.current ? "🔗 " : ""}${x.title || first.slice(0, 40) || "（没有标题）"}　${aiWhere(x)} · ${x.dir} · ${when} · ${fmtTok(tokUsed(x))} tok`, `${x.sid === this.current ? "🔗 " : ""}${x.title || first.slice(0, 40) || "(untitled)"}  ${aiWhere(x)} · ${x.dir} · ${when} · ${fmtTok(tokUsed(x))} tok`);
   }
   onChooseItem(x) { this.done(x); }
 }
@@ -2682,7 +2685,7 @@ class QuickPanel extends OB.FuzzySuggestModal {
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
-    this.setPlaceholder("螺旋日程：要做什么？");
+    this.setPlaceholder(T("螺旋日程：要做什么？", "Nautilus Spiral: what to do?"));
     this.view = app.workspace.getActiveViewOfType(OB.MarkdownView);   // 打开面板前所在的编辑器（开始光标所在的任务要用）
   }
   getItems() { return this.plugin.actions().filter((a) => !a.hidden && (!a.when || a.when()) && (!a.editor || this.view)); }
@@ -2705,7 +2708,7 @@ class SpiralView extends ItemView {
     this.offset = 0;   // 相对今天偏移几天；0 = 跟着今天走
   }
   getViewType() { return VIEW_TYPE; }
-  getDisplayText() { return "螺旋日程"; }
+  getDisplayText() { return T("螺旋日程", "Nautilus Spiral"); }
   getIcon() { return "orbit"; }
 
   async onOpen() {
@@ -2765,9 +2768,9 @@ class SpiralView extends ItemView {
 
     const head = root.createDiv({ cls: "naut-head" });
     const prev = head.createEl("button", { text: "‹" });
-    head.createSpan({ cls: "naut-date", text: date.format("M月D日 ddd") });
+    head.createSpan({ cls: "naut-date", text: date.format(T("M月D日 ddd", "ddd, MMM D")) });
     const next = head.createEl("button", { text: "›" });
-    const today = head.createEl("button", { text: "今天" });
+    const today = head.createEl("button", { text: T("今天", "Today") });
     prev.onclick = () => this.go(this.offset - 1);
     next.onclick = () => this.go(this.offset + 1);
     today.onclick = () => this.go(0);
@@ -2777,17 +2780,17 @@ class SpiralView extends ItemView {
       const b = (cfg.dayBounds || {})[date.format(cfg.format)] || {};
       const set = b.start != null || b.end != null;
       const btn = head.createEl("button", { cls: "naut-bounds-btn" + (set ? " is-set" : ""), text: `☀️${b.start != null ? clock(b.start) : "--:--"}–🌙${b.end != null ? clock(b.end) : "--:--"}`,
-        attr: { "aria-label": set ? "这天实际的起床 / 收工，点一下改" : "还没设起床 / 收工（现在是默认），点一下填" } });
+        attr: { "aria-label": set ? T("这天实际的起床 / 收工，点一下改", "Actual start / end of this day; click to change") : T("还没设起床 / 收工（现在是默认），点一下填", "No start / end set for this day (using the defaults); click to fill in") } });
       btn.onclick = () => new BoundsModal(this.app, this.plugin, date).open();
     }
 
     if (!(file instanceof TFile)) {
-      root.createDiv({ cls: "naut-empty", text: `还没有 ${this.path()}` });
+      root.createDiv({ cls: "naut-empty", text: T(`还没有 ${this.path()}`, `${this.path()} doesn't exist yet`) });
       return;
     }
     const content = await this.app.vault.cachedRead(file);
     {
-      const pb = head.createEl("button", { cls: "naut-playback", attr: { "aria-label": "回放一整天（只是重画，不改日记）" } });
+      const pb = head.createEl("button", { cls: "naut-playback", attr: { "aria-label": T("回放一整天（只是重画，不改日记）", "Play back the whole day (just redraws; the note is not changed)") } });
       if (OB.setIcon) OB.setIcon(pb, "play"); else pb.setText("⏵");
       pb.disabled = this._play != null;
       pb.onclick = () => this.play();
@@ -2864,53 +2867,53 @@ class SpiralView extends ItemView {
 
     // 📋 这一天的细账，放在悬停提示里
     const notes = [
-      `可安排 ${dur(C.available)} / ${dur(C.totalAvailable)}：从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间`,
-      `事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}：还没过去的事件时间 / 全天的事件时间（重叠的只算一次）`,
-      C.status.key === "overload" ? "超载：已计划的比可安排的时间多出这么多" : C.status.key === "fragmented" ? "空档不足：总时间够，但没有一段连续的空档放得下，这么多分钟没排进去" : "余量：排完已计划的以后还空着这么多",
-      "剩余：余量 ÷ 全天可安排的时间",
+      T(`可安排 ${dur(C.available)} / ${dur(C.totalAvailable)}：从现在到收工还能安排的时间 / 全天扣掉事件以后能安排的时间`, `Schedulable ${dur(C.available)} / ${dur(C.totalAvailable)}: time you can still schedule from now until the end of day / schedulable time for the whole day after events`),
+      T(`事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}：还没过去的事件时间 / 全天的事件时间（重叠的只算一次）`, `Events ${dur(C.fixed)} / ${dur(C.totalFixed)}: event time not yet past / event time for the whole day (overlaps count once)`),
+      C.status.key === "overload" ? T("超载：已计划的比可安排的时间多出这么多", "Overload: how far planned work exceeds the time you can schedule") : C.status.key === "fragmented" ? T("空档不足：总时间够，但没有一段连续的空档放得下，这么多分钟没排进去", "No gap fits: enough time in total, but no single free gap is long enough; this many minutes could not be placed") : T("余量：排完已计划的以后还空着这么多", "Spare: time still free after everything planned is placed"),
+      T("剩余：余量 ÷ 全天可安排的时间", "Free: spare ÷ schedulable time for the whole day"),
     ];
-    if (C.burning) notes.push(C.burning === "available" ? "🔥 可安排的时间正在流逝" : "🔥 事件时间正在流逝");
+    if (C.burning) notes.push(C.burning === "available" ? T("🔥 可安排的时间正在流逝", "🔥 Schedulable time is slipping away") : T("🔥 事件时间正在流逝", "🔥 Event time is slipping away"));
     // 按以往预估的准头校准一下：近 30 天整体多用 / 少用了多少
     const rv = cfg.showReview !== false && dayRel >= 0 ? this.plugin.reviewData() : null;
-    if (rv && rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15 && plan.demand >= 15) notes.push(`按以往约 ${dur(plan.demand * rv.ratio)}：近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍`);
+    if (rv && rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15 && plan.demand >= 15) notes.push(T(`按以往约 ${dur(plan.demand * rv.ratio)}：近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍`, `About ${dur(plan.demand * rv.ratio)} going by your history: over the last ${rv.days} days, ${rv.n} finished tasks took ${rv.ratio.toFixed(2)}× their estimates`));
     // 🃏 复习卡片（第二大脑的每日回顾记进日记的，每张按「复习用时」秒算）
     const reviews = items.filter(isReview);
-    if (reviews.length) notes.push(`🃏 复习 ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} 张 · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))}（螺旋上的青色段）`);
+    if (reviews.length) notes.push(T(`🃏 复习 ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} 张 · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))}（螺旋上的青色段）`, `🃏 Review ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} cards · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))} (the cyan segments on the spiral)`));
     // 🎮 游戏时间（插件每分钟看一眼在不在玩，记在 game-log.json）
     if (games.length) {
       const by = {};
       for (const [a, b, n] of games) by[n] = (by[n] || 0) + b - a;
-      notes.push(`🎮 游戏 ${dur(unionMin(games))}` + (Object.keys(by).length > 1 || !by.Steam ? "：" + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([n, m]) => `${n} ${dur(m)}`).join(" · ") : "") + "（螺旋内圈的细线）");
+      notes.push(T(`🎮 游戏 ${dur(unionMin(games))}`, `🎮 Gaming ${dur(unionMin(games))}`) + (Object.keys(by).length > 1 || !by.Steam ? T("：", ": ") + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([n, m]) => `${n} ${dur(m)}`).join(" · ") : "") + T("（螺旋内圈的细线）", " (thin lines on the inner rings)"));
     }
     if (cfg.showUnrecorded !== false && upto - S1 >= 10) {
       const past = upto - S1, len = (segs) => segs.reduce((k, [a, b]) => k + b - a, 0);
       const none = len(gaps), byMe = past - len(pastGaps(S1, E1, upto, mine));
-      notes.push(`📝 已过去 ${dur(past)} · 有记录 ${dur(past - none)}（${Math.round((past - none) / past * 100)}%）· 没记录 ${dur(none)}：你记的 ${dur(byMe)}，只有机器记的 ${dur(past - none - byMe)}；没记录的画成斜纹`);
+      notes.push(T(`📝 已过去 ${dur(past)} · 有记录 ${dur(past - none)}（${Math.round((past - none) / past * 100)}%）· 没记录 ${dur(none)}：你记的 ${dur(byMe)}，只有机器记的 ${dur(past - none - byMe)}；没记录的画成斜纹`, `📝 ${dur(past)} gone · ${dur(past - none)} recorded (${Math.round((past - none) / past * 100)}%) · ${dur(none)} unrecorded: ${dur(byMe)} by you, ${dur(past - none - byMe)} only by the machine; unrecorded time is hatched`));
     }
     const plan1 = row("naut-cap-plan", C.burning === "available" ? "🔥" : "📋", notes.join("\n"), C.burning === "available" ? "naut-burn" : "");
-    plan1.createSpan({ text: `已计划 ${dur(C.demand)} · ` });
+    plan1.createSpan({ text: T(`已计划 ${dur(C.demand)} · `, `Planned ${dur(C.demand)} · `) });
     plan1.createSpan({ cls: C.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text", text: `${C.status.label} ${dur(C.status.value)}` });
-    plan1.createSpan({ cls: `naut-left is-${C.tone}`, text: ` · 剩余 ${C.left}%` });
+    plan1.createSpan({ cls: `naut-left is-${C.tone}`, text: T(` · 剩余 ${C.left}%`, ` · ${C.left}% free`) });
 
     // 🎯 主线：做到第几件、下一件是什么；悬停看每一块和近 7 天的完成率；点一下跳到下一件。今天还没定主线的，直说
     if (cfg.showMain !== false && (M.blocks.length || dayRel >= 0)) {
       const nx = mainNext(M), hist = this.plugin.mainHistory(date);
       const tip = [
-        `主线：块里带 [#A]（简写 todo a）的任务，一天最多 ${MAIN_MAX} 块，按日记里的先后取。排程时排在 DOING 后面、别的待办前面`,
-        ...M.blocks.map((b) => `${b.done === b.total ? "●" : b.tasks.some((t) => t.state === "doing") ? "◐" : "○"} ${b.label}${b.total > 1 ? `（${b.done}/${b.total}）` : ""}`),
-        M.over.length ? `⚠ 多了 ${M.over.length} 块，不算主线：${M.over.join("、")}（日记整理时降成 [#B]）` : "",
-        hist.length ? "近 7 天：" + hist.map((h) => `${h.d.format("dd")} ${h.done}/${h.total}`).join(" · ") : "",
-        nx ? "点一下跳到下一件主线" : "",
+        T(`主线：块里带 [#A]（简写 todo a）的任务，一天最多 ${MAIN_MAX} 块，按日记里的先后取。排程时排在 DOING 后面、别的待办前面`, `Mainline: tasks whose block carries [#A] (short form: todo a), at most ${MAIN_MAX} blocks a day, taken in note order. Scheduled after DOING and before other to-dos`),
+        ...M.blocks.map((b) => `${b.done === b.total ? "●" : b.tasks.some((t) => t.state === "doing") ? "◐" : "○"} ${b.label}${b.total > 1 ? T(`（${b.done}/${b.total}）`, ` (${b.done}/${b.total})`) : ""}`),
+        M.over.length ? T(`⚠ 多了 ${M.over.length} 块，不算主线：${M.over.join("、")}（日记整理时降成 [#B]）`, `⚠ ${M.over.length} extra block(s) don't count as mainline: ${M.over.join(", ")} (journal cleanup lowers them to [#B])`) : "",
+        hist.length ? T("近 7 天：", "Last 7 days: ") + hist.map((h) => `${h.d.format("dd")} ${h.done}/${h.total}`).join(" · ") : "",
+        nx ? T("点一下跳到下一件主线", "Click to jump to the next mainline task") : "",
       ].filter(Boolean).join("\n");
       const v = row("naut-cap-main", "🎯", tip);
-      if (!M.blocks.length) v.createSpan({ cls: "naut-muted", text: "还没定主线：给最要紧的一到三件写上 [#A]" });
+      if (!M.blocks.length) v.createSpan({ cls: "naut-muted", text: T("还没定主线：给最要紧的一到三件写上 [#A]", "No mainline yet: mark the one to three most important things with [#A]") });
       else {
         v.createSpan({ cls: "naut-main-pips", text: mainPips(M) });
-        v.createSpan({ text: ` 主线 ${M.done}/${M.total}` });
-        if (!nx) v.createSpan({ cls: "naut-cap-ok", text: " · 全部做完 ✓" });
-        else if (dayRel >= 0) v.createSpan({ text: ` · ${nx.state === "doing" ? "在做" : "下一件"} ${nx.label}` });
-        else v.createSpan({ cls: "naut-over-text", text: ` · 差 ${M.total - M.done} 件` });
-        if (M.over.length) v.createSpan({ cls: "naut-over-text", text: ` · 多了 ${M.over.length} 块` });
+        v.createSpan({ text: T(` 主线 ${M.done}/${M.total}`, ` Mainline ${M.done}/${M.total}`) });
+        if (!nx) v.createSpan({ cls: "naut-cap-ok", text: T(" · 全部做完 ✓", " · all done ✓") });
+        else if (dayRel >= 0) v.createSpan({ text: ` · ${nx.state === "doing" ? T("在做", "Doing") : T("下一件", "Next")} ${nx.label}` });
+        else v.createSpan({ cls: "naut-over-text", text: T(` · 差 ${M.total - M.done} 件`, ` · ${M.total - M.done} to go`) });
+        if (M.over.length) v.createSpan({ cls: "naut-over-text", text: T(` · 多了 ${M.over.length} 块`, ` · ${M.over.length} extra`) });
         v.parentElement.addClass("mod-clickable");
         v.parentElement.onclick = () => this.plugin.openLine(file, nx ? nx.line : M.blocks[0].line);
       }
@@ -2918,20 +2921,20 @@ class SpiralView extends ItemView {
 
     // 🤖 人机协作：这一天 Agent 干了多少（口径见设置里「人机协作」一节）
     if (ai) {
-      const models = Object.entries(ai.models).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${fmtTok(n)}`).join("、");
+      const models = Object.entries(ai.models).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${fmtTok(n)}`).join(T("、", ", "));
       const only = agents.length === 1 ? AI_AGENTS[agents[0][0]] : "";
       const line = row("naut-cap-ai", "🤖", [
-        `协作 ${dur(ai.wall)}：有 ${only || "Agent"} 在干活的时间，几个窗口同时开只算一次（螺旋内圈的细线，一个 Agent 一种颜色）`,
-        agents.length > 1 ? "各 Agent：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${dur(g.wall)}`).join(" / ") : "",
-        `${only || "Agent"} 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`,
-        `消耗 ${fmtTok(tokUsed(ai))} tok = 产出 + 读入${agents.length > 1 ? "：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`,
-        `产出 ${fmtTok(ai.out)}：${only || "Agent"} 写出来的 token（含思考），${ai.calls} 次调用`,
-        `读入 ${fmtTok(ai.fresh)}：新读进来的文件、命令输出`,
-        `缓存命中 ${fmtTok(ai.cached)}：每轮重读上下文，不算工作量`,
-        `指令 ${ai.prompts}：你亲手发的消息`,
-        models && `模型：${models}`,
+        T(`协作 ${dur(ai.wall)}：有 ${only || "Agent"} 在干活的时间，几个窗口同时开只算一次（螺旋内圈的细线，一个 Agent 一种颜色）`, `Agents ${dur(ai.wall)}: time with ${only || "an agent"} at work; several windows at once count once (thin lines on the inner rings, one color per agent)`),
+        agents.length > 1 ? T("各 Agent：", "By agent: ") + agents.map(([k, g]) => `${AI_AGENTS[k]} ${dur(g.wall)}`).join(" / ") : "",
+        T(`${only || "Agent"} 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`, `${only || "Agent"} hours ${dur(ai.agent)}: active time of ${ai.sessions} sessions added up${ai.agent > ai.wall * 1.1 ? `, ${(ai.agent / ai.wall).toFixed(1)} running in parallel on average` : ""}`),
+        T(`消耗 ${fmtTok(tokUsed(ai))} tok = 产出 + 读入${agents.length > 1 ? "：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`, `Used ${fmtTok(tokUsed(ai))} tok = output + input${agents.length > 1 ? ": " + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`),
+        T(`产出 ${fmtTok(ai.out)}：${only || "Agent"} 写出来的 token（含思考），${ai.calls} 次调用`, `Output ${fmtTok(ai.out)}: tokens ${only || "the agents"} wrote (thinking included), ${ai.calls} calls`),
+        T(`读入 ${fmtTok(ai.fresh)}：新读进来的文件、命令输出`, `Input ${fmtTok(ai.fresh)}: newly read files and command output`),
+        T(`缓存命中 ${fmtTok(ai.cached)}：每轮重读上下文，不算工作量`, `Cache hits ${fmtTok(ai.cached)}: context re-read every turn, not counted as work`),
+        T(`指令 ${ai.prompts}：你亲手发的消息`, `Prompts ${ai.prompts}: messages you sent yourself`),
+        models && T(`模型：${models}`, `Models: ${models}`),
       ].filter(Boolean).join("\n"));
-      line.createSpan({ text: `协作 ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok` });
+      line.createSpan({ text: T(`协作 ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok`, `Agents ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok`) });
       for (const [k] of agents) line.createSpan({ cls: `naut-sw naut-bg-${k}` });
     }
     // ⏱ 正在专注的这一轮
@@ -2939,17 +2942,17 @@ class SpiralView extends ItemView {
     if (fs && realRel === 0 && !playing) {
       const line = cap.createDiv({ cls: "naut-focus-line" });
       const leftOf = (t) => Math.max(0, Math.ceil((t.end - Date.now()) / 60e3));
-      const one = (t) => `${t.label} ${leftOf(t) ? `还剩 ${dur(leftOf(t))}` : "到点了"}${fs.tasks.length === 1 ? ` / ${dur(t.minutes)}` : ""}${t.round > 1 ? `（第 ${t.round} 轮）` : ""}`;
-      line.createSpan({ text: `⏱ ${fs.tasks.length > 1 ? `${fs.tasks.length} 条线 · ` : ""}${fs.tasks.map(one).join(" · ")}`, attr: { title: fs.tasks.map((t) => `· ${t.label}：${dur(t.minutes)} 一轮，${moment(t.end).format("HH:mm")} 到点`).join("\n") } });
-      const stop = line.createEl("button", { cls: "naut-focus-stop", text: "结束", attr: { title: "提前结束这一轮：问你做完了没有" } });
+      const one = (t) => `${t.label} ${leftOf(t) ? T(`还剩 ${dur(leftOf(t))}`, `${dur(leftOf(t))} left`) : T("到点了", "time's up")}${fs.tasks.length === 1 ? ` / ${dur(t.minutes)}` : ""}${t.round > 1 ? T(`（第 ${t.round} 轮）`, ` (round ${t.round})`) : ""}`;
+      line.createSpan({ text: `⏱ ${fs.tasks.length > 1 ? T(`${fs.tasks.length} 条线 · `, `${fs.tasks.length} threads · `) : ""}${fs.tasks.map(one).join(" · ")}`, attr: { title: fs.tasks.map((t) => T(`· ${t.label}：${dur(t.minutes)} 一轮，${moment(t.end).format("HH:mm")} 到点`, `· ${t.label}: ${dur(t.minutes)} per round, ends at ${moment(t.end).format("HH:mm")}`)).join("\n") } });
+      const stop = line.createEl("button", { cls: "naut-focus-stop", text: T("结束", "End"), attr: { title: T("提前结束这一轮：问你做完了没有", "End this round early: you'll be asked whether it's done") } });
       stop.onclick = () => this.plugin.askDone(fs);
     }
     // 🍚 吃饭 / 锻炼中
     const bk = cfg.breakState;
     if (bk && realRel === 0 && !playing) {
       const line = cap.createDiv({ cls: "naut-focus-line naut-break-line" });
-      line.createSpan({ text: `${breakIcon(bk.word)} ${bk.word}中 · ${moment(bk.since).format("HH:mm")} 起 · ${dur(Math.max(1, Math.round((Date.now() - bk.since) / 60e3)))}${bk.keys.length ? ` · 暂停了 ${bk.keys.length} 件` : ""}`, attr: { title: bk.labels.map((l) => "· " + l).join("\n") } });
-      const back = line.createEl("button", { cls: "naut-focus-stop", text: "回来了", attr: { title: "现在就问要不要切回 DOING" } });
+      line.createSpan({ text: T(`${breakIcon(bk.word)} ${bk.word}中 · ${moment(bk.since).format("HH:mm")} 起 · ${dur(Math.max(1, Math.round((Date.now() - bk.since) / 60e3)))}${bk.keys.length ? ` · 暂停了 ${bk.keys.length} 件` : ""}`, `${breakIcon(bk.word)} ${bk.word} · since ${moment(bk.since).format("HH:mm")} · ${dur(Math.max(1, Math.round((Date.now() - bk.since) / 60e3)))}${bk.keys.length ? ` · ${bk.keys.length} paused` : ""}`), attr: { title: bk.labels.map((l) => "· " + l).join("\n") } });
+      const back = line.createEl("button", { cls: "naut-focus-stop", text: T("回来了", "I'm back"), attr: { title: T("现在就问要不要切回 DOING", "Ask now whether to switch back to DOING") } });
       back.onclick = () => { bk.asking = false; this.plugin.askBack(bk); };
     }
     // 📅 日历读不到时说明原因（全天事件本身在下面「固定事件」里）
@@ -3012,14 +3015,14 @@ class SpiralView extends ItemView {
       svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 7, class: "naut-hatch-stripe" }, pat);
       for (const [a, b] of gaps) {
         const d = arc(a, b);
-        if (d) hov(svgEl("path", { d, class: "naut-gap", stroke: `url(#${pid})` }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, "没有记录");
+        if (d) hov(svgEl("path", { d, class: "naut-gap", stroke: `url(#${pid})` }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T("没有记录", "Not recorded"));
       }
     }
     // 排完以后还空着的时段：鼠标划过去显示这段空档几点到几点、多长。过去的日子没有空档可用，不画
     if (dayRel >= 0) for (const [a, b] of plan.free) {
       const d = b - a >= 1 ? arc(a, b) : null;
       const cur = dayRel === 0 && a <= now && now < b;
-      if (d) hov(svgEl("path", { d, class: "naut-slot" + (cur ? " is-now" : "") }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, cur ? "当前可用" : "可用空档");
+      if (d) hov(svgEl("path", { d, class: "naut-slot" + (cur ? " is-now" : "") }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, cur ? T("当前可用", "Free now") : T("可用空档", "Free slot"));
     }
     for (let h = Math.ceil(S / 60); h <= E / 60; h++) {
       const [x, y] = pt(h * 60, 13);
@@ -3035,7 +3038,7 @@ class SpiralView extends ItemView {
         const vis = late(svgEl("path", { d, class: `naut-ai naut-by-${k}`, pathLength: 1 }, svg), a);
         // 这一段里是哪几个会话在动
         const names = (ai.list || []).filter((x) => aiAgent(x) === k && x.segs.some(([c0, c1]) => Math.min(b, c1) - Math.max(a, c0) >= 1)).sort((x, y) => y.min - x.min).map(aiName);
-        hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, `${AI_AGENTS[k]} 在干活`, names.length ? names.slice(0, 2).join("、") + (names.length > 2 ? ` 等 ${names.length} 个会话` : "") : "");
+        hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`${AI_AGENTS[k]} 在干活`, `${AI_AGENTS[k]} at work`), names.length ? names.slice(0, 2).join(T("、", ", ")) + (names.length > 2 ? T(` 等 ${names.length} 个会话`, ` and ${names.length - 2} more`) : "") : "");
       }
     });
     // 再往里一圈：游戏时间
@@ -3052,7 +3055,7 @@ class SpiralView extends ItemView {
       const d = arc(a, Math.max(b, a + 3), -10 - 4.5 * Math.max(1, agents.length) - 6);
       if (!d) continue;
       const vis = late(svgEl("path", { d, class: "naut-rev", pathLength: 1 }, svg), a);
-      hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, `🃏 复习卡片 ${revN(t)} 张`);
+      hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`🃏 复习卡片 ${revN(t)} 张`, `🃏 Review ${revN(t)} cards`));
     }
     // 这件任务做过的那几段里，Claude 在干什么
     const aiMemo = new Map();
@@ -3076,7 +3079,7 @@ class SpiralView extends ItemView {
       if (item.cal && item.cal.color) p.style.stroke = item.cal.color;   // 日历事件用日历自己的颜色
       const rel = aiOf(item).filter((x) => x.related);
       // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
-      hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join("、")}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
+      hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join(T("、", ", "))}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
       p.addEventListener("click", () => this.plugin.openItem(file, item));
     };
     for (const e of items.filter((i) => i.kind === "event")) drawSeg(e.start, e.end, e.state === "done" ? "naut-event naut-done-event" : e.prio ? "naut-prio" : "naut-event", e);
@@ -3103,8 +3106,8 @@ class SpiralView extends ItemView {
     const handle = (kind, t0) => {
       const [x, y] = pt(t0);
       const h = svgEl("circle", { cx: x, cy: y, r: 6, class: `naut-handle naut-handle-${kind}` }, svg);
-      const name = kind === "start" ? "开始" : "结束";
-      svgEl("title", {}, h).textContent = `这天实际${name} ${clock(t0)}${bounds[kind] == null ? "（默认）" : ""}\n拖动调整，双击恢复默认`;
+      const name = kind === "start" ? T("开始", "start") : T("结束", "end");
+      svgEl("title", {}, h).textContent = T(`这天实际${name} ${clock(t0)}${bounds[kind] == null ? "（默认）" : ""}\n拖动调整，双击恢复默认`, `Actual ${name} of this day ${clock(t0)}${bounds[kind] == null ? " (default)" : ""}\nDrag to adjust, double-click to restore the default`);
       const label = svgEl("text", { x, y, class: "naut-handle-label" }, svg);
       const nearest = (ev) => {
         const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(svg.getScreenCTM().inverse());
@@ -3138,7 +3141,7 @@ class SpiralView extends ItemView {
     center.textContent = dayRel === 0 ? clock(now) : date.format("M/D");
     // 中间时间下面：这天一共复习了几张卡
     const revTotal = revs.reduce((k, t) => k + revN(t), 0);
-    if (revTotal) hov(svgEl("text", { x: c, y: c + 19, class: "naut-center-rev" }, svg), `${revs.length} 轮`, `🃏 这天复习了 ${revTotal} 张卡片`).textContent = `🃏 ${revTotal}`;
+    if (revTotal) hov(svgEl("text", { x: c, y: c + 19, class: "naut-center-rev" }, svg), T(`${revs.length} 轮`, `${revs.length} rounds`), T(`🃏 这天复习了 ${revTotal} 张卡片`, `🃏 ${revTotal} cards reviewed this day`)).textContent = `🃏 ${revTotal}`;
 
     // 列表
     const list = root.createDiv({ cls: "naut-list" });
@@ -3151,18 +3154,18 @@ class SpiralView extends ItemView {
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
         row.createSpan({ cls: "naut-time", text: r.time });
         const lab = row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.mainA && !r.inMain ? "🎯 " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
-          attr: r.item.cal ? { title: `日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}` } : {} });
+          attr: r.item.cal ? { title: T(`日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`, `Calendar: ${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`) } : {} });
         const sess = aiOf(r.item);
         if (sess.length) {
           const rel = sess.filter((x) => x.related).length;
           const badge = row.createSpan({ cls: "naut-ai-badge" + (rel ? "" : " is-weak"), text: `🤖${rel || sess.length}`,
-            attr: { title: `这件做的时候 Agent 在：\n${sess.map((x) => `${x.related ? "· " : "  （同时段）"}${aiName(x)}（${dur(x.overlap)}）`).join("\n")}\n点开看详情、接着那个会话做` } });
-          badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.app, `「${r.item.label}」期间的 Agent 会话`, [{ list: sess }]).open(); };
+            attr: { title: T(`这件做的时候 Agent 在：\n${sess.map((x) => `${x.related ? "· " : "  （同时段）"}${aiName(x)}（${dur(x.overlap)}）`).join("\n")}\n点开看详情、接着那个会话做`, `Agents during this task:\n${sess.map((x) => `${x.related ? "· " : "  (same time) "}${aiName(x)} (${dur(x.overlap)})`).join("\n")}\nClick for details or to continue that session`) } });
+          badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.app, T(`「${r.item.label}」期间的 Agent 会话`, `Agent sessions during "${r.item.label}"`), [{ list: sess }]).open(); };
         }
         row.createSpan({ cls: "naut-dur", text: r.dur, attr: r.tip ? { title: r.tip } : {} });
         if (r.play) {
           const t = r.item;
-          const tip = `${t.doing ? "" : "改成 DOING，"}专注 ${dur(focusMinutes(t, cfg))}${cfg.focus ? "（Raycast Focus）" : ""}，到点问你做完没有`;
+          const tip = T(`${t.doing ? "" : "改成 DOING，"}专注 ${dur(focusMinutes(t, cfg))}${cfg.focus ? "（Raycast Focus）" : ""}，到点问你做完没有`, `${t.doing ? "" : "Switch to DOING, "}focus for ${dur(focusMinutes(t, cfg))}${cfg.focus ? " (Raycast Focus)" : ""}, then you'll be asked whether it's done`);
           const b = row.createEl("button", { cls: "naut-play", text: "▶", attr: { title: tip } });
           b.onclick = (e) => { e.stopPropagation(); this.plugin.startTask(file, t); };
         }
@@ -3174,8 +3177,8 @@ class SpiralView extends ItemView {
     const pctOf = (t) => (t.progress != null ? Math.round(t.progress * 100) : spentOf(t) >= 1 ? Math.min(99, Math.round(spentOf(t) / (spentOf(t) + t.remaining) * 100)) : null);
     // 自动记的行没有预估时长，不显示「百分之几 · 还剩多久」，只显示已经做了多久
     const autoKeys = this.plugin.autoKeys(dayKey);
-    const durText = (t) => (autoKeys.has(workKey(t.label)) && t.state === "open" ? `已做 ${dur(Math.max(1, Math.round(spentOf(t))))}` : pctOf(t) == null ? dur(t.dur) : `${pctOf(t)}% · 剩 ${dur(t.remaining)}`);
-    const tipOf = (t) => (pctOf(t) == null ? "" : `预估 ${dur(t.dur)}${spentOf(t) >= 1 ? ` · 已做 ${dur(spentOf(t))}（今天 ${dur(t.spentToday)}${t.spentBefore >= 1 ? `，之前 ${dur(t.spentBefore)}` : ""}）` : ""}${t.progress != null ? ` · 进度是你写的 ${pctOf(t)}%` : ""}`);
+    const durText = (t) => (autoKeys.has(workKey(t.label)) && t.state === "open" ? T(`已做 ${dur(Math.max(1, Math.round(spentOf(t))))}`, `${dur(Math.max(1, Math.round(spentOf(t))))} done`) : pctOf(t) == null ? dur(t.dur) : T(`${pctOf(t)}% · 剩 ${dur(t.remaining)}`, `${pctOf(t)}% · ${dur(t.remaining)} left`));
+    const tipOf = (t) => (pctOf(t) == null ? "" : T(`预估 ${dur(t.dur)}${spentOf(t) >= 1 ? ` · 已做 ${dur(spentOf(t))}（今天 ${dur(t.spentToday)}${t.spentBefore >= 1 ? `，之前 ${dur(t.spentBefore)}` : ""}）` : ""}${t.progress != null ? ` · 进度是你写的 ${pctOf(t)}%` : ""}`, `Estimate ${dur(t.dur)}${spentOf(t) >= 1 ? ` · ${dur(spentOf(t))} done (${dur(t.spentToday)} today${t.spentBefore >= 1 ? `, ${dur(t.spentBefore)} before` : ""})` : ""}${t.progress != null ? ` · progress ${pctOf(t)}% as you wrote it` : ""}`));
     // 🎯 主线：这一天最要紧的几件（主线块里 A 级的任务）放在列表最上面，一件一行：做完的打勾写几点做完，在做的写「进行中」，
     // 没开始的写排到了几点（排程里主线排在 DOING 后面、别的待办前面），排不下的直说
     if (M.blocks.length) {
@@ -3184,32 +3187,32 @@ class SpiralView extends ItemView {
         const it = items.find((i) => i.line === t.line);
         if (!it) {   // 排程不管的主线：交给 AI 的（TODO4AI [#A]）、没做成的（FAILED [#A]），照样列出来
           rows.push({ item: { line: t.line, label: t.label, kind: "task", state: t.state, segs: [] }, inMain: true, cls: "is-main" + (t.state === "failed" ? " is-over" : t.state === "done" ? " is-done" : ""),
-            time: t.state === "failed" ? "没做成" : t.state === "done" ? "✓" : t.state === "doing" ? "进行中" : "交给 AI", dur: "" });
+            time: t.state === "failed" ? T("没做成", "Failed") : t.state === "done" ? "✓" : t.state === "doing" ? T("进行中", "Doing") : T("交给 AI", "Handed to AI"), dur: "" });
           continue;
         }
         const q = it.kind === "task" && it.state === "open" ? it : null, live = q && it.doing && dayRel === 0;
         const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clock(it.doneAt) : "") : it.kind === "event" ? clock(it.start)
-          : live ? "进行中" : q && q.suspended ? "💤" : q && q.container ? "分步" : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? "没做完" : "排不下";
-        rows.push({ item: it, inMain: true, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === "排不下" || time === "没做完" ? " is-over" : ""),
+          : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
+        rows.push({ item: it, inMain: true, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
           time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "", play: !!q && realRel === 0 && !playing });
       }
-      section(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, rows);
+      section(T(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, `🎯 Mainline ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`), rows);
     }
     const events = items.filter((i) => i.kind === "event").sort((a, b) => a.start - b.start);
-    section("固定事件", events.map((e) => ({ item: e, cls: e.state === "done" ? "is-done" : "is-event", time: `${clock(e.start)}–${clock(e.end)}`, dur: dur(e.end - e.start) })));
+    section(T("固定事件", "Fixed events"), events.map((e) => ({ item: e, cls: e.state === "done" ? "is-done" : "is-event", time: `${clock(e.start)}–${clock(e.end)}`, dur: dur(e.end - e.start) })));
     // 按排到的时间先后列（小任务补位到前面的空档，会排在列表里靠后的大任务前面）
     const placed = plan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]);
-    section("接下来", placed.map((t) => ({
+    section(T("接下来", "Up next"), placed.map((t) => ({
       item: t, cls: (t.mainA ? "is-main" : t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
-      time: t.doing && dayRel === 0 ? "进行中" : clock(t.segments[t.workedN][0]) + (t.overflow ? " 起" : ""),
+      time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clock(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
       dur: durText(t), tip: tipOf(t), play: realRel === 0 && !playing,
     })));
     const over = plan.queue.filter((t) => t.overflow);
-    section(dayRel < 0 ? "没做完" : "排不下", over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: t.segments.length > t.workedN ? `缺 ${dur(t.overflow)}` : durText(t), tip: tipOf(t) })));
-    section("💤 搁置", plan.suspended.map((t) => ({ item: t, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
-    section("做过 · 已挪走", orphans.map((o) => ({ item: o, cls: "is-done", time: `${clock(o.segs[0][0])}–${clock(o.segs.at(-1)[1])}`, dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
+    section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
+    section(T("💤 搁置", "💤 Parked"), plan.suspended.map((t) => ({ item: t, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
+    section(T("做过 · 已挪走", "Worked on · moved away"), orphans.map((o) => ({ item: o, cls: "is-done", time: `${clock(o.segs[0][0])}–${clock(o.segs.at(-1)[1])}`, dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
     const doneTasks = items.filter((i) => i.kind === "task" && i.state === "done").sort((a, b) => (a.doneAt ?? 1e9) - (b.doneAt ?? 1e9));
-    section(`已完成 ${doneTasks.length}`, doneTasks.map((t) => ({
+    section(T(`已完成 ${doneTasks.length}`, `Done ${doneTasks.length}`), doneTasks.map((t) => ({
       item: t, cls: isReview(t) ? "is-done is-review" : "is-done",
       time: t.actual ? `${clock(t.actual[0])}–${clock(t.actual[1])}` : t.doneAt != null ? clock(t.doneAt) : "—",
       dur: dur(t.dur),
@@ -3227,7 +3230,7 @@ class SpiralView extends ItemView {
   // 🤖 人机协作：按项目分 + 近 7 天
   renderAi(list, store, date, ai) {
     const cfg = this.plugin.settings;
-    const sec = list.createDiv({ cls: "naut-sec naut-sec-ai", text: "🤖 人机协作" });
+    const sec = list.createDiv({ cls: "naut-sec naut-sec-ai", text: T("🤖 人机协作", "🤖 Agents") });
     if (ai) {
       const rows = Object.entries(ai.proj).filter(([, p]) => p.out >= 1000 || p.min >= 2).sort((a, b) => b[1].out - a[1].out).slice(0, 5);
       for (const [name, p] of rows) {
@@ -3239,7 +3242,7 @@ class SpiralView extends ItemView {
         // 点一下：这个项目这天有哪几个会话，能直接回去
         row.onclick = () => {
           const sess = (ai.list || []).filter((x) => x.dir === name && x.segs && x.segs.length).sort((x, y) => y.min - x.min).map((x) => ({ ...x, related: true, stopped: true, lastAt: x.segs[x.segs.length - 1][1] }));
-          if (sess.length) new AiSessionsModal(this.app, `「${name}」这天的 Agent 会话`, [{ list: sess }]).open();
+          if (sess.length) new AiSessionsModal(this.app, T(`「${name}」这天的 Agent 会话`, `Agent sessions for "${name}" this day`), [{ list: sess }]).open();
         };
       }
     }
@@ -3252,14 +3255,14 @@ class SpiralView extends ItemView {
     const had = days.filter((x) => x.s);
     const week = list.createDiv({ cls: "naut-ai-week" });
     for (const { d, s } of days) {
-      const col = week.createDiv({ cls: "naut-ai-col" + (d.isSame(date, "day") ? " is-cur" : ""), attr: { title: s ? `${d.format("M/D ddd")}  协作 ${dur(s.wall)} · 工时 ${dur(s.agent)} · 产出 ${fmtTok(s.out)} · ${s.prompts} 条指令` : `${d.format("M/D ddd")}  没用 Agent` } });
+      const col = week.createDiv({ cls: "naut-ai-col" + (d.isSame(date, "day") ? " is-cur" : ""), attr: { title: s ? T(`${d.format("M/D ddd")}  协作 ${dur(s.wall)} · 工时 ${dur(s.agent)} · 产出 ${fmtTok(s.out)} · ${s.prompts} 条指令`, `${d.format("ddd M/D")}  agents ${dur(s.wall)} · hours ${dur(s.agent)} · output ${fmtTok(s.out)} · ${s.prompts} prompts`) : T(`${d.format("M/D ddd")}  没用 Agent`, `${d.format("ddd M/D")}  no agents`) } });
       const bar = col.createDiv({ cls: "naut-ai-bar", attr: { style: `height:${s ? Math.max(2, (s.wall / max) * 100) : 0}%` } });
       const parts = !s ? [] : s.by ? Object.keys(AI_AGENTS).filter((k) => s.by[k] && s.by[k].wall).map((k) => [k, s.by[k].wall]) : [["claude", 1]];
       for (const [k, w] of parts) bar.createDiv({ cls: `naut-ai-part naut-bg-${k}`, attr: { style: `flex-grow:${w}` } });
       col.createDiv({ cls: "naut-ai-day", text: d.format("dd") });
     }
     const sum = (k) => had.reduce((n, x) => n + x.s[k], 0);
-    list.createDiv({ cls: "naut-proj-note", text: had.length ? `近 7 天：${had.length} 天在用 · 协作 ${dur(sum("wall"))} · 产出 🗄 ${fmtTok(sum("out"))} tok · 日均 ${dur(sum("wall") / 7)}` : "近 7 天还没有 Agent 会话记录" });
+    list.createDiv({ cls: "naut-proj-note", text: had.length ? T(`近 7 天：${had.length} 天在用 · 协作 ${dur(sum("wall"))} · 产出 🗄 ${fmtTok(sum("out"))} tok · 日均 ${dur(sum("wall") / 7)}`, `Last 7 days: used on ${had.length} days · agents ${dur(sum("wall"))} · output 🗄 ${fmtTok(sum("out"))} tok · ${dur(sum("wall") / 7)} a day`) : T("近 7 天还没有 Agent 会话记录", "No agent sessions in the last 7 days") });
   }
 
   // 📋 当日复盘：这一天每件任务的预计和实际，逐件对照（规则见 dayReview）。默认收着，标题上带结论
@@ -3268,17 +3271,17 @@ class SpiralView extends ItemView {
     const r = dayReview(items, cfg, { live, auto: this.plugin.autoKeys(dayKey) });
     if (!r.rows.length) return;
     const s = r.summary, open = cfg.dayReviewFolded === false;
-    const head = list.createDiv({ cls: "naut-sec naut-proj-head naut-dayrev-head", text: `${open ? "▾" : "▸"} 📋 ${live ? "今日" : "当日"}复盘 · 已完成 ${s.completedCount}/${s.totalCount}${s.comparedCount ? ` · 偏差 ${signed(s.varianceMinutes)}` : ""}` });
+    const head = list.createDiv({ cls: "naut-sec naut-proj-head naut-dayrev-head", text: T(`${open ? "▾" : "▸"} 📋 ${live ? "今日" : "当日"}复盘 · 已完成 ${s.completedCount}/${s.totalCount}${s.comparedCount ? ` · 偏差 ${signed(s.varianceMinutes)}` : ""}`, `${open ? "▾" : "▸"} 📋 ${live ? "Today's" : "Day"} review · done ${s.completedCount}/${s.totalCount}${s.comparedCount ? ` · off by ${signed(s.varianceMinutes)}` : ""}`) });
     head.onclick = () => { cfg.dayReviewFolded = open; this.plugin.saveSoon(); this.render(); };
     if (!open) return;
-    list.createDiv({ cls: "naut-proj-note", text: s.comparedCount ? `已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}` : "还没有能对比的：做完了、也记到了实际用时的才算",
-      attr: { title: "偏差 = 实际 − 预计，只算做完了、也记到了实际用时的任务，两边是同一批。在做的、停着的照样列在下面，但不影响偏差。预计没写的按默认任务时长" } });
-    const NAME = { compared: "已对比", live: "进行中", paused: "已暂停", "not-tracked": "未计时", "not-started": "未开始", "no-estimate": "未预估" };
+    list.createDiv({ cls: "naut-proj-note", text: s.comparedCount ? T(`已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`, `Compared ${s.comparedCount}: estimated ${dur(s.plannedMinutes)} · actual ${dur(s.actualMinutes)} · off by ${signed(s.varianceMinutes)}`) : T("还没有能对比的：做完了、也记到了实际用时的才算", "Nothing to compare yet: only tasks that are done and have actual time recorded count"),
+      attr: { title: T("偏差 = 实际 − 预计，只算做完了、也记到了实际用时的任务，两边是同一批。在做的、停着的照样列在下面，但不影响偏差。预计没写的按默认任务时长", "Off by = actual − estimate, counting only tasks that are done and have actual time recorded, the same set on both sides. Tasks in progress or paused are still listed below but don't affect it. Tasks without an estimate use the default task length") } });
+    const NAME = { compared: T("已对比", "Compared"), live: T("进行中", "Doing"), paused: T("已暂停", "Paused"), "not-tracked": T("未计时", "Not timed"), "not-started": T("未开始", "Not started"), "no-estimate": T("未预估", "No estimate") };
     for (const x of r.rows) {
       const row = list.createDiv({ cls: `naut-row naut-dayrev is-${x.state}` + (x.varianceMinutes > 0 ? " is-over-est" : "") });
       row.createSpan({ cls: "naut-time", text: x.state === "compared" ? signed(x.varianceMinutes) : NAME[x.state] });
       row.createSpan({ cls: "naut-label", text: x.label });
-      row.createSpan({ cls: "naut-dur", text: [x.plannedMinutes != null ? `预计 ${dur(x.plannedMinutes)}` : "", x.actualMinutes > 0 ? `实际 ${dur(x.actualMinutes)}` : x.state === "not-tracked" ? "未计时" : ""].filter(Boolean).join(" · ") });
+      row.createSpan({ cls: "naut-dur", text: [x.plannedMinutes != null ? T(`预计 ${dur(x.plannedMinutes)}`, `Est. ${dur(x.plannedMinutes)}`) : "", x.actualMinutes > 0 ? T(`实际 ${dur(x.actualMinutes)}`, `Actual ${dur(x.actualMinutes)}`) : x.state === "not-tracked" ? T("未计时", "Not timed") : ""].filter(Boolean).join(" · ") });
       row.onclick = () => this.plugin.openItem(file, x.item);
     }
   }
@@ -3288,13 +3291,13 @@ class SpiralView extends ItemView {
     if (!r || !r.n) return;
     const cfg = this.plugin.settings;
     const open = !cfg.reviewFolded;
-    const head = list.createDiv({ cls: "naut-sec naut-proj-head naut-review-head", text: `${open ? "▾" : "▸"} 📏 预估 vs 实际 · 近 ${r.days} 天` });
+    const head = list.createDiv({ cls: "naut-sec naut-proj-head naut-review-head", text: T(`${open ? "▾" : "▸"} 📏 预估 vs 实际 · 近 ${r.days} 天`, `${open ? "▾" : "▸"} 📏 Estimate vs actual · last ${r.days} days`) });
     head.onclick = () => { cfg.reviewFolded = open; this.plugin.saveSoon(); this.render(); };
     if (!open) return;
-    const how = (x) => (Math.abs(x - 1) < 0.05 ? "基本准" : `${x > 1 ? "多用" : "少用"} ${Math.round(Math.abs(x - 1) * 100)}%`);
-    list.createDiv({ cls: "naut-proj-note", text: `${r.n} 件：预估 ${dur(r.sumE)} · 实际 ${dur(r.sumA)} · 整体${how(r.ratio)}` });
-    list.createDiv({ cls: "naut-proj-note", text: `估短 ${r.over} 件 · 估长 ${r.under} 件 · 差不多 ${r.n - r.over - r.under} 件（±20% 以内）· 一件一般是预估的 ${r.median.toFixed(1)} 倍`,
-      attr: { title: "只算做完的、写了预估时长、也记到了实际用时（DONE 开始-结束，或者 DOING 时的计时）的任务" } });
+    const how = (x) => (Math.abs(x - 1) < 0.05 ? T("基本准", "about right") : `${x > 1 ? T("多用", "over") : T("少用", "under")} ${Math.round(Math.abs(x - 1) * 100)}%`);
+    list.createDiv({ cls: "naut-proj-note", text: T(`${r.n} 件：预估 ${dur(r.sumE)} · 实际 ${dur(r.sumA)} · 整体${how(r.ratio)}`, `${r.n} tasks: estimated ${dur(r.sumE)} · actual ${dur(r.sumA)} · overall ${how(r.ratio)}`) });
+    list.createDiv({ cls: "naut-proj-note", text: T(`估短 ${r.over} 件 · 估长 ${r.under} 件 · 差不多 ${r.n - r.over - r.under} 件（±20% 以内）· 一件一般是预估的 ${r.median.toFixed(1)} 倍`, `Underestimated ${r.over} · overestimated ${r.under} · close ${r.n - r.over - r.under} (within ±20%) · a task typically takes ${r.median.toFixed(1)}× its estimate`),
+      attr: { title: T("只算做完的、写了预估时长、也记到了实际用时（DONE 开始-结束，或者 DOING 时的计时）的任务", "Only tasks that are done, have an estimate, and have actual time recorded (DONE start-end, or timing while DOING)") } });
     const row = (time, label, durText, tip, onclick) => {
       const el = list.createDiv({ cls: "naut-row naut-review-row" });
       el.createSpan({ cls: "naut-time", text: time });
@@ -3302,10 +3305,10 @@ class SpiralView extends ItemView {
       el.createSpan({ cls: "naut-dur", text: durText, attr: tip ? { title: tip } : {} });
       if (onclick) el.onclick = onclick;
     };
-    if (r.cats.length) list.createDiv({ cls: "naut-proj-note", text: "按标签 / 链接分：" });
-    for (const c of r.cats) row(`×${c.ratio.toFixed(1)}`, c.cat, `${c.n} 件`, `预估 ${dur(c.e)} · 实际 ${dur(c.a)} · ${how(c.ratio)}`);
-    if (r.worst.length) list.createDiv({ cls: "naut-proj-note", text: "估得最短的几件：" });
-    for (const w of r.worst) row(`×${(w.actual / w.est).toFixed(1)}`, w.label, `${dur(w.est)}→${dur(w.actual)}`, `${w.day} · 预估 ${dur(w.est)}，实际 ${dur(w.actual)}`,
+    if (r.cats.length) list.createDiv({ cls: "naut-proj-note", text: T("按标签 / 链接分：", "By tag / link:") });
+    for (const c of r.cats) row(`×${c.ratio.toFixed(1)}`, c.cat, T(`${c.n} 件`, `${c.n} tasks`), T(`预估 ${dur(c.e)} · 实际 ${dur(c.a)} · ${how(c.ratio)}`, `Est. ${dur(c.e)} · actual ${dur(c.a)} · ${how(c.ratio)}`));
+    if (r.worst.length) list.createDiv({ cls: "naut-proj-note", text: T("估得最短的几件：", "Most underestimated:") });
+    for (const w of r.worst) row(`×${(w.actual / w.est).toFixed(1)}`, w.label, `${dur(w.est)}→${dur(w.actual)}`, T(`${w.day} · 预估 ${dur(w.est)}，实际 ${dur(w.actual)}`, `${w.day} · estimated ${dur(w.est)}, actual ${dur(w.actual)}`),
       () => { const f = this.app.vault.getAbstractFileByPath(w.path); if (f instanceof TFile) this.plugin.openLine(f, w.line); });
   }
 
@@ -3411,7 +3414,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerInterval(window.setInterval(() => this.pollGames(), 60 * 1000));
 
     this.registerView(VIEW_TYPE, (leaf) => new SpiralView(leaf, this));
-    this.addRibbonIcon("orbit", "螺旋日程", () => this.activate());
+    this.addRibbonIcon("orbit", T("螺旋日程", "Nautilus Spiral"), () => this.activate());
     // 命令和快捷面板（⌃⌥S）都从这张表来；默认快捷键都在 ⌃⌥ 下面，Obsidian 设置 → 快捷键里可以改
     let nm = (s) => s;   // 命令名
     for (const a of this.actions()) {
@@ -3465,8 +3468,8 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerEditorExtension(this.lineProgressExtension());
     this.registerEditorExtension(this.mainSliderExtension());   // 主线块下面能拖的进度条
     this.registerInterval(window.setInterval(() => this.progPoll().catch((e) => console.error("[螺旋日程] 进度条刷新失败", e)), 10 * 1000));
-    this.addCommand({ id: "bind-session", name: nm("把这一行绑定到一个 Agent 会话…（进度条只听它）"), editorCallback: (editor) => this.bindSession(editor) });
-    this.addCommand({ id: "unbind-session", name: nm("解除这一行和 Agent 会话的绑定"), editorCallback: (editor) => this.bindSession(editor, true) });
+    this.addCommand({ id: "bind-session", name: nm(T("把这一行绑定到一个 Agent 会话…（进度条只听它）", "Bind this line to an agent session… (the progress bar follows only that one)")), editorCallback: (editor) => this.bindSession(editor) });
+    this.addCommand({ id: "unbind-session", name: nm(T("解除这一行和 Agent 会话的绑定", "Unbind this line from its agent session")), editorCallback: (editor) => this.bindSession(editor, true) });
     this.registerEvent(this.app.workspace.on("file-open", (f) => this.kwBaseline(f)));
     this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
@@ -3499,7 +3502,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const date = this.today();
     const dayKey = date.format(cfg.format);
     const file = this.app.vault.getAbstractFileByPath(this.journalPath(date));
-    if (!(file instanceof TFile)) return `今天（${dayKey}）还没有日记`;
+    if (!(file instanceof TFile)) return T(`今天（${dayKey}）还没有日记`, `No daily note for today (${dayKey}) yet`);
     const items = parseJournal(await this.app.vault.read(file), cfg);
     this.withCalendar(items, date);
     const nowM = moment();
@@ -3508,27 +3511,27 @@ module.exports = class NautilusSpiral extends Plugin {
     applyWork(items, cfg, dayKey, now, 0, bounds);
     const plan = schedule(items, cfg, now, 0, bounds);
     const C = capacity(items, plan, cfg, now, 0, bounds);
-    const lines = [`${C.tone === "warning" ? "⚠️ " : ""}${capSummary(C)}`, `可安排 ${dur(C.available)} / ${dur(C.totalAvailable)} · 事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}`];
+    const lines = [`${C.tone === "warning" ? "⚠️ " : ""}${capSummary(C)}`, T(`可安排 ${dur(C.available)} / ${dur(C.totalAvailable)} · 事件 ${dur(C.fixed)} / ${dur(C.totalFixed)}`, `Schedulable ${dur(C.available)} / ${dur(C.totalAvailable)} · Events ${dur(C.fixed)} / ${dur(C.totalFixed)}`)];
     const next = plan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).slice(0, 5);
-    if (next.length) lines.push("", "接下来：", ...next.map((t) => `${t.doing ? "进行中" : clock(t.segments[t.workedN][0])}  ${t.label}（${t.remaining < t.dur - 1 ? "剩 " + dur(t.remaining) : dur(t.dur)}）`));
+    if (next.length) lines.push("", T("接下来：", "Up next:"), ...next.map((t) => T(`${t.doing ? "进行中" : clock(t.segments[t.workedN][0])}  ${t.label}（${t.remaining < t.dur - 1 ? "剩 " + dur(t.remaining) : dur(t.dur)}）`, `${t.doing ? "Doing" : clock(t.segments[t.workedN][0])}  ${t.label} (${t.remaining < t.dur - 1 ? dur(t.remaining) + " left" : dur(t.dur)})`)));
     const over = plan.queue.filter((t) => t.overflow);
-    if (over.length) lines.push("", "排不下：", ...over.map((t) => `· ${t.label}`));
-    if (plan.suspended.length) lines.push("", "⏸ 挂起：" + plan.suspended.map((t) => t.label).join("、"));
+    if (over.length) lines.push("", T("排不下：", "Won't fit:"), ...over.map((t) => `· ${t.label}`));
+    if (plan.suspended.length) lines.push("", T("⏸ 挂起：", "⏸ On hold: ") + plan.suspended.map((t) => t.label).join(T("、", ", ")));
     const tail = await this.dayTail(dayKey, items);
     if (tail.length) lines.push("", ...tail);
     return lines.join("\n");
   }
 
   // 发到 Telegram 的图文版（HTML 格式）：「?」的回复和「任务提醒」每天定时推送共用
-  async telegramReport(title = "螺旋日程") {
+  async telegramReport(title = T("螺旋日程", "Nautilus Spiral")) {
     const cfg = this.settings;
     const date = this.today();
     const dayKey = date.format(cfg.format);
     const H = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const nowM = moment();
-    const head = `🌀 <b>${H(title)}</b> · ${date.format("M月D日")} 周${"日一二三四五六"[date.day()]} · ${nowM.format("HH:mm")}`;
+    const head = T(`🌀 <b>${H(title)}</b> · ${date.format("M月D日")} 周${"日一二三四五六"[date.day()]} · ${nowM.format("HH:mm")}`, `🌀 <b>${H(title)}</b> · ${date.format("ddd, MMM D")} · ${nowM.format("HH:mm")}`);
     const file = this.app.vault.getAbstractFileByPath(this.journalPath(date));
-    if (!(file instanceof TFile)) return `${head}\n\n📭 今天还没有日记`;
+    if (!(file instanceof TFile)) return T(`${head}\n\n📭 今天还没有日记`, `${head}\n\n📭 No daily note for today yet`);
     const items = parseJournal(await this.app.vault.read(file), cfg);
     this.withCalendar(items, date);
     const now = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
@@ -3551,58 +3554,58 @@ module.exports = class NautilusSpiral extends Plugin {
     const spent = (t) => (t.spentToday || 0) + (t.spentBefore || 0);
 
     const lines = [head, "━━━━━━━━━━━━━━━"];
-    lines.push(`🕰 ${clock(S)} → ${E >= 1440 ? "次日 " : ""}${clock(E)}  ${bar((now - S) / (E - S))}  今天已过 ${pct((now - S) / (E - S))}`);
+    lines.push(T(`🕰 ${clock(S)} → ${E >= 1440 ? "次日 " : ""}${clock(E)}  ${bar((now - S) / (E - S))}  今天已过 ${pct((now - S) / (E - S))}`, `🕰 ${clock(S)} → ${E >= 1440 ? "next day " : ""}${clock(E)}  ${bar((now - S) / (E - S))}  ${pct((now - S) / (E - S))} of today gone`));
     const C = capacity(items, plan, cfg, now, 0, bounds);
-    lines.push(`⏳ 可安排 <b>${dur(C.available)}</b> · 📋 已计划 <b>${dur(C.demand)}</b> · ` +
-      `${C.status.key === "overload" ? "🔴" : C.status.key === "fragmented" ? "🟠" : "🟢"} ${C.status.label} <b>${dur(C.status.value)}</b> · 剩余 ${C.left}%`);
+    lines.push(T(`⏳ 可安排 <b>${dur(C.available)}</b> · 📋 已计划 <b>${dur(C.demand)}</b> · `, `⏳ Schedulable <b>${dur(C.available)}</b> · 📋 Planned <b>${dur(C.demand)}</b> · `) +
+      T(`${C.status.key === "overload" ? "🔴" : C.status.key === "fragmented" ? "🟠" : "🟢"} ${C.status.label} <b>${dur(C.status.value)}</b> · 剩余 ${C.left}%`, `${C.status.key === "overload" ? "🔴" : C.status.key === "fragmented" ? "🟠" : "🟢"} ${C.status.label} <b>${dur(C.status.value)}</b> · ${C.left}% free`));
     const tasks = items.filter((i) => i.kind === "task" && !i.container);
     const done = tasks.filter((i) => i.state === "done");
     const openN = tasks.filter((i) => i.state === "open").length;
-    lines.push(`✅ 做完 <b>${done.length}</b> · ⬜ 还剩 <b>${openN}</b>  ${bar(done.length / (done.length + openN || 1))}  ${pct(done.length / (done.length + openN || 1))}`);
+    lines.push(T(`✅ 做完 <b>${done.length}</b> · ⬜ 还剩 <b>${openN}</b>  ${bar(done.length / (done.length + openN || 1))}  ${pct(done.length / (done.length + openN || 1))}`, `✅ Done <b>${done.length}</b> · ⬜ Open <b>${openN}</b>  ${bar(done.length / (done.length + openN || 1))}  ${pct(done.length / (done.length + openN || 1))}`));
 
     // ⭐ 正在做：专注、吃饭锻炼、DOING
     const doing = plan.queue.filter((t) => t.doing);
     const s = this.session();
     const b = cfg.breakState;
     if (doing.length || s || b) {
-      lines.push("", "⭐ <b>正在做</b>");
-      if (s) lines.push(`⏱ 专注中 · ${s.tasks.map((t) => `${H(t.label)} ${Date.now() < t.end ? `还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}` : "到点了"}`).join("；")}`);
-      if (b) lines.push(`${breakIcon(b.word)} ${H(b.word)}中 · ${moment(b.since).format("HH:mm")} 起，${dur(Math.max(1, Math.round((Date.now() - b.since) / 60e3)))}`);
+      lines.push("", T("⭐ <b>正在做</b>", "⭐ <b>Doing</b>"));
+      if (s) lines.push(T(`⏱ 专注中 · ${s.tasks.map((t) => `${H(t.label)} ${Date.now() < t.end ? `还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}` : "到点了"}`).join("；")}`, `⏱ Focusing · ${s.tasks.map((t) => `${H(t.label)} ${Date.now() < t.end ? `${dur(Math.ceil((t.end - Date.now()) / 60e3))} left` : "time's up"}`).join("; ")}`));
+      if (b) lines.push(T(`${breakIcon(b.word)} ${H(b.word)}中 · ${moment(b.since).format("HH:mm")} 起，${dur(Math.max(1, Math.round((Date.now() - b.since) / 60e3)))}`, `${breakIcon(b.word)} ${H(b.word)} · since ${moment(b.since).format("HH:mm")}, ${dur(Math.max(1, Math.round((Date.now() - b.since) / 60e3)))}`));
       for (const t of doing) {
         const p = t.progress != null ? t.progress : spent(t) / (spent(t) + t.remaining || 1);
-        lines.push(`⭐ <b>${L(t)}</b>`, `      ${bar(p, 8)} ${spent(t) >= 1 ? `已做 ${dur(spent(t))} · ` : ""}剩 ${dur(t.remaining)}`);
+        lines.push(`⭐ <b>${L(t)}</b>`, T(`      ${bar(p, 8)} ${spent(t) >= 1 ? `已做 ${dur(spent(t))} · ` : ""}剩 ${dur(t.remaining)}`, `      ${bar(p, 8)} ${spent(t) >= 1 ? `${dur(spent(t))} done · ` : ""}${dur(t.remaining)} left`));
       }
     }
     const paused = tasks.filter((t) => t.state === "open" && t.paused);
-    if (paused.length) lines.push(`⏸ 暂停：${paused.map((t) => L(t, 16)).join("、")}`);
+    if (paused.length) lines.push(T(`⏸ 暂停：${paused.map((t) => L(t, 16)).join("、")}`, `⏸ Paused: ${paused.map((t) => L(t, 16)).join(", ")}`));
 
     // ⏭ 接下来（按排到的时间）
     const next = plan.queue.filter((t) => !t.doing && t.segments.length > t.workedN)
       .sort((a, c) => a.segments[a.workedN][0] - c.segments[c.workedN][0]).slice(0, 5);
     if (next.length) {
-      lines.push("", "⏭ <b>接下来</b>");
+      lines.push("", T("⏭ <b>接下来</b>", "⏭ <b>Up next</b>"));
       for (const t of next) {
         const at = t.segments[t.workedN][0];
-        lines.push(`${clockIcon(at)} <code>${clock(at)}</code> ${L(t)} · ${t.remaining < t.dur - 1 ? `剩 ${dur(t.remaining)}` : dur(t.dur)}`);
+        lines.push(`${clockIcon(at)} <code>${clock(at)}</code> ${L(t)} · ${t.remaining < t.dur - 1 ? T(`剩 ${dur(t.remaining)}`, `${dur(t.remaining)} left`) : dur(t.dur)}`);
       }
     }
     const events = items.filter((i) => i.kind === "event" && i.state !== "done" && !i.pinned && i.end > now).sort((a, c) => a.start - c.start).slice(0, 4);
     if (events.length) {
-      lines.push("", "📅 <b>固定安排</b>");
+      lines.push("", T("📅 <b>固定安排</b>", "📅 <b>Fixed events</b>"));
       for (const e of events) lines.push(`${e.start <= now ? "🔴" : "🔔"} <code>${clock(e.start)}–${clock(e.end)}</code> ${L(e)}`);
     }
     const over = plan.queue.filter((t) => t.overflow);
     if (over.length) {
-      lines.push("", `🚫 <b>排不下</b>（${over.length} 件）`);
+      lines.push("", T(`🚫 <b>排不下</b>（${over.length} 件）`, `🚫 <b>Won't fit</b> (${over.length})`));
       lines.push(...over.slice(0, 5).map((t) => `▫️ ${L(t)}`));
-      if (over.length > 5) lines.push(`▫️ …还有 ${over.length - 5} 件`);
+      if (over.length > 5) lines.push(T(`▫️ …还有 ${over.length - 5} 件`, `▫️ …and ${over.length - 5} more`));
     }
-    if (plan.suspended.length) lines.push("", `💤 搁置 ${plan.suspended.length} 件：${plan.suspended.slice(0, 4).map((t) => L(t, 14)).join("、")}${plan.suspended.length > 4 ? "…" : ""}`);
+    if (plan.suspended.length) lines.push("", T(`💤 搁置 ${plan.suspended.length} 件：${plan.suspended.slice(0, 4).map((t) => L(t, 14)).join("、")}${plan.suspended.length > 4 ? "…" : ""}`, `💤 ${plan.suspended.length} parked: ${plan.suspended.slice(0, 4).map((t) => L(t, 14)).join(", ")}${plan.suspended.length > 4 ? "…" : ""}`));
     const recent = done.filter((t) => t.stamp != null).sort((a, c) => c.stamp - a.stamp).slice(0, 3);
-    if (recent.length) lines.push("", `🎉 刚做完：${recent.map((t) => L(t, 16)).join("、")}`);
+    if (recent.length) lines.push("", T(`🎉 刚做完：${recent.map((t) => L(t, 16)).join("、")}`, `🎉 Just finished: ${recent.map((t) => L(t, 16)).join(", ")}`));
     const tail = (await this.dayTail(dayKey, items)).slice(1);   // 第一行「做完几件」上面已经有了
     if (tail.length) lines.push("", ...tail.map(H));
-    lines.push("", "<i>💬 回「?」随时看 · 「睡了」「起了」记作息</i>");
+    lines.push("", T("<i>💬 回「?」随时看 · 「睡了」「起了」记作息</i>", "<i>💬 Send /now anytime to check</i>"));
     return lines.join("\n");
   }
 
@@ -3629,7 +3632,7 @@ module.exports = class NautilusSpiral extends Plugin {
       svg.setAttribute("width", px); svg.setAttribute("height", px);
       svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
       const img = new Image();
-      await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error("螺旋图画不出来")); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg)); });
+      await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error(T("螺旋图画不出来", "Could not draw the spiral"))); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg)); });
       const pad = Math.round(px * 0.04);
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = px + pad * 2;
@@ -3676,23 +3679,23 @@ module.exports = class NautilusSpiral extends Plugin {
     const out = [];
     const done = items.filter((i) => i.kind === "task" && i.state === "done").length;
     const open = items.filter((i) => i.kind === "task" && i.state === "open" && !i.container).length;
-    out.push(`✅ 做完 ${done} 件 · 还有 ${open} 件没做完`);
+    out.push(T(`✅ 做完 ${done} 件 · 还有 ${open} 件没做完`, `✅ ${done} done · ${open} unfinished`));
     const mf = this.settings.showMain !== false && this.app.vault.getAbstractFileByPath(this.journalPath(moment(dayKey, this.settings.format)));
     if (mf instanceof TFile) {
       const M = mainOf(await this.app.vault.cachedRead(mf)), left = M.tasks.filter((t) => t.state !== "done");
-      if (M.total) out.push(`🎯 主线 ${M.done}/${M.total}（${Math.round(M.done / M.total * 100)}%）${left.length ? " · 没做完：" + left.map((t) => t.label).join("、") : " · 全部做完"}`);
+      if (M.total) out.push(T(`🎯 主线 ${M.done}/${M.total}（${Math.round(M.done / M.total * 100)}%）${left.length ? " · 没做完：" + left.map((t) => t.label).join("、") : " · 全部做完"}`, `🎯 Mainline ${M.done}/${M.total} (${Math.round(M.done / M.total * 100)}%)${left.length ? " · unfinished: " + left.map((t) => t.label).join(", ") : " · all done"}`));
     }
     // 当日复盘：预计和实际差多少（只算做完、也记到了用时的）
     if (this.settings.showDayReview !== false) {
       const isToday = dayKey === this.today().format(this.settings.format);
       if (items.some((i) => i.kind === "task" && i.worked === undefined)) { const m = moment(); applyWork(items, this.settings, dayKey, normalize(m.hours() * 60 + m.minutes(), this.settings), isToday ? 0 : -1, (this.settings.dayBounds || {})[dayKey] || {}); }
       const s = dayReview(items, this.settings, { live: isToday, auto: this.autoKeys(dayKey) }).summary;
-      if (s.comparedCount) out.push(`📋 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`);
+      if (s.comparedCount) out.push(T(`📋 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`, `📋 Compared ${s.comparedCount}: estimated ${dur(s.plannedMinutes)} · actual ${dur(s.actualMinutes)} · off by ${signed(s.varianceMinutes)}`));
     }
     const ai = this.settings.showAi !== false && aiPick((await this.aiUsage()).days[dayKey], this.settings);
-    if (ai) out.push(`🤖 协作 ${dur(ai.wall)} · Agent 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok`);
+    if (ai) out.push(T(`🤖 协作 ${dur(ai.wall)} · Agent 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok`, `🤖 Agents ${dur(ai.wall)} · agent hours ${dur(ai.agent)} · output ${fmtTok(ai.out)} tok`));
     const games = this.settings.trackGames !== false && (await this.gameLog()).days[dayKey];
-    if (games && games.length) out.push(`🎮 游戏 ${dur(unionMin(games))}`);
+    if (games && games.length) out.push(T(`🎮 游戏 ${dur(unionMin(games))}`, `🎮 Gaming ${dur(unionMin(games))}`));
     return out;
   }
 
@@ -3710,8 +3713,8 @@ module.exports = class NautilusSpiral extends Plugin {
       // 前一天「睡了」记下的结束时刻（凌晨的会超过 1440）→ 睡了多久
       const pe = ((cfg.dayBounds || {})[fmtKey(new Date(ms - 864e5), cfg)] || {}).end;
       const slept = pe != null ? d.getHours() * 60 + d.getMinutes() + 1440 - pe : null;
-      const sleepLine = slept != null && slept >= 60 && slept <= 20 * 60 ? `😴 ${clock(pe)} 睡 → ${clock(d.getHours() * 60 + d.getMinutes())} 起，睡了 ${dur(slept)}${slept < 6 * 60 ? "，有点少" : slept >= 8 * 60 ? "，睡得挺足 👍" : ""}\n` : "";
-      return `☀️ ${clock(t)} 开始\n${sleepLine}\n` + (await this.capacityText());
+      const sleepLine = slept != null && slept >= 60 && slept <= 20 * 60 ? T(`😴 ${clock(pe)} 睡 → ${clock(d.getHours() * 60 + d.getMinutes())} 起，睡了 ${dur(slept)}${slept < 6 * 60 ? "，有点少" : slept >= 8 * 60 ? "，睡得挺足 👍" : ""}\n`, `😴 Slept ${clock(pe)} → up ${clock(d.getHours() * 60 + d.getMinutes())}, ${dur(slept)} of sleep${slept < 6 * 60 ? ", a bit short" : slept >= 8 * 60 ? ", well rested 👍" : ""}\n`) : "";
+      return T(`☀️ ${clock(t)} 开始\n${sleepLine}\n`, `☀️ Started at ${clock(t)}\n${sleepLine}\n`) + (await this.capacityText());
     }
     const { key: dayKey, t: raw } = aiDay(ms, cfg);   // 凌晨睡的算前一天
     const work = (cfg.workLog || {})[dayKey] || {};
@@ -3721,32 +3724,32 @@ module.exports = class NautilusSpiral extends Plugin {
     const file = this.app.vault.getAbstractFileByPath(`${cfg.folder}/${dayKey}.md`);
     const items = file instanceof TFile ? parseJournal(await this.app.vault.read(file), cfg) : [];
     const b = cfg.dayBounds[dayKey] || {};
-    return [`🌙 ${clock(t)} 收工 · 今天 ${clock(b.start ?? S)}–${clock(t)}`, ...(await this.dayTail(dayKey, items))].join("\n");
+    return [T(`🌙 ${clock(t)} 收工 · 今天 ${clock(b.start ?? S)}–${clock(t)}`, `🌙 Done for the day at ${clock(t)} · today ${clock(b.start ?? S)}–${clock(t)}`), ...(await this.dayTail(dayKey, items))].join("\n");
   }
 
   // ---- 快捷操作：命令、默认快捷键、快捷面板共用一张表 ----
   actions() {
     const ca = (key) => ({ modifiers: ["Ctrl", "Alt"], key });
     return [
-      { id: "quick-panel", name: "快捷面板（螺旋日程的所有操作）", key: ca("S"), run: () => new QuickPanel(this.app, this).open(), hidden: true },
-      { id: "status", name: "现在怎样：专注、在做的、容量、接下来", key: ca("V"), run: () => this.showStatus() },
-      { id: "doing-ai", name: "正在做的事的 Agent 会话", key: ca("C"), run: () => this.showDoingAi() },
-      { id: "start-here", name: "开始光标所在的任务（改成 DOING + 专注）", key: { modifiers: ["Mod", "Shift"], key: "Enter" }, editor: true, run: (editor, view) => this.startAtCursor(editor, view) },
-      { id: "start-next", name: "开始下一件（改成 DOING + 专注）", key: ca("N"), run: () => this.startNext() },
-      { id: "suggest-focus", name: "开一轮专注（选一个大方向）", key: ca("F"), run: () => this.suggestFocus("", 0) },
-      { id: "notify-test", name: "测试带按钮的系统通知（试验）", run: async () => {
+      { id: "quick-panel", name: T("快捷面板（螺旋日程的所有操作）", "Quick panel (every Nautilus Spiral action)"), key: ca("S"), run: () => new QuickPanel(this.app, this).open(), hidden: true },
+      { id: "status", name: T("现在怎样：专注、在做的、容量、接下来", "Status now: focus, doing, capacity, up next"), key: ca("V"), run: () => this.showStatus() },
+      { id: "doing-ai", name: T("正在做的事的 Agent 会话", "Agent sessions for what you're doing"), key: ca("C"), run: () => this.showDoingAi() },
+      { id: "start-here", name: T("开始光标所在的任务（改成 DOING + 专注）", "Start the task under the cursor (DOING + focus)"), key: { modifiers: ["Mod", "Shift"], key: "Enter" }, editor: true, run: (editor, view) => this.startAtCursor(editor, view) },
+      { id: "start-next", name: T("开始下一件（改成 DOING + 专注）", "Start the next task (DOING + focus)"), key: ca("N"), run: () => this.startNext() },
+      { id: "suggest-focus", name: T("开一轮专注（选一个大方向）", "Start a focus round (pick a direction)"), key: ca("F"), run: () => this.suggestFocus("", 0) },
+      { id: "notify-test", name: T("测试带按钮的系统通知（试验）", "Test a system notification with buttons (experimental)"), run: async () => {
         this._noNotify = 0;
-        new OB.Notice("发了一条测试通知，在通知上点「收到」（横幅样式下要悬停后点「选项」）");
-        const r = await this.ask("螺旋日程 · 测试通知", "看到这条就说明通了。点「收到」试试按钮", ["收到", "不用了"], 60);
-        new OB.Notice(r == null ? "发不出去：系统没允许「螺旋日程」发通知。到「系统设置 → 通知 → 螺旋日程」打开「允许通知」，或者在通知中心里找到它的授权请求点「允许」。在那之前到点提醒照旧弹对话框" : r === "" ? "通知发出去了，但没点按钮（60 秒到了）" : r === "__click__" ? "收到：你点的是通知本身" : `收到：你点了「${r}」`, 10000);
+        new OB.Notice(T("发了一条测试通知，在通知上点「收到」（横幅样式下要悬停后点「选项」）", "Sent a test notification. Click \"Got it\" on it (with banner style, hover and click \"Options\" first)"));
+        const r = await this.ask(T("螺旋日程 · 测试通知", "Nautilus Spiral · test notification"), T("看到这条就说明通了。点「收到」试试按钮", "If you can see this, notifications work. Click \"Got it\" to try the button"), [T("收到", "Got it"), T("不用了", "No thanks")], 60);
+        new OB.Notice(r == null ? T("发不出去：系统没允许「螺旋日程」发通知。到「系统设置 → 通知 → 螺旋日程」打开「允许通知」，或者在通知中心里找到它的授权请求点「允许」。在那之前到点提醒照旧弹对话框", "Could not send: macOS hasn't allowed \"Nautilus Spiral\" to send notifications. Turn on Allow Notifications in System Settings → Notifications → Nautilus Spiral, or click Allow on its request in Notification Center. Until then, reminders still pop up as dialogs") : r === "" ? T("通知发出去了，但没点按钮（60 秒到了）", "The notification was sent, but no button was clicked (60 seconds passed)") : r === "__click__" ? T("收到：你点的是通知本身", "Received: you clicked the notification itself") : T(`收到：你点了「${r}」`, `Received: you clicked "${r}"`), 10000);
       } },
-      { id: "focus-end", name: "结束这一轮专注（问做完了没有）", key: ca("E"), when: () => !!this.session(), run: () => this.askDone(this.session()) },
-      { id: "break-back", name: "吃饭 / 锻炼回来了（问要不要切回 DOING）", key: ca("B"), when: () => !!this.settings.breakState, run: () => { this.settings.breakState.asking = false; this.askBack(this.settings.breakState); } },
-      { id: "review", name: "预估 vs 实际（复盘）", key: ca("R"), run: () => this.showReview() },
-      { id: "open", name: "打开螺旋日程", key: ca("O"), run: () => this.activate() },
-      { id: "day-bounds", name: "设置今天的起床 / 收工时间", key: ca("T"), run: () => new BoundsModal(this.app, this, this.today()).open() },
-      { id: "open-today", name: "打开今天的日记（凌晨按日界算前一天）", run: () => this.openToday() },
-      { id: "calendar-refresh", name: "重新读取日历（macOS 日历 / Google 日历）", run: () => { this.cal.cache.clear(); this.gcal.cals = null; this.refresh(); } },
+      { id: "focus-end", name: T("结束这一轮专注（问做完了没有）", "End this focus round (asks whether it's done)"), key: ca("E"), when: () => !!this.session(), run: () => this.askDone(this.session()) },
+      { id: "break-back", name: T("吃饭 / 锻炼回来了（问要不要切回 DOING）", "Back from a break (asks whether to switch back to DOING)"), key: ca("B"), when: () => !!this.settings.breakState, run: () => { this.settings.breakState.asking = false; this.askBack(this.settings.breakState); } },
+      { id: "review", name: T("预估 vs 实际（复盘）", "Estimate vs actual (review)"), key: ca("R"), run: () => this.showReview() },
+      { id: "open", name: T("打开螺旋日程", "Open Nautilus Spiral"), key: ca("O"), run: () => this.activate() },
+      { id: "day-bounds", name: T("设置今天的起床 / 收工时间", "Set today's start / end of day"), key: ca("T"), run: () => new BoundsModal(this.app, this, this.today()).open() },
+      { id: "open-today", name: T("打开今天的日记（凌晨按日界算前一天）", "Open today's daily note (before the day cutoff it's still yesterday)"), run: () => this.openToday() },
+      { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.gcal.cals = null; this.refresh(); } },
     ];
   }
 
@@ -3805,7 +3808,7 @@ module.exports = class NautilusSpiral extends Plugin {
   async showDoingAi() {
     const cfg = this.settings;
     const file = this.todayFile();
-    if (!file) { new OB.Notice("今天还没有日记"); return; }
+    if (!file) { new OB.Notice(T("今天还没有日记", "No daily note for today yet")); return; }
     if (OB.Platform?.isDesktopApp && !this._aiBusy) await this.scanAi();   // 先读一遍最新的会话日志
     const key = this.today().format(cfg.format);
     const ai = aiPick((await this.aiUsage()).days[key], cfg);
@@ -3820,17 +3823,17 @@ module.exports = class NautilusSpiral extends Plugin {
     for (const t of doing) {
       const list = aiFor(t.worked, ai?.list, t.label);
       for (const x of list) if (x.related) matched.add(x.sid);
-      groups.push({ name: `▶ ${t.label}`, sub: t.spentToday >= 1 ? `今天做了 ${dur(t.spentToday)}` : "", list });
+      groups.push({ name: `▶ ${t.label}`, sub: t.spentToday >= 1 ? T(`今天做了 ${dur(t.spentToday)}`, `${dur(t.spentToday)} today`) : "", list });
     }
     const live = (ai?.list || []).filter((x) => !matched.has(x.sid) && (x.segs || []).some(([, b]) => b >= now - 15))
       .map((x) => ({ ...x, related: true, lastAt: Math.max(...x.segs.map(([, b]) => b)) }));
     if (live.length) {
       const ids = new Set(live.map((x) => x.sid));
       for (const g of groups) g.list = g.list.filter((x) => x.related || !ids.has(x.sid));
-      groups.push({ name: "🟢 现在还在跑、没对上哪件的会话", list: live });
+      groups.push({ name: T("🟢 现在还在跑、没对上哪件的会话", "🟢 Sessions running now that match no task"), list: live });
     }
-    if (!doing.length && !live.length) { new OB.Notice("现在没有在做的事，也没有在跑的 Agent 会话"); return; }
-    new AiSessionsModal(this.app, "正在做的事 · Agent 会话", groups).open();
+    if (!doing.length && !live.length) { new OB.Notice(T("现在没有在做的事，也没有在跑的 Agent 会话", "Nothing in progress and no agent session running")); return; }
+    new AiSessionsModal(this.app, T("正在做的事 · Agent 会话", "What you're doing · agent sessions"), groups).open();
   }
 
   // ⌃⌥R 打开螺旋，展开并滚到「📏 预估 vs 实际」
@@ -3844,7 +3847,7 @@ module.exports = class NautilusSpiral extends Plugin {
     await v.render();
     const head = v.containerEl.querySelector(".naut-review-head");
     if (head) head.scrollIntoView({ block: "start", behavior: "smooth" });
-    else new OB.Notice("还没有够条件的任务：要做完、写了预估、也记到了实际用时");
+    else new OB.Notice(T("还没有够条件的任务：要做完、写了预估、也记到了实际用时", "No task qualifies yet: it has to be done, have an estimate, and have actual time recorded"));
   }
 
   // ---- 预估 vs 实际 ----
@@ -3956,9 +3959,9 @@ module.exports = class NautilusSpiral extends Plugin {
         // 和日记同一个坐标：这天 0 点起的分钟数，过了午夜 > 1440
         const start = Math.round((e.start - mid) / 60e3), end = Math.round((e.end - mid) / 60e3);
         if (end <= start) continue;
-        items.push({ kind: "event", state: "none", label: e.title || "（无标题）", start, end, line: -1, indent: 0, prio: false, cal: e });
+        items.push({ kind: "event", state: "none", label: e.title || T("（无标题）", "(untitled)"), start, end, line: -1, indent: 0, prio: false, cal: e });
       }
-      next = { at: Date.now(), items, allDay, ...(errors.length ? { error: errors.join("；") } : {}) };
+      next = { at: Date.now(), items, allDay, ...(errors.length ? { error: errors.join(T("；", "; ")) } : {}) };
     } catch (e) {
       console.error("[螺旋日程] 读取日历失败", e);
       next = { at: Date.now(), items: [], allDay: [], error: String(e.message || e) };
@@ -4016,7 +4019,7 @@ module.exports = class NautilusSpiral extends Plugin {
   async startTask(file, item) {
     if (!item.doing) {
       const ok = await this.editTask(file.path, workKey(item.label), toDoing, item.line);
-      if (!ok) { new OB.Notice(`日记里找不到「${item.label}」这一行（刚改过？），没有开始`); return; }
+      if (!ok) { new OB.Notice(T(`日记里找不到「${item.label}」这一行（刚改过？），没有开始`, `Can't find the line "${item.label}" in the daily note (just edited?); not started`)); return; }
     }
     this.begin(file.path, item.label, focusMinutes(item, this.settings));
   }
@@ -4026,11 +4029,11 @@ module.exports = class NautilusSpiral extends Plugin {
     const n = editor.getCursor().line;
     const raw = editor.getLine(n);
     const it = parseJournal(raw, this.settings)[0];
-    if (it && it.kind === "task" && it.state === "done") { new OB.Notice("这一条已经做完了"); return; }
+    if (it && it.kind === "task" && it.state === "done") { new OB.Notice(T("这一条已经做完了", "This one is already done")); return; }
     const doing = it && it.kind === "task" && it.state === "open" && it.doing;
     const next = doing ? raw : toDoing(raw);
     const t = parseJournal(next, this.settings)[0];
-    if (!t || t.kind !== "task") { new OB.Notice("光标所在的这一行不是列表项"); return; }
+    if (!t || t.kind !== "task") { new OB.Notice(T("光标所在的这一行不是列表项", "The line under the cursor is not a list item")); return; }
     if (!doing) editor.setLine(n, next);   // 编辑器里直接改：⌘Z 一步撤销
     this.begin(view.file.path, t.label, focusMinutes(t, this.settings));
   }
@@ -4041,7 +4044,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const date = this.today();
     const dayKey = date.format(cfg.format);
     const file = this.app.vault.getAbstractFileByPath(this.journalPath(date));
-    if (!(file instanceof TFile)) { new OB.Notice("今天还没有日记"); return; }
+    if (!(file instanceof TFile)) { new OB.Notice(T("今天还没有日记", "No daily note for today yet")); return; }
     const items = parseJournal(await this.app.vault.read(file), cfg);
     this.withCalendar(items, date);
     const nowM = moment();
@@ -4050,7 +4053,7 @@ module.exports = class NautilusSpiral extends Plugin {
     applyWork(items, cfg, dayKey, now, 0, bounds);
     const plan = schedule(items, cfg, now, 0, bounds);
     const next = plan.queue.filter((t) => !t.doing && t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0])[0];
-    if (!next) { new OB.Notice("没有排着的待办了"); return; }
+    if (!next) { new OB.Notice(T("没有排着的待办了", "No to-dos left in the schedule")); return; }
     await this.startTask(file, next);
   }
 
@@ -4064,7 +4067,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (s && !s.asked) {
       if (!s.tasks.some((t) => t.key === key)) { s.tasks.push(this.line(path, label, minutes)); this.extendRaycast(s); }
       this.saveData(cfg);
-      new OB.Notice(`➕ ${label} 加入这一轮 · ${s.tasks.length} 条线并行 · 这一条 ${dur(minutes)}`);
+      new OB.Notice(T(`➕ ${label} 加入这一轮 · ${s.tasks.length} 条线并行 · 这一条 ${dur(minutes)}`, `➕ ${label} joins this round · ${s.tasks.length} threads in parallel · this one ${dur(minutes)}`));
       this.refresh();
       return;
     }
@@ -4077,7 +4080,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const s = (cfg.focusSession = { tasks, start: Date.now(), rcEnd: 0, asked: false });
     this.extendRaycast(s, true);
     this.saveData(cfg);
-    new OB.Notice(`▶ ${tasks.map((t) => `${t.label} ${dur(t.minutes)}${t.round > 1 ? `（第 ${t.round} 轮）` : ""}`).join(" + ")}`);
+    new OB.Notice(`▶ ${tasks.map((t) => `${t.label} ${dur(t.minutes)}${t.round > 1 ? T(`（第 ${t.round} 轮）`, ` (round ${t.round})`) : ""}`).join(" + ")}`);
     this.refresh();
   }
 
@@ -4127,7 +4130,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const tasks = s.tasks;
       this.endSession(s);
       await this.finish(tasks, Date.now());
-      this.notify("✅ 在 Raycast 里完成了", tasks.map((t) => t.label).join("、"));
+      this.notify(T("✅ 在 Raycast 里完成了", "✅ Completed in Raycast"), tasks.map((t) => t.label).join(T("、", ", ")));
     } finally { this._probing = false; }
   }
 
@@ -4145,32 +4148,32 @@ module.exports = class NautilusSpiral extends Plugin {
     try {
       if (cfg.focusAsk === false) { this.dropFromSession([t.key]); return; }
       run("/usr/bin/afplay", ["/System/Library/Sounds/Glass.aiff"]);
-      this.toDiscord(`⏱ **专注到点** · ${t.label}（${dur(t.minutes)}${t.round > 1 ? ` · 第 ${t.round} 轮` : ""}）`);
+      this.toDiscord(T(`⏱ **专注到点** · ${t.label}（${dur(t.minutes)}${t.round > 1 ? ` · 第 ${t.round} 轮` : ""}）`, `⏱ **Focus time's up** · ${t.label} (${dur(t.minutes)}${t.round > 1 ? ` · round ${t.round}` : ""})`));
       const others = s.tasks.filter((x) => x !== t && !x.asked);
-      const msg = `这一条 ${dur(t.minutes)}${t.round > 1 ? `（第 ${t.round} 轮）` : ""}` +
-        (others.length ? `\n另外 ${others.length} 条线还在走：${others.map((x) => `${x.label}（还剩 ${dur(Math.max(1, Math.ceil((x.end - Date.now()) / 60e3)))}）`).join("、")}` : "") + (t.dir ? "\n接着来吗？" : "\n做完了吗？");
-      const btn = t.dir ? await this.choose(`专注到点 · ${t.label}`, msg, ["收工", "换个方向", "再来一轮"], "再来一轮", 1800)
-        : await this.choose(`专注到点 · ${t.label}`, msg, ["先停下", "再来一轮", "做完了"], "做完了", 1800);
+      const msg = T(`这一条 ${dur(t.minutes)}${t.round > 1 ? `（第 ${t.round} 轮）` : ""}`, `This one ${dur(t.minutes)}${t.round > 1 ? ` (round ${t.round})` : ""}`) +
+        (others.length ? T(`\n另外 ${others.length} 条线还在走：${others.map((x) => `${x.label}（还剩 ${dur(Math.max(1, Math.ceil((x.end - Date.now()) / 60e3)))}）`).join("、")}`, `\n${others.length} other thread(s) still running: ${others.map((x) => `${x.label} (${dur(Math.max(1, Math.ceil((x.end - Date.now()) / 60e3)))} left)`).join(", ")}`) : "") + (t.dir ? T("\n接着来吗？", "\nKeep going?") : T("\n做完了吗？", "\nIs it done?"));
+      const btn = t.dir ? await this.choose(T(`专注到点 · ${t.label}`, `Focus time's up · ${t.label}`), msg, [T("收工", "Done for now"), T("换个方向", "Change direction"), T("再来一轮", "Another round")], T("再来一轮", "Another round"), 1800)
+        : await this.choose(T(`专注到点 · ${t.label}`, `Focus time's up · ${t.label}`), msg, [T("先停下", "Pause it"), T("再来一轮", "Another round"), T("做完了", "Done")], T("做完了", "Done"), 1800);
       if (this.settings.focusSession !== s || !s.tasks.includes(t)) return;   // 等回答的时候已经手动改了状态 / 这一轮结束了
       const at = Date.now();
       // 结束时刻：到点后 10 分钟内回答按回答的时刻，再晚多半是人走开了，按到点的时刻
       const end = at - t.end <= 10 * 60e3 ? at : t.end;
       // 大方向那条线：不对应日记里的哪一行，只管接着来还是收工
-      if (t.dir && btn !== "再来一轮") {
+      if (t.dir && btn !== T("再来一轮", "Another round")) {
         this.dropFromSession([t.key]);
-        if (btn === "换个方向") this.suggestFocus("", 0);
-        else if (!btn) new OB.Notice(`⏱ 「${t.label}」这一轮到点了`);
+        if (btn === T("换个方向", "Change direction")) this.suggestFocus("", 0);
+        else if (!btn) new OB.Notice(T(`⏱ 「${t.label}」这一轮到点了`, `⏱ This round of "${t.label}" is over`));
         return;
       }
-      if (btn === "做完了") { this.dropFromSession([t.key]); await this.finish([t], end); }
-      else if (btn === "再来一轮") {
+      if (btn === T("做完了", "Done")) { this.dropFromSession([t.key]); await this.finish([t], end); }
+      else if (btn === T("再来一轮", "Another round")) {
         Object.assign(t, { asked: false, round: t.round + 1, end: at + t.minutes * 60e3 });
         this.extendRaycast(s);
         this.saveData(cfg);
-        new OB.Notice(`▶ ${t.label} · 第 ${t.round} 轮 · ${dur(t.minutes)}`);
+        new OB.Notice(T(`▶ ${t.label} · 第 ${t.round} 轮 · ${dur(t.minutes)}`, `▶ ${t.label} · round ${t.round} · ${dur(t.minutes)}`));
         this.refresh();
-      } else if (btn === "先停下") { this.dropFromSession([t.key]); await this.editTasks(t.path, [t.key], toPaused); }
-      else { this.dropFromSession([t.key]); new OB.Notice(`⏱ 「${t.label}」到点了，没有回答，还是 DOING`); }
+      } else if (btn === T("先停下", "Pause it")) { this.dropFromSession([t.key]); await this.editTasks(t.path, [t.key], toPaused); }
+      else { this.dropFromSession([t.key]); new OB.Notice(T(`⏱ 「${t.label}」到点了，没有回答，还是 DOING`, `⏱ "${t.label}" is over, no answer, still DOING`)); }
     } finally { this._asking = false; }
   }
 
@@ -4184,16 +4187,16 @@ module.exports = class NautilusSpiral extends Plugin {
     if (cfg.focusAsk === false || s.tasks.every((t) => t.dir)) { this.endSession(s); return; }   // 只有大方向的一轮：直接结束，不用问做完没有
     run("/usr/bin/afplay", ["/System/Library/Sounds/Glass.aiff"]);
     const lines = s.tasks.filter((t) => !t.asked && !t.dir);
-    const head = `提前结束 · 这一轮 ${dur(Math.max(1, Math.round((Date.now() - s.start) / 60e3)))}`;
+    const head = T(`提前结束 · 这一轮 ${dur(Math.max(1, Math.round((Date.now() - s.start) / 60e3)))}`, `Ended early · this round ${dur(Math.max(1, Math.round((Date.now() - s.start) / 60e3)))}`);
     let done = [], next = "";
     if (lines.length === 1) {
-      next = await dialog(`${head}\n\n${lines[0].label}\n\n做完了吗？`, ["先停下", "再来一轮", "做完了"], "做完了", 1800);
-      if (next === "做完了") done = lines;
+      next = await dialog(T(`${head}\n\n${lines[0].label}\n\n做完了吗？`, `${head}\n\n${lines[0].label}\n\nIs it done?`), [T("先停下", "Pause it"), T("再来一轮", "Another round"), T("做完了", "Done")], T("做完了", "Done"), 1800);
+      if (next === T("做完了", "Done")) done = lines;
     } else {
-      const picked = await pickList(`${head}\n\n${lines.length} 条线并行，勾上做完了的：`, lines.map((t) => t.label), "就这些做完了", "都没做完");
+      const picked = await pickList(T(`${head}\n\n${lines.length} 条线并行，勾上做完了的：`, `${head}\n\n${lines.length} threads in parallel; check the ones that are done:`), lines.map((t) => t.label), T("就这些做完了", "These are done"), T("都没做完", "None are done"));
       done = lines.filter((t) => (picked || []).includes(t.label));
       const rest = lines.filter((t) => !done.includes(t));
-      if (picked != null && rest.length) next = await dialog(`还有 ${rest.length} 件没做完：\n${rest.map((t) => "· " + t.label).join("\n")}`, ["先停下", "再来一轮"], "再来一轮", 1800);
+      if (picked != null && rest.length) next = await dialog(T(`还有 ${rest.length} 件没做完：\n${rest.map((t) => "· " + t.label).join("\n")}`, `${rest.length} still unfinished:\n${rest.map((t) => "· " + t.label).join("\n")}`), [T("先停下", "Pause it"), T("再来一轮", "Another round")], T("再来一轮", "Another round"), 1800);
     }
     if (cfg.focusSession !== s) return;   // 等回答的时候已经手动改了状态 / 开了别的
     const at = Date.now();
@@ -4201,9 +4204,9 @@ module.exports = class NautilusSpiral extends Plugin {
     this.endSession(s);
     if (done.length) await this.finish(done, at);
     if (!rest.length) return;
-    if (next === "再来一轮") this.startSession(rest.map((t) => ({ ...t, asked: false, round: t.round + 1, end: at + t.minutes * 60e3 })));
-    else if (next === "先停下") { for (const [path, ts] of groupBy(rest)) await this.editTasks(path, ts.map((t) => t.key), toPaused); }
-    else if (!done.length) new OB.Notice(`⏱ 专注结束了，没有回答，还是 DOING：${rest.map((t) => t.label).join("、")}`);
+    if (next === T("再来一轮", "Another round")) this.startSession(rest.map((t) => ({ ...t, asked: false, round: t.round + 1, end: at + t.minutes * 60e3 })));
+    else if (next === T("先停下", "Pause it")) { for (const [path, ts] of groupBy(rest)) await this.editTasks(path, ts.map((t) => t.key), toPaused); }
+    else if (!done.length) new OB.Notice(T(`⏱ 专注结束了，没有回答，还是 DOING：${rest.map((t) => t.label).join("、")}`, `⏱ Focus ended, no answer, still DOING: ${rest.map((t) => t.label).join(", ")}`));
   }
 
   // 记成 DONE 开始-结束：开始用 DOING 后面写的时刻，没写用开始这条线的时刻
@@ -4214,7 +4217,7 @@ module.exports = class NautilusSpiral extends Plugin {
     for (const [path, ts] of groupBy(tasks)) {
       for (const t of ts) await this.editTask(path, t.key, (raw) => toDone(raw, moment(t.start).format("HH:mm"), end));
     }
-    new OB.Notice(`✅ ${tasks.map((t) => t.label).join("、")}`);
+    new OB.Notice(`✅ ${tasks.map((t) => t.label).join(T("、", ", "))}`);
   }
 
   endSession(s) {
@@ -4285,7 +4288,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const victims = mine.filter((t) => !born.includes(t)).sort((a, b) => inFocus(a) - inFocus(b) || since(a) - since(b)).slice(0, mine.length - cfg.doingLimit);
     if (!victims.length) return;
     await this.pause(file, victims);
-    this.notify(`⏸ 同时在做超过 ${cfg.doingLimit} 件`, `已暂停最早开始的：${victims.map((t) => t.label).join("、")}`, file, victims[0].line,
+    this.notify(T(`⏸ 同时在做超过 ${cfg.doingLimit} 件`, `⏸ More than ${cfg.doingLimit} tasks in progress`), T(`已暂停最早开始的：${victims.map((t) => t.label).join("、")}`, `Paused the earliest started: ${victims.map((t) => t.label).join(", ")}`), file, victims[0].line,
       victims.length === 1 ? { "换成暂停别的": () => this.openLine(file, victims[0].line) } : {});
   }
 
@@ -4329,7 +4332,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!stale.length) return;
     await this.pause(file, stale);
     const keys = stale.map((t) => workKey(t.label));
-    this.notify(`⏸ 超过 ${cfg.staleHours} 小时没动`, `已暂停：${stale.map((t) => t.label).join("、")}`, file, stale[0].line,
+    this.notify(T(`⏸ 超过 ${cfg.staleHours} 小时没动`, `⏸ Untouched for over ${cfg.staleHours} hours`), T(`已暂停：${stale.map((t) => t.label).join("、")}`, `Paused: ${stale.map((t) => t.label).join(", ")}`), file, stale[0].line,
       { "还在做，切回 DOING": async () => { for (const k of keys) this.touch(k); await this.editTasks(file.path, keys, toDoing); } });
   }
 
@@ -4349,7 +4352,7 @@ module.exports = class NautilusSpiral extends Plugin {
     cfg.breakState = { word, since: Date.now(), path: file.path, keys: doing.map((t) => workKey(t.label)), labels: doing.map((t) => t.label), focus, active: 0 };
     if (doing.length) await this.editTasks(file.path, cfg.breakState.keys, toPaused);
     await this.saveData(cfg);
-    this.notify(`${breakIcon(word)} ${word}：计时暂停`, doing.length ? `已暂停 ${doing.length} 件：${doing.map((t) => t.label).join("、")}` : "现在没有在做的事");
+    this.notify(T(`${breakIcon(word)} ${word}：计时暂停`, `${breakIcon(word)} ${word}: timer paused`), doing.length ? T(`已暂停 ${doing.length} 件：${doing.map((t) => t.label).join("、")}`, `Paused ${doing.length}: ${doing.map((t) => t.label).join(", ")}`) : T("现在没有在做的事", "Nothing in progress right now"));
     this.refresh();
   }
 
@@ -4409,16 +4412,16 @@ module.exports = class NautilusSpiral extends Plugin {
     if (b.asking) return;
     b.asking = true;
     const away = dur(Math.max(1, Math.round((Date.now() - b.since) / 60e3)));
-    if (!b.keys.length && !b.focus) { cfg.breakState = null; this.saveData(cfg); this.notify(`欢迎回来`, `${b.word} ${away}`); this.refresh(); return; }
-    this.notify(`欢迎回来 · ${b.word} ${away}`, `要把 ${b.keys.length} 件切回 DOING 吗？`);
+    if (!b.keys.length && !b.focus) { cfg.breakState = null; this.saveData(cfg); this.notify(T(`欢迎回来`, `Welcome back`), `${b.word} ${away}`); this.refresh(); return; }
+    this.notify(T(`欢迎回来 · ${b.word} ${away}`, `Welcome back · ${b.word} ${away}`), T(`要把 ${b.keys.length} 件切回 DOING 吗？`, `Switch ${b.keys.length} task(s) back to DOING?`));
     run("/usr/bin/afplay", ["/System/Library/Sounds/Glass.aiff"]);
-    const msg = `欢迎回来 · ${b.word} ${away}\n\n要把这 ${b.keys.length} 件切回 DOING 吗？\n${b.labels.map((l) => "· " + l).join("\n")}` +
-      (b.focus && b.focus.tasks.length ? `\n\n专注接着开：${b.focus.tasks.map((t) => `${t.label} 还剩 ${dur(t.left)}`).join("、")}` : "");
-    const btn = await dialog(msg, ["先不用", "切回来"], "切回来", 900);
+    const msg = T(`欢迎回来 · ${b.word} ${away}\n\n要把这 ${b.keys.length} 件切回 DOING 吗？\n${b.labels.map((l) => "· " + l).join("\n")}`, `Welcome back · ${b.word} ${away}\n\nSwitch these ${b.keys.length} task(s) back to DOING?\n${b.labels.map((l) => "· " + l).join("\n")}`) +
+      (b.focus && b.focus.tasks.length ? T(`\n\n专注接着开：${b.focus.tasks.map((t) => `${t.label} 还剩 ${dur(t.left)}`).join("、")}`, `\n\nFocus resumes: ${b.focus.tasks.map((t) => `${t.label} ${dur(t.left)} left`).join(", ")}`) : "");
+    const btn = await dialog(msg, [T("先不用", "Not now"), T("切回来", "Switch back")], T("切回来", "Switch back"), 900);
     if (cfg.breakState !== b) return;
     if (!btn) { b.asking = false; b.active = 0; this.saveData(cfg); return; }   // 没回答：人又走了，过会儿再问
     cfg.breakState = null;
-    if (btn === "切回来") {
+    if (btn === T("切回来", "Switch back")) {
       // 只切还是 PAUSED 的（吃饭时手动改过的不动）
       await this.editTasks(b.path, b.keys, (raw) => (splitTask(raw)?.kw === "PAUSED" ? toDoing(raw) : raw));
       for (const k of b.keys) this.touch(k);
@@ -4435,7 +4438,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const ch = (cfg.discordChannel || "").trim();
     if (!ch || !(OB.Platform && OB.Platform.isDesktopApp)) return false;
     const bin = (cfg.discordCmd || "~/.local/bin/notify-discord").replace(/^~(?=\/)/, require("os").homedir());
-    const r = await run(bin, ["--as", "螺旋日程", ch, text], 20000);
+    const r = await run(bin, ["--as", T("螺旋日程", "Nautilus Spiral"), ch, text], 20000);
     if (r.code !== 0) console.error("[螺旋日程] 发到 Discord 失败", (r.stderr || r.stdout).slice(0, 300));
     return r.code === 0;
   }
@@ -4530,7 +4533,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // 后台打开链接，不把焦点抢走
   openUrl(url, background = true) {
-    require("child_process").execFile("/usr/bin/open", background ? ["-g", url] : [url], (e) => { if (e) new OB.Notice(`打不开 ${url.split("?")[0]}：${e.message}`); });
+    require("child_process").execFile("/usr/bin/open", background ? ["-g", url] : [url], (e) => { if (e) new OB.Notice(T(`打不开 ${url.split("?")[0]}：${e.message}`, `Can't open ${url.split("?")[0]}: ${e.message}`)); });
   }
 
   async setBounds(dayKey, kind, t) {
@@ -4640,7 +4643,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (typeof this.addStatusBarItem !== "function") return;
     const el = (this.statusEl = this.addStatusBarItem());
     el.addClass("naut-status", "mod-clickable");
-    el.setAttr("aria-label", "单击：打开螺旋日程 · ⌥ 单击：到日记里正在做的那一行 · ⇧ 单击：在旁边分栏打开今天的日记");
+    el.setAttr("aria-label", T("单击：打开螺旋日程 · ⌥ 单击：到日记里正在做的那一行 · ⇧ 单击：在旁边分栏打开今天的日记", "Click: open Nautilus Spiral · ⌥-click: go to the task in progress in the daily note · ⇧-click: open today's daily note in a split"));
     el.setAttr("data-tooltip-position", "top");
     el.addEventListener("click", (ev) => this.statusClick(ev).catch((e) => console.error("[螺旋日程] 状态栏", e)));
     this.registerInterval(window.setInterval(() => this.tickStatus(), 1000));
@@ -4774,8 +4777,8 @@ module.exports = class NautilusSpiral extends Plugin {
       const before = wasAll.get(a.sid);
       if (before === a.state || (before === undefined && Date.now() - a.at > 60e3)) continue;
       const lv = this._ai && this._ai.live.get(a.sid), perm = a.state === "perm" && this.permOf(a.sid, lv);
-      const title = a.state === "perm" ? "✋ 等你批准" : "⚠️ 会话报错停了";
-      const body = [a.label || a.title || "Agent 会话", a.state === "perm" ? (perm && perm.tool ? `要用 ${perm.tool}` : "停在「允许吗？」上") : (lv && lv.err) || ""].filter(Boolean).join("\n");
+      const title = a.state === "perm" ? T("✋ 等你批准", "✋ Waiting for your approval") : T("⚠️ 会话报错停了", "⚠️ Session stopped on an error");
+      const body = [a.label || a.title || T("Agent 会话", "Agent session"), a.state === "perm" ? (perm && perm.tool ? T(`要用 ${perm.tool}`, `Wants to use ${perm.tool}`) : T("停在「允许吗？」上", "Stopped at \"Allow?\"")) : (lv && lv.err) || ""].filter(Boolean).join("\n");
       if (!document.hasFocus()) this.ding();
       try {
         const n = new Notification(title, { body, silent: true });
@@ -4831,12 +4834,12 @@ module.exports = class NautilusSpiral extends Plugin {
       overdue = over(ms, cfg.pomoMinutes ?? 45);
       forgotten = over(ms, cfg.forgottenMinutes ?? 120);
       const name = open[0][0].replace(/\[\[(?:[^\]|]*\|)?([^\]]+)\]\]/g, "$1");
-      text = `${forgotten ? "⚠ 检查计时 · " : "▶ "}${elapsedText(ms)} · ${cut(name)}${open.length > 1 ? ` · ${open.length} 件` : ""}`;
+      text = `${forgotten ? T("⚠ 检查计时 · ", "⚠ Check the timer · ") : "▶ "}${elapsedText(ms)} · ${cut(name)}${open.length > 1 ? T(` · ${open.length} 件`, ` · ${open.length} tasks`) : ""}`;
     } else if (fs) {
       // 只选了方向的一轮专注：正计时
       const ms = Date.now() - Math.min(...fs.tasks.map((t) => t.start || fs.start || Date.now()));
       overdue = over(ms, cfg.pomoMinutes ?? 45);
-      text = `⏱ ${elapsedText(ms)} · 专注`;
+      text = T(`⏱ ${elapsedText(ms)} · 专注`, `⏱ ${elapsedText(ms)} · focus`);
     } else {
       text = this._capText ? `🌀 ${this._capText}` : "🌀";
       warning = !!this._capWarn;
@@ -4846,7 +4849,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const M = cfg.showMain !== false ? this._main : null;
     if (M && M.total) {
       const nx = mainNext(M);
-      if (!open.length && !fs && nx) { text = `🎯 ${M.done}/${M.total} · ${nx.state === "doing" ? "在做" : "下一件"} ${cut(nx.label)}`; warning = false; }
+      if (!open.length && !fs && nx) { text = `🎯 ${M.done}/${M.total} · ${nx.state === "doing" ? T("在做", "Doing") : T("下一件", "Next")} ${cut(nx.label)}`; warning = false; }
       else text += ` · 🎯${M.done}/${M.total}`;
     }
     if (this._statusText !== text) { this._statusText = text; el.setText(text); }   // 和上次写的比：emoji 换成图标以后 DOM 里的字对不上
@@ -4897,7 +4900,7 @@ module.exports = class NautilusSpiral extends Plugin {
     else if (!M.total && was) { delete log[key]; this.saveSoon(); }
     // 多了：一冒出来就说一声（同一组只说一次）
     const ov = M.over.join("\n");
-    if (ov && ov !== this._mainOver) new OB.Notice(`🎯 主线最多 ${MAIN_MAX} 块，现在多了 ${M.over.length} 块：「${M.over.join("」「")}」不算主线。\n日记整理时会把多出来的 [#A] 降成 [#B]`, 10000);
+    if (ov && ov !== this._mainOver) new OB.Notice(T(`🎯 主线最多 ${MAIN_MAX} 块，现在多了 ${M.over.length} 块：「${M.over.join("」「")}」不算主线。\n日记整理时会把多出来的 [#A] 降成 [#B]`, `🎯 Mainline is at most ${MAIN_MAX} blocks; there are ${M.over.length} extra: "${M.over.join("\", \"")}" don't count as mainline.\nJournal cleanup will lower the extra [#A] to [#B]`), 10000);
     this._mainOver = ov;
     this.mainNudge(file, M, key);
   }
@@ -4926,8 +4929,8 @@ module.exports = class NautilusSpiral extends Plugin {
       this.saveSoon();
       if (now - t > 30) continue;
       const nx = mainNext(M);
-      if (!M.blocks.length) this.say("🎯 今天还没定主线", "给最要紧的一到三件写上 [#A]（todo a），螺旋会先排它们", file, 0);
-      else if (nx && nx.state !== "doing") this.say(`🎯 主线还差 ${M.total - M.done} 件`, `${mainPips(M)} 下一件：${nx.label}`, file, nx.line);
+      if (!M.blocks.length) this.say(T("🎯 今天还没定主线", "🎯 No mainline today yet"), T("给最要紧的一到三件写上 [#A]（todo a），螺旋会先排它们", "Mark the one to three most important things with [#A] (todo a) and the spiral schedules them first"), file, 0);
+      else if (nx && nx.state !== "doing") this.say(T(`🎯 主线还差 ${M.total - M.done} 件`, `🎯 Mainline: ${M.total - M.done} to go`), T(`${mainPips(M)} 下一件：${nx.label}`, `${mainPips(M)} Next: ${nx.label}`), file, nx.line);
     }
   }
   // 主线不定目标不开始：今天在做的主线任务（A 级那一行）下面还没写「🎯 目标：」的，问一次（交给 Agent 在做的不问）。
@@ -4947,14 +4950,14 @@ module.exports = class NautilusSpiral extends Plugin {
       asking.delete(key);
       if (!goal) {
         await this.editTasks(file.path, [key], toTodo);
-        new OB.Notice(`🎯 主线「${label.slice(0, 24)}」还没定目标，先改回 TODO 了`);
+        new OB.Notice(T(`🎯 主线「${label.slice(0, 24)}」还没定目标，先改回 TODO 了`, `🎯 Mainline task "${label.slice(0, 24)}" has no goal yet, so it went back to TODO`));
         return;
       }
       for (let tries = 0; tries < 3; tries++) {   // 正好你在打字、日记变了：重读一遍再写
         const base = await this.readJournal(file), lines = base.split("\n");
         const t = parseJournal(base, this.settings).find((i) => i.kind === "task" && workKey(i.label) === key);
         if (!t || goalUnder(lines, t.line)) return;
-        lines.splice(t.line + 1, 0, `${/^\s*/.exec(lines[t.line])[0]}\t- 🎯 目标：${goal}`);
+        lines.splice(t.line + 1, 0, T(`${/^\s*/.exec(lines[t.line])[0]}\t- 🎯 目标：${goal}`, `${/^\s*/.exec(lines[t.line])[0]}\t- 🎯 Goal: ${goal}`));
         if (await this.writeJournal(file, base, lines.join("\n"))) { this.sound("tick"); return; }
       }
     }).open();
@@ -5144,7 +5147,7 @@ module.exports = class NautilusSpiral extends Plugin {
   async statusClick(ev) {
     if (!ev.altKey && !ev.shiftKey) return this.activate();
     const file = this.todayFile();
-    if (!file) { new OB.Notice("今天还没有日记"); return; }
+    if (!file) { new OB.Notice(T("今天还没有日记", "No daily note for today yet")); return; }
     let line = 0;
     if (this._statusKey) {
       const it = parseJournal(await this.app.vault.cachedRead(file), this.settings).find((i) => i.kind === "task" && i.state === "open" && workKey(i.label) === this._statusKey);
@@ -5218,7 +5221,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const m = /^(\p{Extended_Pictographic}\uFE0F?)\s*(.+)$/u.exec(s);
       return m ? { emoji: m[1], name: m[2].trim() } : { emoji: "🎯", name: s };
     });
-    return list.length ? list : [{ emoji: "🎯", name: "专注" }];
+    return list.length ? list : [{ emoji: "🎯", name: T("专注", "Focus") }];
   }
 
 
@@ -5229,7 +5232,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const cfg = this.settings;
     const s = this.session();
     if (this._suggesting || (s && !s.asked) || cfg.breakState) {
-      if (!app && s && !s.asked) new OB.Notice("已经在专注了");
+      if (!app && s && !s.asked) new OB.Notice(T("已经在专注了", "Already focusing"));
       return;
     }
     this._suggesting = true;
@@ -5288,7 +5291,7 @@ module.exports = class NautilusSpiral extends Plugin {
     for (const [a, b] of segs) { const last = shown[shown.length - 1]; if (last && a - last[1] <= 10) last[1] = Math.max(last[1], b); else shown.push([a, b]); }
     const total = Math.round(segs.reduce((n, [a, b]) => n + b - a, 0));
     const indent = /^\s*/.exec(lines[at])[0] + "\t";
-    const line = `${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join("、")} · 共 ${durTag(total)}`;
+    const line = T(`${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join("、")} · 共 ${durTag(total)}`, `${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join(", ")} · total ${durTag(total)}`);
     const base = /^\s*/.exec(lines[at])[0].replace(/\t/g, "    ").length;
     for (let i = at + 1; i < lines.length; i++) {
       if (lines[i].trim() && /^\s*/.exec(lines[i])[0].replace(/\t/g, "    ").length <= base) break;
@@ -5338,7 +5341,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const path = this.journalPath(d);
     let file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
-      file = await this.app.vault.create(path, `---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`);
+      file = await this.app.vault.create(path, T(`---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`, `---\njournal: Daily\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`));
     }
     let open = null;
     if (reuse) this.app.workspace.iterateRootLeaves((l) => { if (!open && l.view?.file?.path === path) open = l; });
@@ -5515,18 +5518,18 @@ module.exports = class NautilusSpiral extends Plugin {
     let pct = null, lead = "", mode = "", tok = 0;
     if (archived) pct = 1;
     else if (it.progress != null) pct = it.progress;
-    else if (lv && lv.todo && lv.todo.total) { pct = lv.todo.done / lv.todo.total; lead = `${lv.todo.done}/${lv.todo.total} 步`; }
+    else if (lv && lv.todo && lv.todo.total) { pct = lv.todo.done / lv.todo.total; lead = T(`${lv.todo.done}/${lv.todo.total} 步`, `${lv.todo.done}/${lv.todo.total} steps`); }
     else if (it.explicitDur && it.startedAt != null && now >= it.startedAt) {
       const spent = now - it.startedAt;
       pct = Math.min(1, spent / it.dur);
-      lead = spent > it.dur ? `${dur(spent)} / ${dur(it.dur)} · 超 ${dur(spent - it.dur)}` : `${dur(spent)} / ${dur(it.dur)}`;
+      lead = spent > it.dur ? T(`${dur(spent)} / ${dur(it.dur)} · 超 ${dur(spent - it.dur)}`, `${dur(spent)} / ${dur(it.dur)} · ${dur(spent - it.dur)} over`) : `${dur(spent)} / ${dur(it.dur)}`;
     }
     const parts = lead ? [lead] : [];
     if (x) {
       (this._progSids ||= new Set()).add(x.sid);
       const quiet = lv ? Math.max(0, Math.round((Date.now() - lv.at) / 60e3)) : null;
       const perm = !archived && this.permOf(x.sid, lv);
-      const state = archived ? "已归档" : !lv ? "" : lv.state === "wait" ? "等你回复" : lv.state === "error" ? `报错停了${lv.err ? ` · ${lv.err}` : ""}` : perm ? `等你点允许${perm.tool ? ` · ${perm.tool}` : ""}` : lv.state === "limit" && this.queuedOf(x.sid) ? `排队续跑${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}` : lv.state === "limit" ? (lv.resets && Date.now() > lv.resets ? "额度已恢复，等你继续" : `撞${lv.week ? "周" : ""}限额${lv.resets ? ` · ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")} 恢复` : ""}`) : quiet <= AI_IDLE ? "在跑" : `${dur(quiet)} 没动静`;
+      const state = archived ? T("已归档", "Archived") : !lv ? "" : lv.state === "wait" ? T("等你回复", "Waiting for your reply") : lv.state === "error" ? T(`报错停了${lv.err ? ` · ${lv.err}` : ""}`, `Stopped on an error${lv.err ? ` · ${lv.err}` : ""}`) : perm ? T(`等你点允许${perm.tool ? ` · ${perm.tool}` : ""}`, `Waiting for you to allow${perm.tool ? ` · ${perm.tool}` : ""}`) : lv.state === "limit" && this.queuedOf(x.sid) ? T(`排队续跑${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}`, `Queued to resume${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}`) : lv.state === "limit" ? (lv.resets && Date.now() > lv.resets ? T("额度已恢复，等你继续", "Limit reset, waiting for you to continue") : T(`撞${lv.week ? "周" : ""}限额${lv.resets ? ` · ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")} 恢复` : ""}`, `Hit the ${lv.week ? "weekly " : ""}limit${lv.resets ? ` · resets ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")}` : ""}`)) : quiet <= AI_IDLE ? T("在跑", "Running") : T(`${dur(quiet)} 没动静`, `Quiet for ${dur(quiet)}`);
       mode = lv && lv.state === "run" && !perm && quiet <= AI_IDLE ? "run" : "wait";
       if (state) parts.push(state);
       const step = !archived && lv && lv.state === "run" ? (lv.todo && lv.todo.cur) || lv.step : "";
@@ -5537,18 +5540,18 @@ module.exports = class NautilusSpiral extends Plugin {
     const kids = x && !archived ? this.progKids(x.sid, lv) : null;
     if (kids && kids.sum) parts.push(kids.sum);
     return { pct, mode: pct != null ? "bar" : mode, agent: x ? aiAgent(x) : "", sid: x ? x.sid : "", tail: parts.join(" · "), tok,
-      tip: [archived ? "这个会话归档了" : it.progress != null ? "进度是你写在这一行里的" : pct != null && lead.includes("步") ? "进度按这个会话自己列的待办算" : pct != null ? "进度按预估时长算" : "这个会话没有列待办，看不出做到百分之几",
-        x ? `${x.bound ? "手动绑定的会话" : "监听的会话"}：${x.title || (x.text || "").slice(0, 40) || x.sid}（${aiWhere(x)}）` : ""].filter(Boolean).join("\n") };
+      tip: [archived ? T("这个会话归档了", "This session is archived") : it.progress != null ? T("进度是你写在这一行里的", "Progress is what you wrote on this line") : pct != null && lead.includes(T("步", "steps")) ? T("进度按这个会话自己列的待办算", "Progress follows the session's own to-do list") : pct != null ? T("进度按预估时长算", "Progress follows the estimated duration") : T("这个会话没有列待办，看不出做到百分之几", "This session keeps no to-do list, so there's no telling how far along it is"),
+        x ? T(`${x.bound ? "手动绑定的会话" : "监听的会话"}：${x.title || (x.text || "").slice(0, 40) || x.sid}（${aiWhere(x)}）`, `${x.bound ? "Manually bound session" : "Watched session"}: ${x.title || (x.text || "").slice(0, 40) || x.sid} (${aiWhere(x)})`) : ""].filter(Boolean).join("\n") };
   }
   // 一个 subagent 眼下算什么：{ st: run 在跑 / quiet 好久没动静 / done 跑完 / fail 出错或停了, word: 显示的字 }。
   // 前台派的 subagent，父会话这一轮都答完了它还没收尾，是被打断了（你按了停）
   kidState(r, parentWait) {
     const quiet = (Date.now() - r.at) / 60e3;
-    if (r.state === "done") return { st: "done", word: "跑完" };
-    if (r.state === "fail") return { st: "fail", word: r.end === "failed" ? "出错" : "停了" };
-    if (quiet <= AI_IDLE) return { st: "run", word: "在跑" };
-    if (!r.bg && parentWait) return { st: "fail", word: "停了" };
-    return { st: "quiet", word: `${dur(Math.round(quiet))} 没动静` };
+    if (r.state === "done") return { st: "done", word: T("跑完", "finished") };
+    if (r.state === "fail") return { st: "fail", word: r.end === "failed" ? T("出错", "error") : T("停了", "stopped") };
+    if (quiet <= AI_IDLE) return { st: "run", word: T("在跑", "running") };
+    if (!r.bg && parentWait) return { st: "fail", word: T("停了", "stopped") };
+    return { st: "quiet", word: T(`${dur(Math.round(quiet))} 没动静`, `quiet for ${dur(Math.round(quiet))}`) };
   }
   kidTok(r) {
     return [...r.tok.values()].reduce((n, v) => n + v, 0);
@@ -5561,9 +5564,9 @@ module.exports = class NautilusSpiral extends Plugin {
     const kids = ai.subsOf(sid).filter((r) => aiDay(r.start, this.settings).key === key).map((r) => this.kidState(r, parentWait).st);
     const sides = (this._side && this._side.get(sid)) || [];
     const n = (f) => kids.filter(f).length, bits = [];
-    if (n((k) => k === "run" || k === "quiet")) bits.push(`${n((k) => k === "run" || k === "quiet")} 跑`);
-    if (n((k) => k === "done")) bits.push(`${n((k) => k === "done")} 完`);
-    if (n((k) => k === "fail")) bits.push(`${n((k) => k === "fail")} 停`);
+    if (n((k) => k === "run" || k === "quiet")) bits.push(T(`${n((k) => k === "run" || k === "quiet")} 跑`, `${n((k) => k === "run" || k === "quiet")} running`));
+    if (n((k) => k === "done")) bits.push(T(`${n((k) => k === "done")} 完`, `${n((k) => k === "done")} done`));
+    if (n((k) => k === "fail")) bits.push(T(`${n((k) => k === "fail")} 停`, `${n((k) => k === "fail")} stopped`));
     const sum = [bits.length ? "🤖 " + bits.join(" ") : "", sides.length ? `side chat ${sides.length}` : ""].filter(Boolean).join(" · ");
     return sum ? { sum } : null;
   }
@@ -5572,15 +5575,15 @@ module.exports = class NautilusSpiral extends Plugin {
     const base = { pct: null, mode: "wait", agent: "claude", finish: null };
     if (kid.kind === "side") {
       const s = [...(this._side || new Map()).values()].flat().find((x) => String(x.pid) === kid.id);
-      return { ...base, tail: s ? `side chat · 开着 · ${dur(Math.max(1, Math.round((Date.now() - s.since) / 60e3)))}` : "side chat · 关了",
-        tip: "Claude 桌面版的 side chat：只看得到它开着（桌面版为它起的 claude 进程还在），问了什么、在答还是等你、用了多少 token 都读不到" };
+      return { ...base, tail: s ? T(`side chat · 开着 · ${dur(Math.max(1, Math.round((Date.now() - s.since) / 60e3)))}`, `side chat · open · ${dur(Math.max(1, Math.round((Date.now() - s.since) / 60e3)))}`) : T("side chat · 关了", "side chat · closed"),
+        tip: T("Claude 桌面版的 side chat：只看得到它开着（桌面版为它起的 claude 进程还在），问了什么、在答还是等你、用了多少 token 都读不到", "A side chat in the Claude desktop app: all that's visible is that it's open (the claude process the app started for it is still running); what was asked, whether it's answering or waiting, and how many tokens it used can't be read") };
     }
     let r = null, parent = "";
     for (const [sid, m] of (this._ai ? this._ai.subs : new Map())) for (const x of m.values()) if (x.id.startsWith(kid.id)) { r = x; parent = sid; }
-    if (!r) return { ...base, tail: "子代理 · 还没读到它的日志", tip: "" };
+    if (!r) return { ...base, tail: T("子代理 · 还没读到它的日志", "subagent · log not read yet"), tip: "" };
     const lv = this._ai.live.get(parent), k = this.kidState(r, !lv || lv.state !== "run"), tok = this.kidTok(r);
-    return { ...base, sid: parent, mode: k.st === "run" ? "run" : "wait", tail: ["子代理", k.word, k.st === "run" ? r.step : ""].filter(Boolean).join(" · "), tok,
-      tip: `${r.desc || "subagent"}（${r.type || "subagent"}${r.bg ? "，后台派的" : ""}）` };
+    return { ...base, sid: parent, mode: k.st === "run" ? "run" : "wait", tail: [T("子代理", "subagent"), k.word, k.st === "run" ? r.step : ""].filter(Boolean).join(" · "), tok,
+      tip: T(`${r.desc || "subagent"}（${r.type || "subagent"}${r.bg ? "，后台派的" : ""}）`, `${r.desc || "subagent"} (${r.type || "subagent"}${r.bg ? ", in the background" : ""})`) };
   }
   // 这一行对上的是哪个会话：下面有「🔗」行的（link = 那一行读出来的 { sid, agent }）优先，绑了就只听它，那个会话今天没动静也照样认；
   // 没绑的在今天有动静的会话里找，几个都对得上取最近在动的
@@ -5639,7 +5642,7 @@ module.exports = class NautilusSpiral extends Plugin {
       el.dataset.agent = info.agent;
       el.dataset.sid = info.sid || "";
       el.classList.toggle("is-linked", !!info.sid);
-      el.title = info.tip + (info.sid ? "\n点一下打开这个会话（终端里跑的切到那个终端标签）" : "");
+      el.title = info.tip + (info.sid ? T("\n点一下打开这个会话（终端里跑的切到那个终端标签）", "\nClick to open this session (switches to its terminal tab if it runs in a terminal)") : "");
       el._tail.textContent = (info.mode === "bar" ? "  " : " ") + info.tail;
       // token：数字后面一串 database 图标，整块靠右：每 100 万一个实心的，余下每 10 万一个空心的（满 10 个空心就并成一个实心）。
       // 实心太多就封顶，免得挤掉前面的字
@@ -5655,7 +5658,7 @@ module.exports = class NautilusSpiral extends Plugin {
         while (row.childElementCount > keep) row.lastElementChild.remove();
         for (let i = keep; i < want.length; i++) { const c = row.appendChild(doc.createElement("span")); c.className = "naut-tok-db" + (want[i] ? " is-full" : ""); c.style.setProperty("--naut-db-i", String(i - keep)); OB.setIcon(c, "database"); }
       }
-      el._tok.title = info.tok ? `${fmtTok(info.tok)} tok：实心的一个 100 万，空心的一个 10 万` : "";
+      el._tok.title = info.tok ? T(`${fmtTok(info.tok)} tok：实心的一个 100 万，空心的一个 10 万`, `${fmtTok(info.tok)} tok: each solid block is 1M, each hollow one 100k`) : "";
       if (info.mode === "bar") {
         const to = Math.max(0, Math.min(W, Math.round(info.pct * W)));
         const show = (n) => { el._bar.textContent = "[" + "#".repeat(n) + "-".repeat(W - n) + "]"; el._pct.textContent = " " + Math.round(n === to ? info.pct * 100 : n / W * 100) + "%"; };
@@ -5772,10 +5775,10 @@ module.exports = class NautilusSpiral extends Plugin {
           const row = el.appendChild(doc.createElement("div"));
           row.className = "naut-ms-row" + (r.done ? " is-done" : "");
           if (this.rows.length > 1) { const n = row.appendChild(doc.createElement("span")); n.className = "naut-ms-name"; n.textContent = r.label; }
-          if (r.done) { const d = row.appendChild(doc.createElement("span")); d.className = "naut-ms-done"; d.textContent = "✓ 做完了"; continue; }
+          if (r.done) { const d = row.appendChild(doc.createElement("span")); d.className = "naut-ms-done"; d.textContent = T("✓ 做完了", "✓ Done"); continue; }
           const input = row.appendChild(doc.createElement("input"));
           Object.assign(input, { type: "range", min: "0", max: "100", step: "5", value: String(r.pct), className: "naut-ms-range" });
-          input.setAttribute("aria-label", `「${r.label}」的进度`);
+          input.setAttribute("aria-label", T(`「${r.label}」的进度`, `Progress of "${r.label}"`));
           const out = row.appendChild(doc.createElement("span"));
           out.className = "naut-ms-val";
           const show = () => { out.textContent = `${input.value}%`; input.style.setProperty("--v", `${input.value}%`); };
@@ -5812,7 +5815,7 @@ module.exports = class NautilusSpiral extends Plugin {
   // 在 Claude 桌面版里打开一个会话（claude://resume 深链接：桌面版里没有的会先导入）
   openSession(sid) {
     if (!sid || !/^[0-9a-f-]{36}$/i.test(sid)) return;
-    require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${sid}`], (e) => { if (e) new OB.Notice("打不开 Claude 会话：" + e.message); });
+    require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${sid}`], (e) => { if (e) new OB.Notice(T("打不开 Claude 会话：", "Can't open the Claude session: ") + e.message); });
   }
   // 监听着的那几个会话有新动静就读进来，然后让各个编辑器把进度条重画一遍（没变的那几条不会动）
   async progPoll() {
@@ -5883,23 +5886,23 @@ module.exports = class NautilusSpiral extends Plugin {
     const cfg = this.settings;
     const n = editor.getCursor().line, raw = editor.getLine(n);
     const it = parseJournal((todosKid(editor.getValue().split("\n"), n) ? withTodo(raw) : raw).replace(/^\s+/, ""), cfg).find((i) => i.kind === "task");
-    if (!it) { new OB.Notice("光标要放在一行任务上（TODO / DOING… 开头的列表项）"); return; }
+    if (!it) { new OB.Notice(T("光标要放在一行任务上（TODO / DOING… 开头的列表项）", "Put the cursor on a task line (a list item starting with TODO / DOING…)")); return; }
     const lines = editor.getValue().split("\n");
     const had = linkUnder(lines, n);
     if (off) {
-      if (!had) { new OB.Notice("这一行下面没有「🔗」绑定"); return; }
+      if (!had) { new OB.Notice(T("这一行下面没有「🔗」绑定", "This line has no \"🔗\" binding under it")); return; }
       editor.transaction({ changes: [{ from: { line: had.line - 1, ch: lines[had.line - 1].length }, to: { line: had.line, ch: lines[had.line].length }, text: "" }] });
       this.progRefresh();
-      new OB.Notice("已解除绑定，这一行回到按名字自动对会话");
+      new OB.Notice(T("已解除绑定，这一行回到按名字自动对会话", "Unbound; this line goes back to matching sessions by name"));
       return;
     }
     const days = this.aiStore ? this.aiStore.days : {}, keys = Object.keys(days).sort().slice(-3), seen = new Map();
     for (const k of keys) for (const x of ((aiPick(days[k], cfg) || {}).list || [])) if (x.segs && x.segs.length) seen.set(x.sid, { ...x, day: k });
     const arch = this._archived || new Set();
     const list = [...seen.values()].filter((x) => !arch.has(x.sid)).sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : b.segs[b.segs.length - 1][1] - a.segs[a.segs.length - 1][1]));
-    if (!list.length) { new OB.Notice("最近三天没有读到 Agent 会话"); return; }
+    if (!list.length) { new OB.Notice(T("最近三天没有读到 Agent 会话", "No agent sessions found in the last three days")); return; }
     new BindModal(this.app, list, keys[keys.length - 1], had && had.sid, (x) => {
-      if (editor.getLine(n) !== raw) { new OB.Notice("这一行在这期间变了，没有绑，请再来一次"); return; }
+      if (editor.getLine(n) !== raw) { new OB.Notice(T("这一行在这期间变了，没有绑，请再来一次", "This line changed in the meantime and was not bound; please try again")); return; }
       const now = editor.getValue().split("\n"), cur = linkUnder(now, n);
       const title = x.title || (x.text || "").split(" / ")[0];
       const line = linkLine(/^\s*/.exec(raw)[0] + "\t", aiAgent(x), title, x.sid);
@@ -5908,7 +5911,7 @@ module.exports = class NautilusSpiral extends Plugin {
         : { from: { line: n, ch: raw.length }, to: { line: n, ch: raw.length }, text: "\n" + line }] });
       (this._progSids ||= new Set()).add(x.sid);
       this.progRefresh();
-      new OB.Notice(`🔗 已绑定：${title.slice(0, 30) || x.sid.slice(0, 8)}${it.doing ? "" : "\n这一行是 DOING 的时候才显示进度条"}`);
+      new OB.Notice(T(`🔗 已绑定：${title.slice(0, 30) || x.sid.slice(0, 8)}${it.doing ? "" : "\n这一行是 DOING 的时候才显示进度条"}`, `🔗 Bound: ${title.slice(0, 30) || x.sid.slice(0, 8)}${it.doing ? "" : "\nThe progress bar shows only while this line is DOING"}`));
     }).open();
   }
   progRefresh() {
@@ -5981,10 +5984,10 @@ class SpiralSettings extends PluginSettingTab {
         await this.plugin.saveData(s);
         this.plugin.refresh();
       }));
-    num("一天从几点开始", "螺旋的起点（0–23）", "dayStart", 0, 23);
-    num("一天到几点结束", "螺旋和排程到几点为止，超过 24 表示次日凌晨，比如 32 = 次日早上 8 点", "dayEnd", 12, 36);
+    num(T("一天从几点开始", "Day starts at"), T("螺旋的起点（0–23）", "Where the spiral begins (0–23)"), "dayStart", 0, 23);
+    num(T("一天到几点结束", "Day ends at"), T("螺旋和排程到几点为止，超过 24 表示次日凌晨，比如 32 = 次日早上 8 点", "Where the spiral and the schedule stop. Over 24 means after midnight, e.g. 32 = 8 AM the next day"), "dayEnd", 12, 36);
     // 日期分界按 24 小时制的时刻填。别的插件（日记整理、块去向、任务提醒…）的「今天」都读这一项
-    new Setting(containerEl).setName("日记日期分界").setDesc("这个时刻之前还算前一天的日记。按 24 小时制写：08:00、4:30、23:30 都行，只写一个数也行（8 = 08:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项")
+    new Setting(containerEl).setName(T("日记日期分界", "Daily note cutoff")).setDesc(T("这个时刻之前还算前一天的日记。按 24 小时制写：08:00、4:30、23:30 都行，只写一个数也行（8 = 08:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项", "Before this time it still counts as the previous day's note. Use 24-hour time: 08:00, 4:30 and 23:30 all work, or just a number (8 = 08:00). The companion plugins (journal cleanup, block routing, task reminders) follow this setting when working out which note is today's"))
       .addText((t) => {
         t.setPlaceholder("08:00").setValue(fmtHourClock(s.dayCutoff ?? 8)).onChange(async (v) => {
           const h = parseHourClock(v);
@@ -5997,80 +6000,80 @@ class SpiralSettings extends PluginSettingTab {
         // 离开输入框时写成统一的样子（8 → 08:00）；填得不对就退回现在的值
         t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(fmtHourClock(s.dayCutoff ?? 8)); });
       });
-    num("默认任务时长（分钟）", "没写时长的任务按这个算", "defaultDur", 1, 240);
+    num(T("默认任务时长（分钟）", "Default task length (minutes)"), T("没写时长的任务按这个算", "Used for tasks without a duration"), "defaultDur", 1, 240);
     const text = (name, desc, key) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
       .setValue(s[key])
       .onChange(async (v) => { s[key] = v.trim(); await this.plugin.saveData(s); this.plugin.refresh(); }));
-    text("日记文件夹", "", "folder");
-    text("日记文件名格式", "moment.js 格式", "format");
-    text("重要标记", "任务里含有这些文字就标成红色，用逗号分隔", "priorityMarkers");
-    new Setting(containerEl).setName("DOING 并行排").setDesc("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接")
+    text(T("日记文件夹", "Daily note folder"), "", "folder");
+    text(T("日记文件名格式", "Daily note file name format"), T("moment.js 格式", "moment.js format"), "format");
+    text(T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
+    new Setting(containerEl).setName(T("DOING 并行排", "Run DOING tasks in parallel")).setDesc(T("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接", "Several DOING tasks all start now and overlap, taking only as long as the longest one; turn off to place them back to back"))
       .addToggle((t) => t.setValue(s.parallelDoing !== false).onChange(async (v) => { s.parallelDoing = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    num("最短一段（分钟）", "任务被事件隔开时每段至少这么长；不够切成两段的任务整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满", "minChunk", 0, 240);
+    num(T("最短一段（分钟）", "Shortest chunk (minutes)"), T("任务被事件隔开时每段至少这么长；不够切成两段的任务整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满", "When events split a task, each piece is at least this long. A task too short to split is placed whole; if it doesn't fit, it moves to the next gap and smaller tasks after it move up. 0 = split and fill as before"), "minChunk", 0, 240);
 
-    containerEl.createEl("h3", { text: "macOS 日历" });
-    new Setting(containerEl).setName("读 macOS 日历").setDesc("把「日历」App 里的事件当固定事件排进螺旋（只读，不改日历）。第一次打开会在本机编译一个读日历的小助手（要有 Xcode 命令行工具），并弹出日历权限请求，选「允许」")
+    containerEl.createEl("h3", { text: T("macOS 日历", "macOS Calendar") });
+    new Setting(containerEl).setName(T("读 macOS 日历", "Read macOS Calendar")).setDesc(T("把「日历」App 里的事件当固定事件排进螺旋（只读，不改日历）。第一次打开会在本机编译一个读日历的小助手（要有 Xcode 命令行工具），并弹出日历权限请求，选「允许」", "Place events from the Calendar app on the spiral as fixed events (read-only; your calendars are not changed). The first time, a small calendar helper is compiled on this Mac (needs the Xcode command line tools) and macOS asks for calendar access; choose Allow"))
       .addToggle((t) => t.setValue(!!s.calendar).onChange(async (v) => { s.calendar = v; this.plugin.cal.cache.clear(); await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
     if (s.calendar) {
-      text("不读这些日历", "日历名称，逗号分隔，比如：中国大陆节假日, 生日", "calendarSkip");
-      const names = new Setting(containerEl).setName("本机的日历").setDesc("点「列出」看看有哪些日历");
-      names.addButton((b) => b.setButtonText("列出").onClick(async () => {
+      text(T("不读这些日历", "Skip these calendars"), T("日历名称，逗号分隔，比如：中国大陆节假日, 生日", "Calendar names, comma-separated, e.g. US Holidays, Birthdays"), "calendarSkip");
+      const names = new Setting(containerEl).setName(T("本机的日历", "Calendars on this Mac")).setDesc(T("点「列出」看看有哪些日历", "Click List to see which calendars there are"));
+      names.addButton((b) => b.setButtonText(T("列出", "List")).onClick(async () => {
         try {
           const cals = await this.plugin.cal.call(["--calendars"]);
-          names.setDesc(cals.map((c) => `${c.title}（${c.source}）`).join("、") || "一个日历也没有");
+          names.setDesc(cals.map((c) => T(`${c.title}（${c.source}）`, `${c.title} (${c.source})`)).join(T("、", ", ")) || T("一个日历也没有", "No calendars at all"));
         } catch (e) { names.setDesc(String(e.message || e)); }
       }));
     }
     this.skipWas = s.calendarSkip;
 
-    containerEl.createEl("h3", { text: "Google 日历" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "把 Google 日历里的事件当固定事件排进螺旋（只读，不改日历），和 macOS 日历可以同时开，同一件事只留一份。要用你自己在 Google Cloud 里建的 OAuth 客户端：新建项目 → 启用 Google Calendar API → 「凭据」里新建 OAuth 客户端 ID，应用类型选「桌面应用」→ 把客户端 ID 和密钥填到下面 → 点「连接」。申请的权限只有读日历；密钥和令牌存在系统钥匙串里，不写进插件的 data.json。" });
-    new Setting(containerEl).setName("读 Google 日历").setDesc("只读界面里勾着显示的日历；上面「不读这些日历」对它也管用")
+    containerEl.createEl("h3", { text: T("Google 日历", "Google Calendar") });
+    containerEl.createEl("p", { cls: "setting-item-description", text: T("把 Google 日历里的事件当固定事件排进螺旋（只读，不改日历），和 macOS 日历可以同时开，同一件事只留一份。要用你自己在 Google Cloud 里建的 OAuth 客户端：新建项目 → 启用 Google Calendar API → 「凭据」里新建 OAuth 客户端 ID，应用类型选「桌面应用」→ 把客户端 ID 和密钥填到下面 → 点「连接」。申请的权限只有读日历；密钥和令牌存在系统钥匙串里，不写进插件的 data.json。", "Place events from Google Calendar on the spiral as fixed events (read-only; your calendars are not changed). It can be on together with macOS Calendar; the same event is kept once. It uses an OAuth client you create yourself in Google Cloud: create a project → enable the Google Calendar API → under Credentials, create an OAuth client ID with application type Desktop app → enter the client ID and secret below → click Connect. The only permission requested is reading calendars; the secret and tokens are kept in the system keychain, not in the plugin's data.json.") });
+    new Setting(containerEl).setName(T("读 Google 日历", "Read Google Calendar")).setDesc(T("只读界面里勾着显示的日历；上面「不读这些日历」对它也管用", "Only calendars shown (checked) in Google Calendar are read; \"Skip these calendars\" above applies too"))
       .addToggle((t) => t.setValue(!!s.googleCal).onChange(async (v) => { s.googleCal = v; this.plugin.cal.cache.clear(); await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
     if (s.googleCal) {
       const g = this.plugin.gcal;
-      new Setting(containerEl).setName("客户端 ID").setDesc("形如 1234567890-xxxx.apps.googleusercontent.com")
+      new Setting(containerEl).setName(T("客户端 ID", "Client ID")).setDesc(T("形如 1234567890-xxxx.apps.googleusercontent.com", "Looks like 1234567890-xxxx.apps.googleusercontent.com"))
         .addText((t) => t.setValue(s.googleClientId || "").onChange(async (v) => { s.googleClientId = v.trim(); await this.plugin.saveData(s); }));
-      new Setting(containerEl).setName("客户端密钥").setDesc(this.plugin.secret("google-secret") ? "已经存好了。要换就重新填" : "填了以后存进系统钥匙串，这里不再显示")
+      new Setting(containerEl).setName(T("客户端密钥", "Client secret")).setDesc(this.plugin.secret("google-secret") ? T("已经存好了。要换就重新填", "Already saved. Enter it again to replace it") : T("填了以后存进系统钥匙串，这里不再显示", "Once entered, it is stored in the system keychain and not shown here again"))
         .addText((t) => { t.inputEl.type = "password"; t.setPlaceholder(this.plugin.secret("google-secret") ? "••••••••" : "GOCSPX-…").onChange((v) => { if (v.trim()) this.plugin.secret("google-secret", v.trim()); }); });
-      const conn = new Setting(containerEl).setName(g.connected() ? "已连接" : "还没连接").setDesc(g.connected() ? "授权存在系统钥匙串里。想换账号或者不用了，点「断开」" : "点「连接」会打开浏览器，登录 Google 并同意读日历，然后自动回到这里");
+      const conn = new Setting(containerEl).setName(g.connected() ? T("已连接", "Connected") : T("还没连接", "Not connected")).setDesc(g.connected() ? T("授权存在系统钥匙串里。想换账号或者不用了，点「断开」", "The authorization is kept in the system keychain. To switch accounts or stop using it, click Disconnect") : T("点「连接」会打开浏览器，登录 Google 并同意读日历，然后自动回到这里", "Click Connect to open the browser, sign in to Google and allow reading calendars; you'll be brought back here automatically"));
       if (g.connected()) {
-        conn.addButton((b) => b.setButtonText("列出日历").onClick(async () => {
-          try { conn.setDesc((await g.calendars()).map((c) => `${c.title}${c.shown ? "" : "（界面里没勾，不读）"}`).join("、") || "一个日历也没有"); } catch (e) { conn.setDesc(String(e.message || e)); }
+        conn.addButton((b) => b.setButtonText(T("列出日历", "List calendars")).onClick(async () => {
+          try { conn.setDesc((await g.calendars()).map((c) => `${c.title}${c.shown ? "" : T("（界面里没勾，不读）", " (not checked in Google Calendar, skipped)")}`).join(T("、", ", ")) || T("一个日历也没有", "No calendars at all")); } catch (e) { conn.setDesc(String(e.message || e)); }
         }));
-        conn.addButton((b) => b.setButtonText("断开").onClick(() => { g.disconnect(); this.plugin.cal.cache.clear(); this.plugin.refresh(); this.display(); }));
+        conn.addButton((b) => b.setButtonText(T("断开", "Disconnect")).onClick(() => { g.disconnect(); this.plugin.cal.cache.clear(); this.plugin.refresh(); this.display(); }));
       } else {
-        conn.addButton((b) => b.setCta().setButtonText("连接").onClick(async () => {
-          b.setDisabled(true).setButtonText("等浏览器里授权…");
-          try { await g.connect(); new OB.Notice("Google 日历连上了"); this.plugin.cal.cache.clear(); this.plugin.refresh(); }
-          catch (e) { new OB.Notice("没连上：" + String(e.message || e), 8000); }
+        conn.addButton((b) => b.setCta().setButtonText(T("连接", "Connect")).onClick(async () => {
+          b.setDisabled(true).setButtonText(T("等浏览器里授权…", "Waiting for authorization in the browser…"));
+          try { await g.connect(); new OB.Notice(T("Google 日历连上了", "Google Calendar connected")); this.plugin.cal.cache.clear(); this.plugin.refresh(); }
+          catch (e) { new OB.Notice(T("没连上：", "Not connected: ") + String(e.message || e), 8000); }
           this.display();
         }));
       }
     }
 
-    containerEl.createEl("h3", { text: "▶ 开始做 · 番茄钟 · Raycast Focus" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "螺旋上点 ▶，或在任务那一行按 ⌘⇧↵：这一行改成 DOING HH:MM，按条目上写的时长（10min、15分钟）专注一轮；到点问你做完没有，做完了就改成 DONE 开始-结束。" });
-    num("专注多久（分钟）", "0 = 按条目上写的时长（没写按「默认任务时长」，写了进度按还剩的）；填 25 = 每轮固定 25 分钟", "focusMinutes", 0, 600);
-    new Setting(containerEl).setName("到点问做完没有").setDesc("弹系统对话框：做完了（改成 DONE 开始-结束）/ 再来一轮 / 先停下（改回 TODO）。关掉就只计时，不问")
+    containerEl.createEl("h3", { text: T("▶ 开始做 · 番茄钟 · Raycast Focus", "▶ Start · Pomodoro · Raycast Focus") });
+    containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋上点 ▶，或在任务那一行按 ⌘⇧↵：这一行改成 DOING HH:MM，按条目上写的时长（10min、15分钟）专注一轮；到点问你做完没有，做完了就改成 DONE 开始-结束。", "Click ▶ on the spiral, or press ⌘⇧↵ on a task line: the line becomes DOING HH:MM and you focus for one round of the duration written on it (10min, 15m); when time's up you're asked whether it's done, and if it is, it becomes DONE start-end.") });
+    num(T("专注多久（分钟）", "Focus length (minutes)"), T("0 = 按条目上写的时长（没写按「默认任务时长」，写了进度按还剩的）；填 25 = 每轮固定 25 分钟", "0 = the duration written on the task (the default task length if none; what's left if progress is written); 25 = always 25 minutes a round"), "focusMinutes", 0, 600);
+    new Setting(containerEl).setName(T("到点问做完没有", "Ask whether it's done when time's up")).setDesc(T("弹系统对话框：做完了（改成 DONE 开始-结束）/ 再来一轮 / 先停下（改回 TODO）。关掉就只计时，不问", "Shows a system dialog: Done (becomes DONE start-end) / Another round / Pause it (back to TODO). Turn off to just time it without asking"))
       .addToggle((t) => t.setValue(s.focusAsk !== false).onChange(async (v) => { s.focusAsk = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("同时开 Raycast 专注").setDesc("用 raycast://focus/start 开一段同样时长的 Raycast Focus，屏蔽分心的 App 和网站")
+    new Setting(containerEl).setName(T("同时开 Raycast 专注", "Start Raycast Focus too")).setDesc(T("用 raycast://focus/start 开一段同样时长的 Raycast Focus，屏蔽分心的 App 和网站", "Starts a Raycast Focus session of the same length via raycast://focus/start, blocking distracting apps and websites"))
       .addToggle((t) => t.setValue(s.focus !== false).onChange(async (v) => { s.focus = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    text("屏蔽类别", "Raycast Focus 的类别，逗号分隔（比如 social, gaming）；留空 = 不带类别，用 Raycast 自己的设置", "focusCategories");
-    new Setting(containerEl).setName("类别的用法").setDesc("屏蔽 = 只挡上面这些类别；只允许 = 除了这些类别都挡")
-      .addDropdown((d) => d.addOption("block", "屏蔽").addOption("allow", "只允许").setValue(s.focusMode || "block")
+    text(T("屏蔽类别", "Categories"), T("Raycast Focus 的类别，逗号分隔（比如 social, gaming）；留空 = 不带类别，用 Raycast 自己的设置", "Raycast Focus categories, comma-separated (e.g. social, gaming); empty = no categories, use Raycast's own settings"), "focusCategories");
+    new Setting(containerEl).setName(T("类别的用法", "Category mode")).setDesc(T("屏蔽 = 只挡上面这些类别；只允许 = 除了这些类别都挡", "Block = block only these categories; Allow only = block everything except these"))
+      .addDropdown((d) => d.addOption("block", T("屏蔽", "Block")).addOption("allow", T("只允许", "Allow only")).setValue(s.focusMode || "block")
         .onChange(async (v) => { s.focusMode = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("提前做完时结束 Raycast 专注").setDesc("还没到点就把那件任务改成 DONE / TODO（或挪去明天）时，用 raycast://focus/complete 结束这段专注")
+    new Setting(containerEl).setName(T("提前做完时结束 Raycast 专注", "End Raycast Focus when finished early")).setDesc(T("还没到点就把那件任务改成 DONE / TODO（或挪去明天）时，用 raycast://focus/complete 结束这段专注", "When the task becomes DONE / TODO (or is moved to tomorrow) before time's up, end the focus session via raycast://focus/complete"))
       .addToggle((t) => t.setValue(s.focusAutoComplete !== false).onChange(async (v) => { s.focusAutoComplete = v; await this.plugin.saveData(s); }));
-    text("开一轮专注时的大方向", "逗号分隔，最多 4 个，开头可以带一个表情。⌃⌥F 弹出来的框里只选方向和时长，不列一条条任务；这一轮只计时", "focusDirs");
-    new Setting(containerEl).setName("到点怎么问").setDesc("带按钮的系统通知：不抢焦点，在通知上点「做完了 / 再来一轮 / 先停下」（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）。对话框：弹到最前面，不回答不走")
-      .addDropdown((d) => d.addOption("dialog", "系统对话框").addOption("notification", "带按钮的系统通知（试验）").setValue(s.askVia || "dialog")
+    text(T("开一轮专注时的大方向", "Focus directions"), T("逗号分隔，最多 4 个，开头可以带一个表情。⌃⌥F 弹出来的框里只选方向和时长，不列一条条任务；这一轮只计时", "Comma-separated, up to 4, each may start with an emoji. The ⌃⌥F dialog only asks for a direction and a length, no task list; the round is just timed"), "focusDirs");
+    new Setting(containerEl).setName(T("到点怎么问", "How to ask when time's up")).setDesc(T("带按钮的系统通知：不抢焦点，在通知上点「做完了 / 再来一轮 / 先停下」（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）。对话框：弹到最前面，不回答不走", "System notification with buttons: doesn't take focus; click Done / Another round / Pause it on the notification (the first time, allow \"Nautilus Spiral\" to send notifications; to keep it on screen, set its style to Alerts in System Settings → Notifications → Nautilus Spiral). Dialog: pops to the front and stays until you answer"))
+      .addDropdown((d) => d.addOption("dialog", T("系统对话框", "System dialog")).addOption("notification", T("带按钮的系统通知（试验）", "System notification with buttons (experimental)")).setValue(s.askVia || "dialog")
         .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
-    text("提醒发到 Discord 的哪个频道", "填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停、欢迎回来、自动记成做完 / 暂停、专注到点）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "discordChannel");
-    text("本机提醒的提示音", "系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "notifySound");
-    containerEl.createEl("h3", { text: "🎨 颜色" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 淡蓝……），不在这里改" });
-    const colorDesc = { main: "块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", event: "日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", task: "其余待办", prio: "带重要标记的任务，也用在排不下、超时的提示上", review: "做完的「复习卡片 N 张」", game: "螺旋最里面一圈的游戏时间" };
+    text(T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停、欢迎回来、自动记成做完 / 暂停、专注到点）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, welcome back, auto-marked done / paused, focus time's up) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
+    text(T("本机提醒的提示音", "Reminder sound on this Mac"), T("系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "A system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file; empty = silent"), "notifySound");
+    containerEl.createEl("h3", { text: T("🎨 颜色", "🎨 Colors") });
+    containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 淡蓝……），不在这里改", "Colors of each kind of item on the spiral, the list and the progress bars. Agent sessions use each tool's own colors (Claude orange, Codex light blue…) and can't be changed here") });
+    const colorDesc = { main: T("块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", "Tasks whose block carries [#A], and the progress bar under mainline blocks in the editor"), event: T("日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", "Events with a time written in the daily note (calendar events use their calendar's color)"), task: T("其余待办", "All other to-dos"), prio: T("带重要标记的任务，也用在排不下、超时的提示上", "Tasks with an important marker; also used for won't-fit and overtime warnings"), review: T("做完的「复习卡片 N 张」", "Finished \"复习卡片 N 张\" (review N cards) tasks"), game: T("螺旋最里面一圈的游戏时间", "Gaming time on the innermost ring of the spiral") };
     for (const [k, [name, d]] of Object.entries(COLORS)) {
       const set = async (v) => {
         s.colors = Object.assign({}, s.colors);
@@ -6079,79 +6082,79 @@ class SpiralSettings extends PluginSettingTab {
       };
       new Setting(containerEl).setName(name).setDesc(colorDesc[k])
         .addColorPicker((c) => c.setValue((s.colors || {})[k] || d).onChange(set))
-        .addExtraButton((b) => b.setIcon("rotate-ccw").setTooltip("恢复默认").onClick(async () => { await set(""); this.display(); }));
+        .addExtraButton((b) => b.setIcon("rotate-ccw").setTooltip(T("恢复默认", "Restore default")).onClick(async () => { await set(""); this.display(); }));
     }
-    containerEl.createEl("h3", { text: "🎯 主线" });
-    new Setting(containerEl).setName("主线").setDesc("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（日记整理把多出来的降成 [#B]）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上单独上色（默认大红，在上面「🎨 颜色」里改）；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate")
+    containerEl.createEl("h3", { text: T("🎯 主线", "🎯 Mainline") });
+    new Setting(containerEl).setName(T("主线", "Mainline")).setDesc(T("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（日记整理把多出来的降成 [#B]）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上单独上色（默认大红，在上面「🎨 颜色」里改）；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate", "Tasks whose block carries [#A] (short form: todo a) are the day's mainline: at most 3 blocks a day, taken in note order (journal cleanup lowers the extra ones to [#B]). They're listed at the top of the panel, scheduled after DOING and before other to-dos, and get their own color on the spiral (red by default; change it under 🎨 Colors above). When no timer is running, the status bar shows the next mainline task. After the day cutoff, the previous day's completion rate is written into that note's properties mainline / mainline-rate"))
       .addToggle((t) => t.setValue(s.showMain !== false).onChange(async (v) => { s.showMain = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); this.plugin.refresh(); }));
-    text("主线提醒时刻", "到这几个时刻主线还没做完、手上也没在做主线，发一条提醒（和别的提醒一样：配了 Discord 发 Discord，没配在本机弹）。24 小时制，逗号分隔，空着 = 不提醒", "mainNudge");
-    containerEl.createEl("h3", { text: "🗓 macOS 小组件" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "两个小组件，放桌面上或者通知中心的侧栏里都行：🎯 今天的主线（小号、中号），📅 计划甘特图（大号、特大号，从这周一起画 5 周）。先编译安装配套的小组件 App（插件仓库 widgets/ 里跑 ./build.sh），再右键桌面 →「编辑小组件」→ 搜「螺旋日程」拖出来。插件每分钟把数据写进 ~/Library/Application Support/Nautilus Spiral/widgets.json，有变化就叫小组件刷新；点小组件上的一行，跳回 Obsidian 的那一行。" });
-    new Setting(containerEl).setName("给小组件导出数据").setDesc("没装小组件 App 时开着也没关系，只是多写一个文件")
+    text(T("主线提醒时刻", "Mainline reminder times"), T("到这几个时刻主线还没做完、手上也没在做主线，发一条提醒（和别的提醒一样：配了 Discord 发 Discord，没配在本机弹）。24 小时制，逗号分隔，空着 = 不提醒", "At these times, if the mainline isn't finished and you're not working on it, send a reminder (like other reminders: to Discord if configured, otherwise on this Mac). 24-hour time, comma-separated; empty = no reminders"), "mainNudge");
+    containerEl.createEl("h3", { text: T("🗓 macOS 小组件", "🗓 macOS widgets") });
+    containerEl.createEl("p", { cls: "setting-item-description", text: T("两个小组件，放桌面上或者通知中心的侧栏里都行：🎯 今天的主线（小号、中号），📅 计划甘特图（大号、特大号，从这周一起画 5 周）。先编译安装配套的小组件 App（插件仓库 widgets/ 里跑 ./build.sh），再右键桌面 →「编辑小组件」→ 搜「螺旋日程」拖出来。插件每分钟把数据写进 ~/Library/Application Support/Nautilus Spiral/widgets.json，有变化就叫小组件刷新；点小组件上的一行，跳回 Obsidian 的那一行。", "Two widgets, on the desktop or in the Notification Center sidebar: 🎯 Today's mainline (small, medium) and 📅 Plan Gantt (large, extra large; 5 weeks from this Monday). First build and install the companion widget app (run ./build.sh in widgets/ of the plugin repo), then right-click the desktop → Edit Widgets → search \"螺旋日程\" (the widgets are in Chinese for now) and drag them out. Every minute the plugin writes the data to ~/Library/Application Support/Nautilus Spiral/widgets.json and asks the widgets to refresh when it changes; click a line on a widget to jump back to that line in Obsidian.") });
+    new Setting(containerEl).setName(T("给小组件导出数据", "Export data for widgets")).setDesc(T("没装小组件 App 时开着也没关系，只是多写一个文件", "Harmless if the widget app isn't installed; it just writes one extra file"))
       .addToggle((t) => t.setValue(!!s.widgets).onChange(async (v) => { s.widgets = v; this.plugin._widgetText = ""; await this.plugin.saveData(s); this.plugin.widgetTick(); }));
-    text("计划笔记", "甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "widgetPlan");
-    containerEl.createEl("h3", { text: "硬规则（只管今天的日记）" });
-    num("同时最多几件 DOING", "再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。交给 Agent 在做的不算：Agent Deck 记下的、下面挂着 🔗 的、自动对上了会话的任务，连同它所在的整块。0 = 不限", "doingLimit", 0, 20);
-    num("DOING 多久没动就暂停（小时）", "这一行和它下面的子项都没改过、也不在专注里，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "staleHours", 0, 48);
-    text("吃饭 / 锻炼的词", "新写一条只有这几个字的条目（逗号分隔），所有 DOING 改成 PAUSED、专注停掉，等你回来", "breakWords");
-    num("吃饭 / 锻炼至少多久（分钟）", "这么久以内不判断「回来了」，吃饭保守估计也得 20 分钟", "breakMinAway", 0, 240);
-    text("回来了的判断：在这些 App 里持续操作", "吃饭 / 锻炼过了上面这个时间以后，在这些 App 里连续操作满 3 分钟就算回来了，弹窗问要不要切回 DOING", "breakApps");
-    containerEl.createEl("h3", { text: "其它" });
-    new Setting(containerEl).setName("预估 vs 实际").setDesc("列表底部显示近一段时间预估准不准（按标签 / 链接分），容量条上按这个比例给一个「按以往约多久」")
+    text(T("计划笔记", "Plan note"), T("甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "Which note the Gantt chart draws (vault path). Each list item with 🛫 start, ⏳ scheduled or 📅 due dates becomes a bar (the Tasks plugin's syntax); one with a single date becomes a dot on that day. The nearest heading above, or a top-level list item without dates, is a group; finished ones (DONE, [x], ✅ date) are drawn faded"), "widgetPlan");
+    containerEl.createEl("h3", { text: T("硬规则（只管今天的日记）", "Hard rules (today's note only)") });
+    num(T("同时最多几件 DOING", "Max DOING at once"), T("再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。交给 Agent 在做的不算：Agent Deck 记下的、下面挂着 🔗 的、自动对上了会话的任务，连同它所在的整块。0 = 不限", "When one more starts, the earliest started becomes PAUSED and you get a system notification. Work handed to agents doesn't count: tasks logged by Agent Deck, with a 🔗 under them, or auto-matched to a session, together with their whole block. 0 = no limit"), "doingLimit", 0, 20);
+    num(T("DOING 多久没动就暂停（小时）", "Pause DOING after idle (hours)"), T("这一行和它下面的子项都没改过、也不在专注里，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "If neither the line nor its children have changed and it's not in a focus round for this long, it becomes PAUSED and you get a system notification. 0 = never"), "staleHours", 0, 48);
+    text(T("吃饭 / 锻炼的词", "Break words"), T("新写一条只有这几个字的条目（逗号分隔），所有 DOING 改成 PAUSED、专注停掉，等你回来", "Writing a new item that's only one of these words (comma-separated) pauses every DOING task and stops focus until you're back"), "breakWords");
+    num(T("吃饭 / 锻炼至少多久（分钟）", "Shortest break (minutes)"), T("这么久以内不判断「回来了」，吃饭保守估计也得 20 分钟", "Within this time you're never considered back; a meal takes at least 20 minutes"), "breakMinAway", 0, 240);
+    text(T("回来了的判断：在这些 App 里持续操作", "Back from a break: active in these apps"), T("吃饭 / 锻炼过了上面这个时间以后，在这些 App 里连续操作满 3 分钟就算回来了，弹窗问要不要切回 DOING", "After the time above, 3 minutes of continuous activity in one of these apps counts as being back, and a dialog asks whether to switch back to DOING"), "breakApps");
+    containerEl.createEl("h3", { text: T("其它", "Other") });
+    new Setting(containerEl).setName(T("预估 vs 实际", "Estimate vs actual")).setDesc(T("列表底部显示近一段时间预估准不准（按标签 / 链接分），容量条上按这个比例给一个「按以往约多久」", "At the bottom of the list, shows how accurate your recent estimates were (by tag / link); the capacity bar adds an \"about … going by your history\" based on that ratio"))
       .addToggle((t) => t.setValue(s.showReview !== false).onChange(async (v) => { s.showReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    num("复盘看最近几天", "插件自己的计时记录留 45 天；再往前的日子，靠日记里任务下面那一行 ⏱ 算实际用时", "reviewDays", 7, 365);
-    new Setting(containerEl).setName("当日复盘").setDesc("列表里的「📋 今日复盘」：这一天每件任务的预计和实际，逐件对照。只有做完、也记到了实际用时的才算进偏差")
+    num(T("复盘看最近几天", "Review the last N days"), T("插件自己的计时记录留 45 天；再往前的日子，靠日记里任务下面那一行 ⏱ 算实际用时", "The plugin keeps its own timing records for 45 days; for earlier days, actual time comes from the ⏱ line under each task in the daily note"), "reviewDays", 7, 365);
+    new Setting(containerEl).setName(T("当日复盘", "Day review")).setDesc(T("列表里的「📋 今日复盘」：这一天每件任务的预计和实际，逐件对照。只有做完、也记到了实际用时的才算进偏差", "\"📋 Today's review\" in the list: estimate and actual for every task of the day, side by side. Only tasks that are done and have actual time recorded count toward the difference"))
       .addToggle((t) => t.setValue(s.showDayReview !== false).onChange(async (v) => { s.showDayReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    new Setting(containerEl).setName("显示没记录的时间").setDesc("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」各多少")
+    new Setting(containerEl).setName(T("显示没记录的时间", "Show unrecorded time")).setDesc(T("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」各多少", "Past time with no event, no task record and no agent session is hatched on the spiral, and the tooltip on the first capacity line says how much is recorded / unrecorded"))
       .addToggle((t) => t.setValue(s.showUnrecorded !== false).onChange(async (v) => { s.showUnrecorded = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    new Setting(containerEl).setName("实际时段写回日记").setDesc("你手动做的任务不再是 DOING 时，在它下面写一行「⏱ 14:05–14:40、15:10–15:32 · 共 57m」，和自动记的行同一种写法。实际用时就留在日记正文里，不只存在插件的计时记录里")
+    new Setting(containerEl).setName(T("实际时段写回日记", "Write actual time into the note")).setDesc(T("你手动做的任务不再是 DOING 时，在它下面写一行「⏱ 14:05–14:40、15:10–15:32 · 共 57m」，和自动记的行同一种写法。实际用时就留在日记正文里，不只存在插件的计时记录里", "When a task you did yourself stops being DOING, write a line under it, \"⏱ 14:05–14:40, 15:10–15:32 · total 57m\", in the same form as the automatic lines. Actual time then lives in the note itself, not only in the plugin's timing records"))
       .addToggle((t) => t.setValue(!!s.clockToNote).onChange(async (v) => { s.clockToNote = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("状态栏").setDesc("右下角常驻一格：在做事时显示最近开始的那件做了多久，没在做时显示今天的容量。单击打开螺旋日程，⌥ 单击到日记里那一行，⇧ 单击在旁边分栏打开今天的日记")
+    new Setting(containerEl).setName(T("状态栏", "Status bar")).setDesc(T("右下角常驻一格：在做事时显示最近开始的那件做了多久，没在做时显示今天的容量。单击打开螺旋日程，⌥ 单击到日记里那一行，⇧ 单击在旁边分栏打开今天的日记", "A permanent item at the bottom right: while you're working it shows how long the most recently started task has run; otherwise today's capacity. Click to open Nautilus Spiral, ⌥-click to go to that line in the note, ⇧-click to open today's note in a split"))
       .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); }));
-    new Setting(containerEl).setName("任务行下面的进度条").setDesc("编辑器里 DOING 的那一行下面显示一行字符进度条 [#####-----] 45%。进度取你写在这一行里的 60%、2/3、一半；没写就看对上的 Agent 会话（它自己列了待办才有百分比，没列只显示在跑还是等你、眼下那一步、用了多少 token）；再不然按预估时长算")
+    new Setting(containerEl).setName(T("任务行下面的进度条", "Progress bar under task lines")).setDesc(T("编辑器里 DOING 的那一行下面显示一行字符进度条 [#####-----] 45%。进度取你写在这一行里的 60%、2/3、一半；没写就看对上的 Agent 会话（它自己列了待办才有百分比，没列只显示在跑还是等你、眼下那一步、用了多少 token）；再不然按预估时长算", "Under a DOING line in the editor, shows a text progress bar [#####-----] 45%. Progress comes from what you wrote on the line (60%, 2/3); otherwise from the matched agent session (a percentage only if it keeps a to-do list; otherwise just running or waiting for you, the current step and tokens used); failing that, from the estimated duration"))
       .addToggle((t) => t.setValue(s.lineProgress !== false).onChange(async (v) => { s.lineProgress = v; await this.plugin.saveData(s); this.plugin.progRefresh(); }));
-    new Setting(containerEl).setName("会话要你批准或报错时发通知").setDesc("最近一天的 Agent 会话（不只挂在日记里的）刚停到「允许吗？」权限提示上，或者这一轮以报错结束（过载、断网、认证失败、上下文满了），弹一条系统通知；点一下跳到日记里那一行，没挂在日记里的打开那个会话。Obsidian 在后台时带一声提示音")
+    new Setting(containerEl).setName(T("会话要你批准或报错时发通知", "Notify when a session needs approval or errors")).setDesc(T("最近一天的 Agent 会话（不只挂在日记里的）刚停到「允许吗？」权限提示上，或者这一轮以报错结束（过载、断网、认证失败、上下文满了），弹一条系统通知；点一下跳到日记里那一行，没挂在日记里的打开那个会话。Obsidian 在后台时带一声提示音", "When an agent session from the last day (not only those in the note) has just stopped at an \"Allow?\" permission prompt, or a turn ended on an error (overloaded, offline, auth failed, context full), show a system notification; click it to jump to that line in the note, or to open the session if it's not in the note. With a sound when Obsidian is in the background"))
       .addToggle((t) => t.setValue(s.agentAlert !== false).onChange(async (v) => { s.agentAlert = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("界面音效").setDesc("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在上面单独设")
+    new Setting(containerEl).setName(T("界面音效", "UI sounds")).setDesc(T("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在上面单独设", "A very soft synthesized sound for start, done, stop, and the start and end of playback. Silent when Obsidian isn't in front; the reminder sound is set separately above"))
       .addToggle((t) => t.setValue(s.uiSound !== false).onChange(async (v) => { s.uiSound = v; await this.plugin.saveData(s); if (v) this.plugin.sound("done"); }));
-    num("番茄钟阈值（分钟）", "一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "pomoMinutes", 0, 600);
-    num("忘了关计时的提醒（分钟）", "计时开了这么久，状态栏提醒「检查计时」。不会替你停。0 = 不提醒", "forgottenMinutes", 0, 1440);
-    new Setting(containerEl).setName("启动时打开今天的日记").setDesc("按上面的「日记日期分界」算今天：已经开着就切过去，没开就开一个新标签，还没有这篇就新建")
+    num(T("番茄钟阈值（分钟）", "Pomodoro threshold (minutes)"), T("一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "After working on one thing this long without a break, the status bar timer turns red. Just a hint, no interruption. 0 = off"), "pomoMinutes", 0, 600);
+    num(T("忘了关计时的提醒（分钟）", "Forgotten timer reminder (minutes)"), T("计时开了这么久，状态栏提醒「检查计时」。不会替你停。0 = 不提醒", "After a timer has run this long, the status bar says \"Check the timer\". It won't stop it for you. 0 = off"), "forgottenMinutes", 0, 1440);
+    new Setting(containerEl).setName(T("启动时打开今天的日记", "Open today's note on startup")).setDesc(T("按上面的「日记日期分界」算今天：已经开着就切过去，没开就开一个新标签，还没有这篇就新建", "\"Today\" follows the daily note cutoff above: switch to it if it's open, otherwise open it in a new tab, creating it if needed"))
       .addToggle((t) => t.setValue(s.openTodayOnStartup !== false).onChange(async (v) => { s.openTodayOnStartup = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("启动时左侧栏显示螺旋日程").setDesc("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）")
+    new Setting(containerEl).setName(T("启动时左侧栏显示螺旋日程", "Show Nautilus Spiral in the left sidebar on startup")).setDesc(T("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）", "Expands the left sidebar and switches to the Nautilus Spiral tab (other tabs like the file list stay; click their icons to switch)"))
       .addToggle((t) => t.setValue(s.revealOnStartup !== false).onChange(async (v) => { s.revealOnStartup = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName("显示人机协作").setDesc("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面「🤖」那一行显示当天协作时长和 token（悬停看细账），螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json")
+    new Setting(containerEl).setName(T("显示人机协作", "Show agent collaboration")).setDesc(T("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面「🤖」那一行显示当天协作时长和 token（悬停看细账），螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json", "Reads the local session logs of the AI tools turned on below; the 🤖 line under the capacity bar shows the day's collaboration time and tokens (hover for details), and the inner rings of the spiral show when they were at work; totals are also saved to ai-usage.json in the plugin folder"))
       .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    containerEl.createEl("h3", { text: "🤖 主力 Agent 和要追踪的 Agent" });
-    containerEl.createEl("p", { cls: "setting-item-description", text: "主力 Agent 全量追踪：读它全部的会话历史。其余开着的只追踪今天有动静的会话：今天的时长和 token 照常，以前的会话不翻。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。" });
+    containerEl.createEl("h3", { text: T("🤖 主力 Agent 和要追踪的 Agent", "🤖 Primary agent and tracked agents") });
+    containerEl.createEl("p", { cls: "setting-item-description", text: T("主力 Agent 全量追踪：读它全部的会话历史。其余开着的只追踪今天有动静的会话：今天的时长和 token 照常，以前的会话不翻。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。", "The primary agent is tracked in full: all of its session history is read. The others that are on are tracked only for sessions active today: today's time and tokens as usual, older sessions are not read. Turned-off agents are no longer read; their history already summed up is kept but hidden, and comes back when turned on again.") });
     {
       const reset = () => { this.plugin._ai = null; this.plugin._aiAt = 0; this.plugin.refresh(); };   // 换了要读的范围：把最近的日志重读一遍
-      new Setting(containerEl).setName("主力 Agent").setDesc("平时干活主要用哪一个。它总是开着")
+      new Setting(containerEl).setName(T("主力 Agent", "Primary agent")).setDesc(T("平时干活主要用哪一个。它总是开着", "The one you mainly work with. It's always on"))
         .addDropdown((d) => {
           for (const [k, n] of Object.entries(AI_AGENTS)) d.addOption(k, n);
           d.setValue(aiPrimary(s)).onChange(async (v) => { s.aiPrimary = v; await this.plugin.saveData(s); reset(); this.display(); });
         });
       const fs = require("fs"), path = require("path"), home = require("os").homedir();
-      const where = { claude: [".claude/projects", "Claude Code 和 Claude 桌面版里的 Code 会话"], codex: [".codex/sessions", "Codex 桌面版和 codex 命令行，时长和 token 都读"], workbuddy: [".workbuddy/projects", "WorkBuddy 桌面版"], dsh: [".dsh/sessions", "DeepSeek Harness 的 token 由 dsh-token-usage-stats 插件统计，螺旋通过本机 API 读取"] };
+      const where = { claude: [".claude/projects", T("Claude Code 和 Claude 桌面版里的 Code 会话", "Claude Code, and Code sessions in the Claude desktop app")], codex: [".codex/sessions", T("Codex 桌面版和 codex 命令行，时长和 token 都读", "Codex desktop and the codex CLI; both time and tokens are read")], workbuddy: [".workbuddy/projects", T("WorkBuddy 桌面版", "WorkBuddy desktop")], dsh: [".dsh/sessions", T("DeepSeek Harness 的 token 由 dsh-token-usage-stats 插件统计，螺旋通过本机 API 读取", "DeepSeek Harness tokens are counted by the dsh-token-usage-stats plugin; the spiral reads them through a local API")] };
       for (const k of Object.keys(AI_AGENTS)) {
         const [dir, what] = where[k];
         const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
         const main = k === aiPrimary(s);
-        const desc = k === "dsh" ? `${what}（端口自动找；插件要在 DSH 里启用）` : `${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`;
-        new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? "（主力，全量追踪）" : "（只追踪今天的）"}`).setDesc(desc)
+        const desc = k === "dsh" ? T(`${what}（端口自动找；插件要在 DSH 里启用）`, `${what} (port found automatically; the plugin must be enabled in DSH)`) : T(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`, `${what}. Logs in ~/${dir}${found ? "" : " (this folder doesn't exist on this Mac yet)"}`);
+        new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? T("（主力，全量追踪）", " (primary, tracked in full)") : T("（只追踪今天的）", " (today only)")}`).setDesc(desc)
           .addToggle((t) => t.setValue(aiOn(s).includes(k)).setDisabled(main).onChange(async (v) => {
             s.aiAgents = { ...Object.fromEntries(Object.keys(AI_AGENTS).map((a) => [a, aiOn(s).includes(a)])), [k]: v };
             await this.plugin.saveData(s);
             reset();
           }));
       }
-      new Setting(containerEl).setName("DeepSeek Harness API 端口").setDesc("0 = 自动从 lsof 找 DSH 正在监听的端口；也可以填固定端口。DSH 里要启用 dsh-token-usage-stats 插件")
+      new Setting(containerEl).setName(T("DeepSeek Harness API 端口", "DeepSeek Harness API port")).setDesc(T("0 = 自动从 lsof 找 DSH 正在监听的端口；也可以填固定端口。DSH 里要启用 dsh-token-usage-stats 插件", "0 = find the port DSH listens on automatically via lsof; or enter a fixed port. The dsh-token-usage-stats plugin must be enabled in DSH"))
         .addText((t) => t.setValue(String(s.dshApiPort || 0)).onChange(async (v) => { s.dshApiPort = Math.max(0, parseInt(v, 10) || 0); await this.plugin.saveData(s); reset(); }));
     }
-    new Setting(containerEl).setName("记录游戏时间").setDesc("每分钟看一眼在不在玩，螺旋最里面一圈画一条细线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录")
+    new Setting(containerEl).setName(T("记录游戏时间", "Track gaming time")).setDesc(T("每分钟看一眼在不在玩，螺旋最里面一圈画一条细线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录", "Checks once a minute whether you're playing and draws a thin line on the innermost ring of the spiral; saved to game-log.json in the plugin folder. Only recorded while Obsidian is open"))
       .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    text("游戏进程关键词", "进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "gameProcs");
-    text("在最前面才算的 App", "这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "gameFrontApps");
+    text(T("游戏进程关键词", "Game process keywords"), T("进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "Playing counts when a process path contains one of these, comma-separated; steamapps/common is recorded per game folder"), "gameProcs");
+    text(T("在最前面才算的 App", "Apps that count only in front"), T("这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "These apps stay running in the background and count as gaming only when in front, e.g. the Steam client"), "gameFrontApps");
   }
 }
 
