@@ -62,12 +62,10 @@ const DEFAULTS = {
   staleHours: 3,        // DOING 超过几小时没动过（这一行和下面的子项都没改）就改成 PAUSED。0 = 不管
   doingTouch: {},       // { workKey: { sig, at } }：每件 DOING 最后一次被动过的时刻
   breakWords: T("吃饭, 锻炼", "lunch, dinner, workout"),   // 日记里新写一条只有这几个字的条目 = 去吃饭 / 锻炼了：所有 DOING 改成 PAUSED，计时停
-  breakApps: "Obsidian, Claude, Terminal, iTerm2, Ghostty, Warp",
-  breakMinAway: 20,     // 吃饭 / 锻炼至少多久（分钟）才开始判断「回来了」
   parallelDoing: true,
   showReview: true,     // 列表底部「📏 预估 vs 实际」，容量条上「按以往约多久」
-  reviewDays: 30,       // 复盘看最近几天（计时记录保留 45 天）  // 几件 DOING 并行排：一起从现在开始，重叠在同一段时间里，只占最长那件的时间   // 在这些 App 里持续操作几分钟 = 回来了，问要不要切回 DOING
-  breakState: null,     // { word, since, path, keys, labels, focus, active }：正在吃饭 / 锻炼
+  reviewDays: 30,       // 复盘看最近几天（计时记录保留 45 天）  // 几件 DOING 并行排：一起从现在开始，重叠在同一段时间里，只占最长那件的时间
+  breakState: null,     // { word, since, path, keys, labels, focus }：正在吃饭 / 锻炼
   focusDirs: T("🧩 工具, 🎬 创作, 💼 工作", "🧩 Tools, 🎬 Creative, 💼 Work"),   // 开一轮专注时选的大方向（逗号分隔，最多 4 个，开头可以带一个表情）
   discordChannel: "",   // 提醒中枢：不用你回答的提醒发到 Discord 的哪个频道（本机 notify-discord 脚本认的频道名）；空着 = 不发，只在本机弹
   discordCmd: "~/.local/bin/notify-discord",
@@ -1314,13 +1312,12 @@ for e in store.events(matching: pred) {
 out(list)
 `;
 
-// 小助手二：看一眼现在的状态。idle = 键盘鼠标多少秒没动；front = 最前面的 App；
+// 小助手二：看一眼现在的状态。idle = 键盘鼠标多少秒没动；
 // panel = Raycast 专注的悬浮小窗在不在（专注进行时屏幕上有个 Raycast 的高 40 左右、层级 ≥ 100 的小窗，点完成就没了）
 const PROBE_SWIFT = String.raw`import AppKit
 import CoreGraphics
 
 let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
-let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
 var panel = false
 let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
 for w in list where (w[kCGWindowOwnerName as String] as? String) == "Raycast" {
@@ -1329,7 +1326,7 @@ for w in list where (w[kCGWindowOwnerName as String] as? String) == "Raycast" {
   let h = (b["Height"] as? NSNumber)?.doubleValue ?? 0
   if layer >= 100 && h >= 30 && h <= 60 { panel = true }
 }
-let obj: [String: Any] = ["idle": idle, "front": front, "panel": panel]
+let obj: [String: Any] = ["idle": idle, "panel": panel]
 FileHandle.standardOutput.write((try? JSONSerialization.data(withJSONObject: obj, options: [])) ?? Data("{}".utf8))
 `;
 
@@ -2605,10 +2602,9 @@ class GoalModal extends OB.Modal {
 
 const DIR_MINS = [25, 50, 90];
 class FocusModal extends OB.Modal {
-  constructor(app, plugin, why, done) {
+  constructor(app, plugin, done) {
     super(app);
     this.plugin = plugin;
-    this.why = why || {};
     this.done = done;
     this.pick = null;
   }
@@ -2620,9 +2616,7 @@ class FocusModal extends OB.Modal {
     let cur = Math.max(0, dirs.findIndex((d) => d.name === cfg.lastDir));
     let mins = DIR_MINS.includes(cfg.lastDirMinutes) ? cfg.lastDirMinutes : DIR_MINS[0];
     contentEl.createDiv({ cls: "naut-fm-title", text: T("开一轮专注", "Start a focus round") });
-    contentEl.createDiv({ cls: "naut-fm-sub", text: this.why.app
-      ? T(`你在「${this.why.app}」待了 ${dur(Math.max(1, Math.round((this.why.stay || 0) / 60)))}。选一个方向，回来干活：`, `You've been in ${this.why.app} for ${dur(Math.max(1, Math.round((this.why.stay || 0) / 60)))}. Pick a direction and get back to work:`)
-      : T("选这一轮的大方向就行。具体做了哪几件不用勾，Agent 会话会自动记进日记、算进用时。", "Just pick the broad direction for this round. No need to tick off what you did; agent sessions are logged into the daily note and counted automatically.") });
+    contentEl.createDiv({ cls: "naut-fm-sub", text: T("选这一轮的大方向就行。具体做了哪几件不用勾，Agent 会话会自动记进日记、算进用时。", "Just pick the broad direction for this round. No need to tick off what you did; agent sessions are logged into the daily note and counted automatically.") });
     const grid = contentEl.createDiv({ cls: "naut-fm-grid" });
     const cards = dirs.map((d, i) => {
       const card = grid.createDiv({ cls: "naut-fm-card", attr: { style: `--c:${DIR_COLORS[i % DIR_COLORS.length]};--naut-i:${i}` } });
@@ -3430,10 +3424,6 @@ module.exports = class NautilusSpiral extends Plugin {
     if (this.settings.breakState) this.settings.breakState.asking = false;
     this.registerInterval(window.setInterval(() => this.tickFocus(), 10 * 1000));
     this.registerInterval(window.setInterval(() => this.checkStale().catch((e) => console.error("[螺旋日程] 检查 DOING 失败", e)), 60 * 1000));
-    this.registerInterval(window.setInterval(() => this.tickBreak().catch((e) => console.error("[螺旋日程] 检查回来没有失败", e)), 30 * 1000));
-    // 外部脚本（~/bin/app-idle-focus.sh：在同一个 App 里待久了）叫螺旋日程来问：这一轮专注做哪几件
-    //   open -g "obsidian://nautilus-focus?app=Obsidian&stay=300"
-    this.registerObsidianProtocolHandler("nautilus-focus", (p) => this.suggestFocus(p.app || "", +p.stay || 0).catch((e) => console.error("[螺旋日程] 专注提议失败", e)));
     // 小组件上点一行：obsidian://nautilus-open?note=日记/2026_10_26.md&kind=main&text=写简历 → 打开那篇笔记，光标放到那一件上。
     // 链接里不带行号、到时候现找：上面多写一行，小组件的数据不用跟着变。参数不能叫 path：Obsidian 会把它当成绝对路径先拦下
     this.registerObsidianProtocolHandler("nautilus-open", async (p) => {
@@ -3736,7 +3726,7 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "doing-ai", name: T("正在做的事的 Agent 会话", "Agent sessions for what you're doing"), key: ca("C"), run: () => this.showDoingAi() },
       { id: "start-here", name: T("开始光标所在的任务（改成 DOING + 专注）", "Start the task under the cursor (DOING + focus)"), key: { modifiers: ["Mod", "Shift"], key: "Enter" }, editor: true, run: (editor, view) => this.startAtCursor(editor, view) },
       { id: "start-next", name: T("开始下一件（改成 DOING + 专注）", "Start the next task (DOING + focus)"), key: ca("N"), run: () => this.startNext() },
-      { id: "suggest-focus", name: T("开一轮专注（选一个大方向）", "Start a focus round (pick a direction)"), key: ca("F"), run: () => this.suggestFocus("", 0) },
+      { id: "suggest-focus", name: T("开一轮专注（选一个大方向）", "Start a focus round (pick a direction)"), key: ca("F"), run: () => this.suggestFocus() },
       { id: "notify-test", name: T("测试带按钮的系统通知（试验）", "Test a system notification with buttons (experimental)"), run: async () => {
         this._noNotify = 0;
         new OB.Notice(T("发了一条测试通知，在通知上点「收到」（横幅样式下要悬停后点「选项」）", "Sent a test notification. Click \"Got it\" on it (with banner style, hover and click \"Options\" first)"));
@@ -4161,7 +4151,7 @@ module.exports = class NautilusSpiral extends Plugin {
       // 大方向那条线：不对应日记里的哪一行，只管接着来还是收工
       if (t.dir && btn !== T("再来一轮", "Another round")) {
         this.dropFromSession([t.key]);
-        if (btn === T("换个方向", "Change direction")) this.suggestFocus("", 0);
+        if (btn === T("换个方向", "Change direction")) this.suggestFocus();
         else if (!btn) new OB.Notice(T(`⏱ 「${t.label}」这一轮到点了`, `⏱ This round of "${t.label}" is over`));
         return;
       }
@@ -4349,7 +4339,7 @@ module.exports = class NautilusSpiral extends Plugin {
       if (cfg.focus) this.openUrl("raycast://focus/complete");
       this.endSession(s);
     }
-    cfg.breakState = { word, since: Date.now(), path: file.path, keys: doing.map((t) => workKey(t.label)), labels: doing.map((t) => t.label), focus, active: 0 };
+    cfg.breakState = { word, since: Date.now(), path: file.path, keys: doing.map((t) => workKey(t.label)), labels: doing.map((t) => t.label), focus };
     if (doing.length) await this.editTasks(file.path, cfg.breakState.keys, toPaused);
     await this.saveData(cfg);
     this.notify(T(`${breakIcon(word)} ${word}：计时暂停`, `${breakIcon(word)} ${word}: timer paused`), doing.length ? T(`已暂停 ${doing.length} 件：${doing.map((t) => t.label).join("、")}`, `Paused ${doing.length}: ${doing.map((t) => t.label).join(", ")}`) : T("现在没有在做的事", "Nothing in progress right now"));
@@ -4363,7 +4353,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (cfg.breakState) return { already: true, b: cfg.breakState };
     const file = this.todayFile();
     if (file) await this.startBreak(word, file);
-    else cfg.breakState = { word, since: ms, path: null, keys: [], labels: [], focus: null, active: 0 };
+    else cfg.breakState = { word, since: ms, path: null, keys: [], labels: [], focus: null };
     cfg.breakState.since = ms;
     await this.saveData(cfg);
     return { already: false, b: cfg.breakState };
@@ -4395,18 +4385,6 @@ module.exports = class NautilusSpiral extends Plugin {
     return { word: b.word, from, to, mins: Math.max(1, Math.round((ms - b.since) / 60e3)), labels: b.labels, focus: !!(b.focus && b.focus.tasks.length) };
   }
 
-  // 每 30 秒：吃饭 / 锻炼至少 breakMinAway（20）分钟后，在 Obsidian、Claude 等 App 里持续操作满 3 分钟 = 回来了
-  async tickBreak() {
-    const b = this.settings.breakState;
-    if (!b || b.asking || Date.now() - b.since < (this.settings.breakMinAway ?? 20) * 60e3) return;
-    const p = await this.probe();
-    if (!p || this.settings.breakState !== b) return;
-    const apps = splitList(this.settings.breakApps).map((a) => a.toLowerCase());
-    if (p.idle <= 30 && apps.some((a) => p.front.toLowerCase().includes(a))) b.active++;
-    else if (p.idle > 90) b.active = 0;
-    if (b.active >= 6) await this.askBack(b);
-  }
-
   async askBack(b) {
     const cfg = this.settings;
     if (b.asking) return;
@@ -4419,7 +4397,7 @@ module.exports = class NautilusSpiral extends Plugin {
       (b.focus && b.focus.tasks.length ? T(`\n\n专注接着开：${b.focus.tasks.map((t) => `${t.label} 还剩 ${dur(t.left)}`).join("、")}`, `\n\nFocus resumes: ${b.focus.tasks.map((t) => `${t.label} ${dur(t.left)} left`).join(", ")}`) : "");
     const btn = await dialog(msg, [T("先不用", "Not now"), T("切回来", "Switch back")], T("切回来", "Switch back"), 900);
     if (cfg.breakState !== b) return;
-    if (!btn) { b.asking = false; b.active = 0; this.saveData(cfg); return; }   // 没回答：人又走了，过会儿再问
+    if (!btn) { b.asking = false; this.saveData(cfg); return; }   // 没回答：先放着，回来了按 ⌃⌥B 或螺旋上的「回来了」再问
     cfg.breakState = null;
     if (btn === T("切回来", "Switch back")) {
       // 只切还是 PAUSED 的（吃饭时手动改过的不动）
@@ -5228,17 +5206,16 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // 提议开一轮专注：弹一个框选大方向和时长（不列一条条任务）。已经在专注、或者在吃饭 / 锻炼时不问。
   // 用时不在这里按条目记了：具体做了什么、各用了多久，由「自动记日记」按 Agent 会话记
-  async suggestFocus(app, stay) {
+  async suggestFocus() {
     const cfg = this.settings;
     const s = this.session();
     if (this._suggesting || (s && !s.asked) || cfg.breakState) {
-      if (!app && s && !s.asked) new OB.Notice(T("已经在专注了", "Already focusing"));
+      if (s && !s.asked) new OB.Notice(T("已经在专注了", "Already focusing"));
       return;
     }
     this._suggesting = true;
     try {
-      if (app) await run("/usr/bin/open", ["-a", "Obsidian"]);   // 从别的 App 里被叫出来的：把 Obsidian 拿到前面再弹框
-      const pick = await new Promise((ok) => new FocusModal(this.app, this, { app, stay }, ok).open());
+      const pick = await new Promise((ok) => new FocusModal(this.app, this, ok).open());
       if (!pick || this.session()?.asked === false) return;
       cfg.lastDir = pick.dir.name;
       cfg.lastDirMinutes = pick.minutes;
@@ -6097,8 +6074,6 @@ class SpiralSettings extends PluginSettingTab {
     num(T("同时最多几件 DOING", "Max DOING at once"), T("再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。交给 Agent 在做的不算：Agent Deck 记下的、下面挂着 🔗 的、自动对上了会话的任务，连同它所在的整块。0 = 不限", "When one more starts, the earliest started becomes PAUSED and you get a system notification. Work handed to agents doesn't count: tasks logged by Agent Deck, with a 🔗 under them, or auto-matched to a session, together with their whole block. 0 = no limit"), "doingLimit", 0, 20);
     num(T("DOING 多久没动就暂停（小时）", "Pause DOING after idle (hours)"), T("这一行和它下面的子项都没改过、也不在专注里，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "If neither the line nor its children have changed and it's not in a focus round for this long, it becomes PAUSED and you get a system notification. 0 = never"), "staleHours", 0, 48);
     text(T("吃饭 / 锻炼的词", "Break words"), T("新写一条只有这几个字的条目（逗号分隔），所有 DOING 改成 PAUSED、专注停掉，等你回来", "Writing a new item that's only one of these words (comma-separated) pauses every DOING task and stops focus until you're back"), "breakWords");
-    num(T("吃饭 / 锻炼至少多久（分钟）", "Shortest break (minutes)"), T("这么久以内不判断「回来了」，吃饭保守估计也得 20 分钟", "Within this time you're never considered back; a meal takes at least 20 minutes"), "breakMinAway", 0, 240);
-    text(T("回来了的判断：在这些 App 里持续操作", "Back from a break: active in these apps"), T("吃饭 / 锻炼过了上面这个时间以后，在这些 App 里连续操作满 3 分钟就算回来了，弹窗问要不要切回 DOING", "After the time above, 3 minutes of continuous activity in one of these apps counts as being back, and a dialog asks whether to switch back to DOING"), "breakApps");
     containerEl.createEl("h3", { text: T("其它", "Other") });
     new Setting(containerEl).setName(T("预估 vs 实际", "Estimate vs actual")).setDesc(T("列表底部显示近一段时间预估准不准（按标签 / 链接分），容量条上按这个比例给一个「按以往约多久」", "At the bottom of the list, shows how accurate your recent estimates were (by tag / link); the capacity bar adds an \"about … going by your history\" based on that ratio"))
       .addToggle((t) => t.setValue(s.showReview !== false).onChange(async (v) => { s.showReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));

@@ -445,7 +445,6 @@
 .naut-main-pips { color: var(--naut-main); letter-spacing: 1px; }
 .naut-cap-row.is-error .naut-cap-val { white-space: normal; color: var(--text-error); }
 
-
 /* 界面图标：emoji 显示成 Lucide（main.js「界面图标」一节）。跟字号走，和文字基线对齐 */
 .naut-ico { display: inline-flex; vertical-align: -0.14em; margin: 0 0.12em; color: var(--text-muted); }
 .naut-ico svg { width: 1em; height: 1em; stroke-width: 2; }
@@ -463,3 +462,9 @@
 .naut-tok-db.is-full svg :is(ellipse, path) { fill: currentColor; }
 .naut-tok-db.is-full svg path:last-child { fill: none; stroke: var(--background-primary); stroke-width: 1.6; }
 @keyframes naut-db-in { from { opacity: 0; transform: translateY(2px) scale(.7); } to { opacity: 1; transform: none; } }
+
+/* Obsidian 不在前台时，一直循环的动画停在当前帧，切回来接着播。只要有一个循环动画在播，整个窗口每一帧都要重新算样式、重画，
+   窗口大的时候很费：实测空闲时渲染进程 CPU 约 50%、GPU 约 11%，停下来以后约 23%、2%。入场动画不停，免得卡在没画出来的第一帧 */
+body:not(.is-focused) :is(.naut-burn, .naut-now-halo, .naut-seg.naut-live, .naut-st-day-now, .naut-prog[data-mode="run"] .naut-prog-tail, .status-bar-item.naut-status.is-forgotten),
+body:not(.is-focused) :is(.naut-row.is-doing .naut-time, .naut-dayrev.is-live .naut-time, .naut-st-row.is-doing .naut-st-left)::before { animation-play-state: paused; }
+body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: running, paused; }   /* 这条同时挂着入场描线和呼吸：只停呼吸 */
