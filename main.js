@@ -3235,6 +3235,7 @@ class SpiralView extends ItemView {
         hit.addEventListener("mouseleave", leaveHover);
         hit.addEventListener("blur", leaveHover);
         hit.addEventListener("click", () => show(false, true));
+        hit.addEventListener("dblclick", (e) => { e.preventDefault(); e.stopPropagation(); show(true, true); });
         hit.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(true, true); } });
         if (this._agentHoverExpanded?.agent === k && this._agentHoverExpanded.start === a && this._agentHoverExpanded.day === dayKey) show(true, true);
       }

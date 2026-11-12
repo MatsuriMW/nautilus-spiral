@@ -162,7 +162,7 @@ MIT licensed.
 
 ## Agent inner-ring details
 
-Hovering an agent segment shows only its time, agent and short title. Click **Details** to expand the card; click **Hide details** or press Escape inside the card to close it. The expanded card stays open when the pointer leaves and across same-day redraws, and closes when changing dates.
+Hovering an agent segment shows only its time, agent and short title. Click **Details**, or double-click the segment, to expand the card; click **Hide details** or press Escape inside the card to close it. The expanded card stays open when the pointer leaves and across same-day redraws, and closes when changing dates.
 
 Cards list sessions by overlap with the selected segment, with full task titles, live state, steps or turns, latest action, model, directory and recent reply. Segment overlap time, daily session time and daily tokens are labeled separately. Tokens are output plus fresh input for the whole daily session, never estimated per segment. Historical dates omit today's live state and reply. The first three sessions appear in the card; a separate action opens the complete list. Linked journal tasks and supported clients can be opened directly.
 
