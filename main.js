@@ -2469,6 +2469,26 @@ function aiFor(segs, list, label = "") {
   return out.sort((a, b) => b.related - a.related || b.overlap - a.overlap);
 }
 
+// 内圈按实际相交时长列出会话；token 保持本日会话合计，不按分钟摊算。
+function aiSegmentSessions(list, agent, start, end) {
+  return (list || []).filter((x) => aiAgent(x) === agent).map((x) => ({ ...x,
+    overlap: unionMin((x.segs || []).map(([a, b]) => [Math.max(start, a), Math.min(end, b)]).filter(([a, b]) => b > a)),
+  })).filter((x) => x.overlap > 0).sort((a, b) => b.overlap - a.overlap || (b.min || 0) - (a.min || 0));
+}
+function aiHoverSession(x, meta = {}, current = true) {
+  const clean = (v, max = 160) => String(v || "").replace(/```[\s\S]*?(?:```|$)/g, " ").replace(/\*\*/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/^\s*[-*+]\s+/gm, "").replace(/\s*\^[a-z0-9-]+\s*$/i, "").replace(/\s+/g, " ").trim().slice(0, max);
+  const m = current ? meta : {};
+  const rounds = Array.isArray(m.rounds) ? m.rounds : [];
+  const done = rounds.filter((r) => r.summary || (r.doneAt && r.said)).slice(-1)[0];
+  const todo = aiAgent(x) === "claude" && m.todo;
+  return { title: clean(m.title || x.title || (x.text || "").split(" / ")[0] || x.dir, 400),
+    state: m.state || null,
+    progress: todo?.total ? T(`${todo.done}/${todo.total} 步${todo.cur ? ` · ${clean(todo.cur, 70)}` : ""}`, `${todo.done}/${todo.total} steps${todo.cur ? ` · ${clean(todo.cur, 70)}` : ""}`) : m.turns > 0 ? T(`第 ${m.turns} 轮`, `Turn ${m.turns}`) : "",
+    step: clean(m.step, 100), model: clean(m.model || x.model, 100), cwd: m.cwd || x.cwd || "",
+    reply: current ? clean(done?.summary || done?.said || m.lastText, 100) : "",
+  };
+}
+
 const shq = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
 
 // Claude 会话列表：看看那会儿 Claude 在做什么，一键回到那个会话。groups = [{ name, sub, list }]，一组一件任务
@@ -2834,7 +2854,7 @@ class SpiralView extends ItemView {
   }
 
   // 换到相对今天第 n 天：重画，并放一次入场动效
-  go(n) { this.stopPlay(); this.offset = n; this._enter = true; return this.render(); }
+  go(n) { this.stopPlay(); this._agentHoverExpanded = null; this.offset = n; this._enter = true; return this.render(); }
 
   // 回放一整天：6 秒里把「现在」从这天的开头扫到结尾，螺旋和列表按那个时刻重排，放完回到真实的现在。只是重画，不改日记
   play() {
@@ -2873,6 +2893,7 @@ class SpiralView extends ItemView {
     const file = this.app.vault.getAbstractFileByPath(this.path());
     const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage() : null;
     const gameLog = cfg.trackGames !== false ? await this.plugin.gameLog() : null;
+    clearTimeout(this._hoverClose);
     root.empty();
     // 入场动效只在打开视图、换一天时放一次；每分钟的刷新和日记改动直接换成新的，不闪
     const enter = !!this._enter;
@@ -3076,14 +3097,22 @@ class SpiralView extends ItemView {
 
     // 鼠标划到螺旋的哪一段，这一行立刻显示那一段的时间和做的事（不等系统的悬停提示），位置固定在螺旋上方
     const hover = root.createDiv({ cls: "naut-hover" });
+    const clearHover = (force = false) => { if (!force && hover.hasClass("is-expanded")) return; clearTimeout(this._hoverClose); hover.empty(); hover.removeClass("is-agent", "is-expanded"); if (force) this._agentHoverExpanded = null; };
+    const leaveHover = () => { clearTimeout(this._hoverClose); this._hoverClose = setTimeout(clearHover, 180); };
+    hover.addEventListener("mouseenter", () => clearTimeout(this._hoverClose));
+    hover.addEventListener("mouseleave", leaveHover);
+    hover.addEventListener("focusin", () => clearTimeout(this._hoverClose));
+    hover.addEventListener("focusout", (e) => { if (!hover.contains(e.relatedTarget)) leaveHover(); });
+    hover.addEventListener("keydown", (e) => { if (e.key === "Escape") clearHover(true); });
     const hov = (el, time, text, sub) => {
       el.addEventListener("mouseenter", () => {
-        hover.empty();
+        if (hover.hasClass("is-expanded")) return;
+        clearHover();
         hover.createSpan({ cls: "naut-hover-time", text: time });
         hover.createSpan({ cls: "naut-hover-text", text });
         if (sub) hover.createSpan({ cls: "naut-hover-sub", text: sub });
       });
-      el.addEventListener("mouseleave", () => hover.empty());
+      el.addEventListener("mouseleave", () => clearHover());
       return el;
     };
     // 细线不好瞄准：上面再叠一条看不见的粗线接鼠标
@@ -3152,9 +3181,62 @@ class SpiralView extends ItemView {
         const d = arc(a, Math.max(b, a + 3), -10 - 4.5 * lane);
         if (!d) continue;
         const vis = late(svgEl("path", { d, class: `naut-ai naut-by-${k}`, pathLength: 1 }, svg), a);
-        // 这一段里是哪几个会话在动
-        const names = (ai.list || []).filter((x) => aiAgent(x) === k && x.segs.some(([c0, c1]) => Math.min(b, c1) - Math.max(a, c0) >= 1)).sort((x, y) => y.min - x.min).map(aiName);
-        hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`${AI_AGENTS[k]} 在干活`, `${AI_AGENTS[k]} at work`), names.length ? names.slice(0, 2).join(T("、", ", ")) + (names.length > 2 ? T(` 等 ${names.length} 个会话`, ` and ${names.length - 2} more`) : "") : "");
+        const sessions = aiSegmentSessions(ai.list, k, a, b);
+        const hit = fat(d, vis);
+        hit.dataset.agent = k;
+        hit.setAttribute("tabindex", "0");
+        hit.setAttribute("role", "button");
+        hit.setAttribute("aria-label", `${AI_AGENTS[k]} ${clock(a)}–${clock(b)} · ${sessions.length} ${T("个会话，查看详情", "sessions, view details")}`);
+        const show = (expanded = false, explicit = false) => {
+          if (hover.hasClass("is-expanded") && !explicit) return;
+          clearHover(true); hover.addClass("is-agent"); hover.style.setProperty("--naut-hover-agent", `var(--naut-ai-${k})`);
+          hover.createSpan({ cls: "naut-hover-time", text: `${clock(a)}–${clock(b)} · ${dur(b - a)}` });
+          hover.createSpan({ cls: "naut-hover-text", text: AI_AGENTS[k] });
+          hover.createSpan({ cls: "naut-hover-sub", text: sessions[0]?.title || T(`${sessions.length} 个会话`, `${sessions.length} sessions`), attr: { title: sessions.map(aiName).join("\n") } });
+          const toggle = hover.createEl("button", { cls: "naut-ai-hover-toggle", text: expanded ? T("收起详情", "Hide details") : T("详情", "Details"), attr: { "aria-expanded": String(expanded) } });
+          toggle.onclick = (e) => { e.stopPropagation(); show(!expanded, true); };
+          if (!expanded) return;
+          hover.addClass("is-expanded");
+          this._agentHoverExpanded = { agent: k, start: a, day: dayKey };
+          const card = hover.createDiv({ cls: "naut-ai-hover-card" });
+          const current = dayRel === 0 && !playing;
+          card.createDiv({ cls: "naut-ai-hover-caption", text: current ? T("实时会话状态 · token 为本日会话合计", "Live session state · tokens are daily session totals") : T("历史时段 · 不显示今天的实时状态", "Historical period · current live state is not shown") });
+          const deck = this.app.plugins.plugins["agent-deck"];
+          const lines = content.split("\n");
+          const cleanLabel = (v) => String(v || "").replace(/\s*\^[a-z0-9-]+\s*$/i, "").replace(/^🤖\s*/, "").trim();
+          for (const x of sessions.slice(0, 3)) {
+            const meta = deck?.usage?.meta?.get(x.sid) || this.plugin._ai?.live?.get(x.sid) || {};
+            const info = aiHoverSession(x, meta, current);
+            const rec = this.plugin.deckState(dayKey)[x.sid] || deck?.settings?.taskBindings?.[`${k}:${x.sid.slice(0, 8)}`];
+            let item = rec?.blockId && (!rec.path || rec.path === file.path) ? items.find((it) => lines[it.line]?.trimEnd().endsWith(`^${rec.blockId}`)) : null;
+            if (!item) {
+              const at = lines.findIndex((line) => parseLink(line)?.sid === x.sid);
+              if (at >= 0) item = items.find((it) => it.line === markOwner(lines, at));
+            }
+            const box = card.createDiv({ cls: "naut-ai-hover-session" });
+            box.createDiv({ cls: "naut-ai-hover-title", text: cleanLabel(item?.label || info.title) || T("未命名会话", "Untitled session") });
+            const state = ({ run: T("在跑", "Running"), wait: T("等你回复", "Waiting for reply"), quiet: T("暂时安静", "Quiet"), "needs-approval": T("等待允许", "Needs approval"), error: T("出错", "Error"), limit: T("达到限额", "Limit reached"), queued: T("排队中", "Queued") })[info.state];
+            const progress = [state, info.progress, info.step].filter(Boolean).join(" · ");
+            if (progress) box.createDiv({ cls: "naut-ai-hover-progress", text: progress });
+            box.createDiv({ cls: "naut-ai-hover-stats", text: [T(`本段 ${dur(x.overlap)}`, `${dur(x.overlap)} in this segment`), T(`本日 ${dur(x.min || 0)}`, `${dur(x.min || 0)} today`), tokUsed(x) ? T(`本日 ${fmtTok(tokUsed(x))} tok`, `${fmtTok(tokUsed(x))} tokens today`) : T("未记录 token", "Token usage unavailable")].join(" · "), attr: { title: T(`本日会话：产出 ${fmtTok(x.out || 0)}，读入 ${fmtTok(x.fresh || 0)}，缓存命中 ${fmtTok(x.cached || 0)}`, `Daily session: output ${fmtTok(x.out || 0)}, fresh input ${fmtTok(x.fresh || 0)}, cache reads ${fmtTok(x.cached || 0)}`) } });
+            const project = info.cwd ? info.cwd.replace(/\/$/, "").split("/").pop() : x.dir;
+            const context = [info.model, project].filter(Boolean).join(" · ");
+            if (context) box.createDiv({ cls: "naut-ai-hover-context", text: context, attr: { title: info.cwd } });
+            if (info.reply) box.createDiv({ cls: "naut-ai-hover-reply", text: T(`最近回复：${info.reply}`, `Latest reply: ${info.reply}`) });
+            const actions = box.createDiv({ cls: "naut-ai-hover-actions" });
+            if (item) actions.createEl("button", { text: T("定位日记", "Show in journal") }).onclick = () => { clearHover(true); this.plugin.openItem(file, item); };
+            if (deck || k === "claude") actions.createEl("button", { text: T("打开会话", "Open session") }).onclick = () => this.plugin.openAgentSession(x.sid, k);
+          }
+          if (!sessions.length) card.createDiv({ cls: "naut-muted", text: T("这段记录没有会话明细", "No session details were recorded for this segment") });
+          if (sessions.length > 3) card.createEl("button", { cls: "naut-ai-hover-more", text: T(`查看全部 ${sessions.length} 个会话`, `View all ${sessions.length} sessions`) }).onclick = () => new AiSessionsModal(this.app, `${AI_AGENTS[k]} ${clock(a)}–${clock(b)}`, [{ list: sessions.map((x) => ({ ...x, related: true })) }]).open();
+        };
+        hit.addEventListener("mouseenter", () => show());
+        hit.addEventListener("focus", () => show());
+        hit.addEventListener("mouseleave", leaveHover);
+        hit.addEventListener("blur", leaveHover);
+        hit.addEventListener("click", () => show(false, true));
+        hit.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(true, true); } });
+        if (this._agentHoverExpanded?.agent === k && this._agentHoverExpanded.start === a && this._agentHoverExpanded.day === dayKey) show(true, true);
       }
     });
     // 再往里一圈：游戏时间
@@ -6908,4 +6990,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions };
+module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, breakWord, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions, aiSegmentSessions, aiHoverSession };

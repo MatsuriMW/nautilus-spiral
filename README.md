@@ -159,3 +159,11 @@ To follow new features, send feedback or keep up with progress, follow me on Twi
 This plugin shares the ideas, not the code. The capacity figures, the hatched unrecorded time, the daily review, free-slot hover, the status bar timer and playback follow the rules of Nautilus Log (MIT) so that the numbers mean the same thing; they were written again here for Obsidian, and checked against its `log-core.js` and `timing-core.js`. It was written separately for a different workflow: the daily note itself is the data source, written as a plain list with Logseq-style task keywords, and agent session logs are used as evidence of what actually happened.
 
 MIT licensed.
+
+## Agent inner-ring details
+
+Hovering an agent segment shows only its time, agent and short title. Click **Details** to expand the card; click **Hide details** or press Escape inside the card to close it. The expanded card stays open when the pointer leaves and across same-day redraws, and closes when changing dates.
+
+Cards list sessions by overlap with the selected segment, with full task titles, live state, steps or turns, latest action, model, directory and recent reply. Segment overlap time, daily session time and daily tokens are labeled separately. Tokens are output plus fresh input for the whole daily session, never estimated per segment. Historical dates omit today's live state and reply. The first three sessions appear in the card; a separate action opens the complete list. Linked journal tasks and supported clients can be opened directly.
+
+Automatic journal writing, record granularity, compaction thresholds and record folding are configured in Agent Deck. Nautilus reads and displays that information without writing duplicate AI records.

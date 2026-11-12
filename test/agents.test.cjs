@@ -40,3 +40,21 @@ ingest({type:'USER_INPUT',content:'验证结果'},3);
 assert.equal(ai.live.get(sid).turns,2);
 assert.equal(ai.live.get(sid).state,'run');
 console.log('PASS Antigravity link, states and two turns; DSH enabled');
+const {aiSegmentSessions, aiHoverSession} = ctx.module.exports.core;
+const sessions = [
+ {sid:'short',agent:'codex',min:200,segs:[[1400,1440],[1450,1500]],title:'短重叠',out:300},
+ {sid:'long',agent:'codex',min:60,segs:[[1420,1490]],title:'长重叠',out:200},
+ {sid:'other',agent:'claude',min:90,segs:[[1420,1490]]},
+];
+const hits=aiSegmentSessions(sessions,'codex',1430,1470);
+assert.deepEqual(Array.from(hits,x=>[x.sid,x.overlap]),[['long',40],['short',30]]);
+assert.equal(sessions[0].overlap,undefined);
+assert.equal(hits[0].out,200); // 本日用量原样保留，不能冒充本段用量
+const info=aiHoverSession(hits[0],{state:'run',turns:3,model:'test-model',lastText:'最近回复'},true);
+assert.equal(info.state,'run');assert.equal(info.progress,'第 3 轮');
+const historical=aiHoverSession(hits[0],{state:'run',turns:3,lastText:'今天的回复'},false);
+assert.equal(historical.state,null);assert.equal(historical.reply,'');
+console.log('PASS agent hover uses segment overlap and separates daily tokens from historical/live state');
+
+assert.equal(aiHoverSession(hits[0],{lastText:'- [发布说明](https://example.com/very-long-url)'},true).reply,'发布说明');
+console.log('PASS reply previews strip Markdown links and list markers');
