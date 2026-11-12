@@ -24,6 +24,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test agent tracking
+        run: node test/agents.test.cjs
+
       - name: Read version
         id: ver
         run: |

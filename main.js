@@ -16,7 +16,7 @@ const DEFAULTS = {
   doneTimes: {},        // { "2026_09_29": { "任务文字": 872 } }，在 Bike 里改成 DONE 时记下的完成时间（分钟）
   autoOpened: false,
   showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
-  aiAgents: { claude: true, codex: true, workbuddy: true, dsh: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  aiAgents: { claude: true, codex: true, workbuddy: true, dsh: true, antigravity: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
   dshApiPort: 0,        // DSH 的 dsh-token-usage-stats API 端口：0 = 自动从 lsof 找；插件没开时保留库里上次的数
   aiPrimary: "claude",  // 主力 Agent：全量追踪（历史、跨天补记、状态栏）；其余开着的只追踪今天有动静的会话
   googleCal: false,       // 读 Google 日历里的事件当固定事件（只读，走 Google Calendar API）
@@ -235,14 +235,14 @@ const claudeLink = (sid) => `claude://resume?session=${sid}`;
 function linkLine(indent, agent, title, sid) {
   const name = String(title || "").replace(/[\[\]()`\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || T("会话", "Session");
   if (agent === "dsh") return `${indent}- 🔗 [DeepSeek Harness：${name}](dsh://open) \`${sid}\``;
-  return agent === "claude" ? `${indent}- 🔗 [Claude：${name}](${claudeLink(sid)})` : `${indent}- 🔗 ${agent === "codex" ? "Codex" : agent === "workbuddy" ? "WorkBuddy" : agent}：${name} \`${sid}\``;
+  return agent === "claude" ? `${indent}- 🔗 [Claude：${name}](${claudeLink(sid)})` : `${indent}- 🔗 ${agent === "codex" ? "Codex" : agent === "workbuddy" ? "WorkBuddy" : agent === "antigravity" ? "Antigravity" : agent}：${name} \`${sid}\``;
 }
 // 读一行「🔗」：{ sid, agent }，不是就返回 null
 function parseLink(line) {
   if (!LINK_LINE_RE.test(line)) return null;
   const m = SID_RE.exec(line);
   if (!m) return null;
-  const agent = /🔗\s*\[?\s*Codex/i.test(line) ? "codex" : /🔗\s*\[?\s*WorkBuddy/i.test(line) ? "workbuddy" : /🔗\s*\[?\s*(DeepSeek Harness|DSH)/i.test(line) ? "dsh" : "claude";
+  const agent = /🔗\s*\[?\s*Codex/i.test(line) ? "codex" : /🔗\s*\[?\s*WorkBuddy/i.test(line) ? "workbuddy" : /🔗\s*\[?\s*(DeepSeek Harness|DSH)/i.test(line) ? "dsh" : /🔗\s*\[?\s*Antigravity/i.test(line) ? "antigravity" : "claude";
   return { sid: m[0], agent };
 }
 // 第 n 行那一项的直接子项（和它第一个子项同一层缩进的）里，第一个让 pick 返回东西的那一行：{ line, ...pick 返回的 }，没有返回 null
@@ -335,7 +335,7 @@ function parseJournal(content, cfg) {
     const lm = LIST_RE.exec(raw);
     if (!lm) return;
     let s = lm[2];
-    if (s.startsWith("🔗") || s.startsWith("💬") || isSubMark(s) || isGoal(s)) return;   // 任务下面的「🔗 绑定的会话」「💬 会话最后说的话」「🤖 子代理」「🎯 目标」是记号，不是事件也不是任务（里面带着时间也不算）
+    if (s.startsWith("🔗") || s.startsWith("💬") || s.startsWith("📋") || s.startsWith("❓") || isSubMark(s) || isGoal(s)) return;   // 任务下面的「🔗 绑定的会话」「💬 会话最后说的话」「📋 步骤/轮次进度」「❓ 追问」「🤖 子代理」「🎯 目标」是记号，不是事件也不是任务（里面带着时间也不算）
     if (s.startsWith("⏱")) {
       // 任务下面的「⏱ 实际时段」是记录，不是事件也不是任务。读出来挂到它上面那件任务上（往上找缩进更浅的第一行）
       const c = parseClock(s, cfg), ind = lm[1].replace(/\t/g, "    ").length;
@@ -1492,7 +1492,7 @@ class GoogleCalendar {
 const AI_IDLE = 5;          // 同一会话两次活动间隔不超过 5 分钟，中间算在干活（跑长命令、等你确认都在内）
 const DSH_TOUCH = new Set(["user/message", "assistant/message", "tool/call", "tool/result", "turn/start", "turn/end", "step/start", "step/end"]);   // DSH 日志里算「这一刻在动」的事件
 const AI_FRESH_DAYS = 14;   // 最近这么多天的汇总会随日志重算，更早的定格不再改
-const AI_STORE_V = 4;       // ai-usage.json 的格式版本；升级时用现存日志把所有日子重算一遍（2 = 加了每个会话的明细 list，3 = 明细里加了工作目录 cwd，4 = 加了会话来自哪（Claude 桌面版 / 终端））
+const AI_STORE_V = 5;       // ai-usage.json 的格式版本；升级时用现存日志把所有日子重算一遍（5 = 加入 DeepSeek Harness 与 Antigravity 直接会话日志汇总）
 
 const fmtKey = (d, cfg) => cfg.format.replace("YYYY", d.getFullYear()).replace("MM", pad(d.getMonth() + 1)).replace("DD", pad(d.getDate()));
 
@@ -1503,8 +1503,8 @@ function aiDay(ms, cfg) {
   return { key: fmtKey(d, cfg), t: (ms - mid) / 60000 };   // t 和螺旋同一个坐标：当天 0 点起的分钟数，凌晨会超过 1440
 }
 
-// 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝
-const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", dsh: "DeepSeek Harness" };
+// 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 紫
+const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", dsh: "DeepSeek Harness", antigravity: "Antigravity" };
 const aiAgent = (x) => (x && AI_AGENTS[x.agent] ? x.agent : "claude");   // 旧记录没写来源的都是 Claude
 // 主力 Agent：全量追踪；没设过是 Claude
 const aiPrimary = (cfg) => (cfg && AI_AGENTS[cfg.aiPrimary] ? cfg.aiPrimary : "claude");
@@ -1517,6 +1517,7 @@ const aiWhere = (x) => {
   if (a === "claude") return app === "cli" ? T("终端", "Terminal") : T("Claude 桌面版", "Claude desktop");   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
   if (a === "codex") return /desktop/i.test(app) ? T("Codex 桌面版", "Codex desktop") : /tui|cli|exec/i.test(app) ? T("Codex 终端", "Codex terminal") : "Codex";
   if (a === "dsh") return "DeepSeek Harness";
+  if (a === "antigravity") return "Antigravity";
   return AI_AGENTS[a];
 };
 
@@ -1729,12 +1730,16 @@ class AiUsage {
     return out;
   }
 
-  // 不是主力的 Agent 只追踪今天：今天以前的动静不读进来（时长、token、在干什么都不算）。主力的照常全读
+  // 不是主力的 Agent 追踪最近 AI_FRESH_DAYS 天（含今天和近 7 天柱状图），更早的不翻；主力的照常全读
   stale(agent, ms) {
     if (agent === aiPrimary(this.cfg)) return false;
     const now = Date.now();
-    if (!this._todayAt || now - this._todayAt > 60e3) { this._todayKey = aiDay(now, this.cfg).key; this._todayAt = now; }
-    return aiDay(ms, this.cfg).key < this._todayKey;
+    if (!this._todayAt || now - this._todayAt > 60e3) {
+      this._todayKey = aiDay(now, this.cfg).key;
+      this._freshKey = aiDay(now - AI_FRESH_DAYS * 864e5, this.cfg).key;
+      this._todayAt = now;
+    }
+    return aiDay(ms, this.cfg).key < this._freshKey;
   }
 
   // ---- Claude Code 的 subagent ----
@@ -1819,11 +1824,17 @@ class AiUsage {
   static roots(cfg) {
     const os = require("os"), path = require("path");
     const home = os.homedir();
+    const dshHome = process.env.DSH_HOME || path.join(home, ".dsh");
     const r = [[path.join(home, ".claude/projects"), "claude"], [path.join(home, ".config/claude/projects"), "claude"]];
     for (const d of (process.env.CLAUDE_CONFIG_DIR || "").split(",").filter(Boolean)) r.push([path.join(d, "projects"), "claude"]);
     // Codex 归档一个会话，是把它的文件从 sessions 挪进 archived_sessions：两边都读，归档了的会话历史才不会断
-    r.push([path.join(codexHome(), "sessions"), "codex"], [path.join(codexHome(), "archived_sessions"), "codex"], [path.join(home, ".workbuddy/projects"), "workbuddy"]);
-    // DeepSeek Harness 的用量走 dsh-token-usage-stats 的 API（见 fetchDshApi），不再直接读 ~/.dsh/sessions
+    r.push(
+      [path.join(codexHome(), "sessions"), "codex"],
+      [path.join(codexHome(), "archived_sessions"), "codex"],
+      [path.join(home, ".workbuddy/projects"), "workbuddy"],
+      [path.join(dshHome, "sessions"), "dsh"],
+      [path.join(home, ".gemini/antigravity/brain"), "antigravity"],
+    );
     const on = new Set(aiOn(cfg)), seen = new Set();
     return r.filter(([d, a]) => on.has(a) && !seen.has(d) && seen.add(d));
   }
@@ -1853,14 +1864,25 @@ class AiUsage {
 
   // 会话眼下的状态，任务行下面的进度条「监听」的就是它：
   //   state = run 在跑（你刚发了话、它在调工具）/ wait 这一轮答完了，等你；step = 最近一步在干什么；
-  //   todo = 它自己列的待办做到第几步（Claude 的 TodoWrite / TaskCreate、Codex 的 update_plan），没列就是 null，那就没有百分比可看
+  //   todo = Claude 列的待办做到第几步（TodoWrite / TaskCreate / TaskUpdate）；
+  //   turns = 和你来回对话到第几轮（其余 Agent 以及没列 TaskCreate 的 Claude 会话按轮次显示「第 N 轮」）
   // 续接的会话会把旧消息抄进新文件，时间比已经见过的早的不管
   liveOf(sid, agent, ms) {
     let v = this.live.get(sid);
-    if (!v) this.live.set(sid, v = { agent, at: 0, state: "run", step: "", todo: null });
+    if (!v) this.live.set(sid, v = { agent, at: 0, state: "run", step: "", todo: null, turns: 0, _waitReply: false });
     if (ms < v.at) return null;
     v.at = ms;
     return v;
+  }
+  bumpTurn(v) {
+    if (!v) return;
+    if (!v.turns || v._waitReply !== true) {
+      v.turns = (v.turns || 0) + 1;
+      v._waitReply = true;
+    }
+  }
+  endTurn(v) {
+    if (v) v._waitReply = false;
   }
   liveClaude(d, sid, ms) {
     const v = this.liveOf(sid, "claude", ms);
@@ -1886,39 +1908,58 @@ class AiUsage {
     if (d.type === "user") {
       const stopped = typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b.type === "text").map((b) => b.text).join("") : "";
       v.state = /^\s*\[Request interrupted/.test(stopped) ? "wait" : "run";
+      if (aiIsPrompt(d)) this.bumpTurn(v);
       return;
     }
+    this.endTurn(v);
     const stop = d.message && d.message.stop_reason;
     v.state = stop === "end_turn" || stop === "stop_sequence" ? "wait" : "run";
     for (const b of Array.isArray(c) ? c : []) {
       if (b.type !== "tool_use") continue;
       const i = b.input || {};
       if (b.name === "TodoWrite" && Array.isArray(i.todos)) v.todo = todoOf(i.todos.map((t) => [t.status, t.activeForm || t.content]));
-      else if (b.name === "TaskCreate") { (v.tasks ||= { made: 0, st: new Map() }).made++; v.todo = this.taskTodo(v.tasks); }
-      else if (b.name === "TaskUpdate" && i.taskId != null) { (v.tasks ||= { made: 0, st: new Map() }).st.set(String(i.taskId), i.status || v.tasks.st.get(String(i.taskId)) || ""); v.todo = this.taskTodo(v.tasks); }
-      else v.step = aiStep(b.name, i);
+      else if (b.name === "TaskCreate") {
+        const tk = (v.tasks ||= { seq: 0, list: [] });
+        const id = String(i.id || i.taskId || ++tk.seq);
+        const label = String(i.activeForm || i.subject || i.title || i.content || i.description || "").replace(/\s+/g, " ").trim().slice(0, 36);
+        tk.list.push({ id, status: String(i.status || "pending"), label });
+        v.todo = this.taskTodo(tk);
+      } else if (b.name === "TaskUpdate" && (i.taskId != null || i.id != null)) {
+        const tk = (v.tasks ||= { seq: 0, list: [] });
+        const rawId = String(i.taskId ?? i.id);
+        let item = tk.list.find((x) => x.id === rawId);
+        if (!item && /^\d+$/.test(rawId)) item = tk.list[+rawId - 1];
+        if (!item) { item = { id: rawId, status: "pending", label: "" }; tk.list.push(item); }
+        if (i.status) item.status = String(i.status);
+        const label = String(i.activeForm || i.subject || i.title || i.content || "").replace(/\s+/g, " ").trim().slice(0, 36);
+        if (label) item.label = label;
+        v.todo = this.taskTodo(tk);
+      } else v.step = aiStep(b.name, i);
     }
   }
   taskTodo(tk) {
-    const sts = [...tk.st.values()], gone = sts.filter((x) => x === "deleted").length;
-    const total = Math.max(tk.made, tk.st.size) - gone;
-    return total > 0 ? { done: sts.filter((x) => x === "completed").length, total, cur: "" } : null;
+    const alive = (tk.list || []).filter((x) => x.status !== "deleted" && x.status !== "cancelled");
+    if (!alive.length) return null;
+    const done = alive.filter((x) => x.status === "completed" || x.status === "done").length;
+    const curItem = alive.find((x) => x.status === "in_progress") || alive.find((x) => x.status !== "completed" && x.status !== "done");
+    return { done, total: alive.length, cur: curItem ? curItem.label || "" : "" };
   }
   liveCodex(d, p, sid, ms) {
     const v = this.liveOf(sid, "codex", ms);
     if (!v) return;
     if (d.type === "event_msg") {
-      if (p.type === "task_complete" || p.type === "turn_aborted") v.state = "wait";
+      if (p.type === "task_complete" || p.type === "turn_aborted") { v.state = "wait"; this.endTurn(v); }
       else if (p.type === "error") { v.state = "error"; v.err = String(p.message || "").replace(/\s+/g, " ").trim().slice(0, 80); }
       else if (p.type === "task_started" || p.type === "user_message") v.state = "run";
       return;
     }
+    if (p.type === "message" && p.role === "assistant") { this.endTurn(v); return; }
     if (p.type !== "function_call" && p.type !== "custom_tool_call" && p.type !== "local_shell_call") return;
     v.state = "run";
+    this.endTurn(v);
     let a = {};
     try { a = typeof p.arguments === "string" ? JSON.parse(p.arguments) : p.arguments || p.action || {}; } catch (e) { /* 参数不是 JSON 就只报工具名 */ }
-    if (p.name === "update_plan" && Array.isArray(a.plan)) v.todo = todoOf(a.plan.map((x) => [x.status, x.step]));
-    else v.step = aiStep(p.name || p.type, a);
+    v.step = aiStep(p.name || p.type, a);
   }
 
   // 把一个日志文件新追加的部分读进来（读过的不重读）
@@ -1926,10 +1967,10 @@ class AiUsage {
     const fs = require("fs"), path = require("path");
     if (agent === "dsh") return this.readDsh(p, st, touched);   // zstd 压的，整份解压，见 readDsh
     let fc = this.files.get(p);
-    // Codex / WorkBuddy 一个文件就是一个会话，文件名里带会话号
+    // Codex / WorkBuddy / Antigravity 一个文件就是一个会话，路径或文件名里带会话号
     if (!fc || st.size < fc.size) {
       this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent,
-        sid: (/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/.exec(p) || [])[1] || path.basename(p, ".jsonl") });
+        sid: (/([0-9a-f]{8}-[0-9a-f-]{27})/i.exec(p) || [])[1] || path.basename(p, ".jsonl") });
       fc.id = fc.sid;   // 这个文件自己的会话号（Codex 的子线程会把 sid 换成主线程的）
       // Claude 的 subagent 文件（<会话号>/subagents/agent-<id>.jsonl）挂在父会话名下：轮询父会话时一起读
       const sm = agent === "claude" && /([0-9a-f]{8}-[0-9a-f-]{27})[\\/]subagents[\\/]agent-([^\\/]+)\.jsonl$/.exec(p);
@@ -1972,20 +2013,21 @@ class AiUsage {
   async scan(since = 0) {
     const fs = require("fs"), path = require("path");
     const touched = new Set();
-    const walk = async (dir, depth) => {
+    const walk = async (dir, depth, agent) => {
       let ents;
       try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return []; }
       const out = [];
       for (const e of ents) {
+        if (agent === "antigravity" && e.isDirectory() && /^(steps|chunks|browser_sandbox|scratch|media)$/.test(e.name)) continue;
         const p = path.join(dir, e.name);
-        if (e.isDirectory() && depth < 4) out.push(...await walk(p, depth + 1));
-        else if (e.isFile() && /\.jsonl(\.zstd|\.zst)?$/.test(e.name)) out.push(p);
+        if (e.isDirectory() && depth < 4) out.push(...await walk(p, depth + 1, agent));
+        else if (e.isFile() && (agent === "antigravity" ? e.name === "transcript.jsonl" : /\.jsonl(\.zstd|\.zst)?$/.test(e.name))) out.push(p);
       }
       return out;
     };
     if (aiOn(this.cfg).includes("codex")) await this.codexTitles();
     for (const [root, agent] of AiUsage.roots(this.cfg)) {
-      for (const p of await walk(root, 0)) {
+      for (const p of await walk(root, 0, agent)) {
         let st;
         try { st = await fs.promises.stat(p); } catch (e) { continue; }
         let fc = this.files.get(p);
@@ -2028,7 +2070,15 @@ class AiUsage {
     if (d.type === "message" && d.role === "user") {
       const text = (Array.isArray(d.content) ? d.content : []).filter((b) => b && b.type === "input_text").map((b) => b.text || "").join("")
         .replace(/<system-reminder[\s\S]*?<\/system-reminder>/g, "").trim();
-      if (text) this.addPrompt(day, s, text);
+      if (text) {
+        this.addPrompt(day, s, text);
+        this.bumpTurn(lv);
+      }
+    } else if (d.type === "message" && d.role === "assistant") {
+      this.endTurn(lv);
+    } else if (d.type === "function_call" && lv) {
+      this.endTurn(lv);
+      lv.step = aiStep(d.name, d.arguments || d.input || {});
     }
     const pd = d.providerData || {}, u = pd.usage;
     if (u && pd.messageId) {
@@ -2058,6 +2108,7 @@ class AiUsage {
     fc.msgs = new Map();
     fc.titles = new Map();
     fc.cwd = "";
+    this.live.delete(fc.sid);
     const lines = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       this.ingestDsh(lines[i], fc, touched);
@@ -2094,7 +2145,7 @@ class AiUsage {
       const text = (Array.isArray(content) ? content : []).filter((b) => b && b.type === "text").map((b) => b.text || "").join("").trim();
       if (text && data.source && data.source.kind === "user") {
         this.addPrompt(day, s, text);
-        if (v) v.state = "run";
+        if (v) { v.state = "run"; this.bumpTurn(v); }
       }
       return;
     }
@@ -2105,16 +2156,17 @@ class AiUsage {
     if (t === "tool/call") {
       if (!v) return;
       v.state = "run";
+      this.endTurn(v);
       let a = {};
       try { a = typeof data.arguments === "string" ? JSON.parse(data.arguments) : data.arguments || {}; } catch (e) { /* 参数不是 JSON 就只报工具名 */ }
-      if (/todo/i.test(String(data.name || "")) && Array.isArray(a.todos)) v.todo = todoOf(a.todos.map((x) => [x.status, x.content || x.activeForm]));
-      else v.step = aiStep(data.name, a);
+      v.step = aiStep(data.name, a);
       return;
     }
     if (t === "assistant/message") {
       const msg = data.message || {};
       if (v) {
         v.state = "run";
+        this.endTurn(v);
         for (const b of Array.isArray(msg.content) ? msg.content : []) if (b.type === "tool-call" || b.type === "tool_use") v.step = aiStep(b.name, b.arguments || b.input);
       }
       const model = (msg.source && msg.source.model) || fc.model;
@@ -2128,10 +2180,72 @@ class AiUsage {
     }
     if (t === "turn/end") {
       if (!v) return;
+      this.endTurn(v);
       const reason = data.reason || {};
       v.state = reason.kind === "error" ? "error" : "wait";
       v.err = reason.kind === "error" ? String((reason.error && reason.error.message) || "").slice(0, 120) : "";
       v.todo = null;
+    }
+  }
+
+  // Google Antigravity：~/.gemini/antigravity/brain/<会话号>/.system_generated/logs/transcript.jsonl
+  ingestAntigravity(line, fc, touched) {
+    if (!line) return;
+    let d;
+    try { d = JSON.parse(line); } catch (e) { return; }
+    const ms = Date.parse(d.created_at || d.timestamp || "") || 0;
+    if (!ms || (d.type !== "USER_INPUT" && d.type !== "PLANNER_RESPONSE" && d.type !== "TOOL_RESPONSE") || this.stale("antigravity", ms)) return;
+    if (d.type === "PLANNER_RESPONSE" && !fc.cwd && Array.isArray(d.tool_calls)) {
+      for (const tc of d.tool_calls) {
+        const a = tc.args || tc.arguments || {};
+        const fp = a.Path || a.TargetFile || a.DirectoryPath || "";
+        if (typeof fp === "string" && fp.startsWith("/")) { fc.cwd = require("path").dirname(fp); break; }
+      }
+    }
+    const { key, day, s } = this.touchSess(fc, touched, ms, fc.sid, fc.cwd || "Antigravity", "antigravity");
+    const v = this.liveOf(fc.sid, "antigravity", ms);
+    if (d.type === "USER_INPUT") {
+      let raw = String(d.content || "");
+      const ur = /<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i.exec(raw);
+      const text = (ur ? ur[1] : raw.replace(/<CONTEXT_SUMMARY>[\s\S]*?<\/CONTEXT_SUMMARY>/gi, "").replace(/<system-reminder[\s\S]*?<\/system-reminder>/gi, "")).trim();
+      if (text) {
+        if (!fc.titles.has(fc.sid)) fc.titles.set(fc.sid, text.split(/\r?\n/).find((l) => l.trim())?.trim().slice(0, 60) || text.slice(0, 60));
+        this.addPrompt(day, s, text);
+        fc._inChars = (fc._inChars || 0) + text.length;
+        if (v) { v.state = "run"; v.step = T("思考中", "Thinking"); this.bumpTurn(v); }
+      }
+      return;
+    }
+    if (d.type === "PLANNER_RESPONSE") {
+      const calls = Array.isArray(d.tool_calls) ? d.tool_calls : [];
+      if (v) {
+        this.endTurn(v);
+        if (calls.length) {
+          const ask = calls.find((c) => /ask_question|notify_user/i.test(c.name || ""));
+          if (ask) {
+            v.state = "wait";
+            v.step = T("等你回答", "Waiting for your answer");
+          } else {
+            v.state = "run";
+            const last = calls[calls.length - 1], n = String(last.name || "").replace(/^default_api:/, ""), a = last.args || last.arguments || {};
+            if (n === "run_command") v.step = aiStep("Bash", { description: a.toolSummary || a.CommandLine });
+            else if (n === "edit_file" || n === "replace_file_content" || n === "multi_replace_file_content") v.step = aiStep("Edit", { path: a.Path || a.TargetFile });
+            else if (n === "write_file" || n === " write_to_file") v.step = aiStep("Write", { path: a.Path || a.TargetFile });
+            else if (n === "read_file" || n === "view_file") v.step = aiStep("Read", { path: a.Path || a.AbsolutePath });
+            else v.step = aiStep(n, a);
+          }
+        } else {
+          v.state = "wait";
+          v.step = "";
+        }
+      }
+      const outChars = String(d.content || "").length + String(d.thinking || "").length + calls.reduce((n, tc) => n + JSON.stringify(tc.args || tc.arguments || {}).length, 0);
+      const inChars = fc._inChars || 0;
+      fc._inChars = 0;
+      const outTok = Math.ceil(outChars / 3.5), inTok = Math.ceil(inChars / 3.5);
+      if (outTok || inTok) {
+        fc.msgs.set(`ag:${fc.sid}:${d.step_index ?? fc.msgs.size}`, { key, sid: fc.sid, proj: s.proj, model: "antigravity", out: outTok, fresh: inTok, cached: 0 });
+      }
     }
   }
 
@@ -2160,7 +2274,10 @@ class AiUsage {
     this.liveCodex(d, p, fc.sid, ms);
     if (d.type === "response_item" && p.type === "message" && p.role === "user") {
       const text = (Array.isArray(p.content) ? p.content : []).filter((b) => b && b.type === "input_text").map((b) => b.text || "").join("").trim();
-      if (text && !text.startsWith("<")) this.addPrompt(day, s, text);   // < 开头的是环境说明，不是你敲的
+      if (text && !text.startsWith("<")) {
+        this.addPrompt(day, s, text);   // < 开头的是环境说明，不是你敲的
+        this.bumpTurn(this.live.get(fc.sid));
+      }
     }
     const t = d.type === "event_msg" && p.type === "token_count" && p.info && p.info.total_token_usage;
     if (t) {
@@ -2176,6 +2293,7 @@ class AiUsage {
     if (fc.agent === "workbuddy") return this.ingestWorkbuddy(line, fc, touched);
     if (fc.agent === "codex") return this.ingestCodex(line, fc, touched);
     if (fc.agent === "dsh") return this.ingestDsh(line, fc, touched);
+    if (fc.agent === "antigravity") return this.ingestAntigravity(line, fc, touched);
     // 父会话正忙时，subagent 的结束通知先进排队（queue-operation），再作为附件（queued_command）塞进下一轮，不是 user 行
     if (line && line.indexOf("<task-notification>") >= 0 && line.indexOf('"type":"user"') < 0 && line.indexOf('"isSidechain":true') < 0) {
       let q;
@@ -2294,7 +2412,7 @@ class AiUsage {
     // 每个会话一行：标题、开头说的话、目录、活跃的时段
     for (const [sid, s] of sess) res.list.push({ sid, agent: s.agent, dir: s.proj, cwd: s.cwd || "", app: s.app || "", title: titles.get(sid) || "", text: s.text.slice(0, 300),
       min: Math.round(s.min), out: s.out, fresh: s.fresh, cached: s.cached, segs: s.segs.map(([a, b]) => [Math.round(a), Math.round(b)]) });
-    const dsh = this.dshApi.get(key);
+    const dsh = !(res.by && res.by.dsh) ? this.dshApi.get(key) : null;
     return dsh ? aiJoin(res, dsh) : res;
   }
 
@@ -2394,7 +2512,11 @@ class AiSessionsModal extends OB.Modal {
       bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
       return;
     }
-    if (agent === "workbuddy") return;
+    if (agent === "workbuddy" || agent === "antigravity") {
+      const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
+      bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
+      return;
+    }
     const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
     const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
     if (agent === "claude") {
@@ -3387,6 +3509,7 @@ const lucideWatch = (plugin, win) => {
 module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    this.settings.aiAgents = Object.assign({}, DEFAULTS.aiAgents, this.settings.aiAgents);
     this.applyColors();
     lucideWatch(this, window);
     this.registerEvent(this.app.workspace.on("window-open", (w) => { lucideWatch(this, w.win); this.applyColors(w.doc); }));
@@ -5487,7 +5610,7 @@ module.exports = class NautilusSpiral extends Plugin {
     }
     if (!it) return null;
     const label = workKey(it.label);
-    const x = cfg.showAi !== false ? this.progSession(label, link) : null;
+    const x = cfg.showAi !== false ? this.progSession(label, link, raw) : null;
     const lv = x && this._ai ? this._ai.live.get(x.sid) : null;
     // 你把这个会话归档了 = 做完了：进度拉满（这一行记成 DONE 由 Agent Deck 做）
     const archived = !!(x && this._archived && this._archived.has(x.sid));
@@ -5495,8 +5618,12 @@ module.exports = class NautilusSpiral extends Plugin {
     let pct = null, lead = "", mode = "", tok = 0;
     if (archived) pct = 1;
     else if (it.progress != null) pct = it.progress;
-    else if (lv && lv.todo && lv.todo.total) { pct = lv.todo.done / lv.todo.total; lead = T(`${lv.todo.done}/${lv.todo.total} 步`, `${lv.todo.done}/${lv.todo.total} steps`); }
-    else if (it.explicitDur && it.startedAt != null && now >= it.startedAt) {
+    else if (lv && lv.agent === "claude" && lv.todo && lv.todo.total) {
+      pct = lv.todo.done / lv.todo.total;
+      lead = T(`${lv.todo.done}/${lv.todo.total} 步`, `${lv.todo.done}/${lv.todo.total} steps`) + (lv.turns > 0 ? T(` · 第 ${lv.turns} 轮`, ` · Turn ${lv.turns}`) : "");
+    } else if (lv && lv.turns > 0) {
+      lead = T(`第 ${lv.turns} 轮`, `Turn ${lv.turns}`);
+    } else if (it.explicitDur && it.startedAt != null && now >= it.startedAt) {
       const spent = now - it.startedAt;
       pct = Math.min(1, spent / it.dur);
       lead = spent > it.dur ? T(`${dur(spent)} / ${dur(it.dur)} · 超 ${dur(spent - it.dur)}`, `${dur(spent)} / ${dur(it.dur)} · ${dur(spent - it.dur)} over`) : `${dur(spent)} / ${dur(it.dur)}`;
@@ -5509,7 +5636,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const state = archived ? T("已归档", "Archived") : !lv ? "" : lv.state === "wait" ? T("等你回复", "Waiting for your reply") : lv.state === "error" ? T(`报错停了${lv.err ? ` · ${lv.err}` : ""}`, `Stopped on an error${lv.err ? ` · ${lv.err}` : ""}`) : perm ? T(`等你点允许${perm.tool ? ` · ${perm.tool}` : ""}`, `Waiting for you to allow${perm.tool ? ` · ${perm.tool}` : ""}`) : lv.state === "limit" && this.queuedOf(x.sid) ? T(`排队续跑${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}`, `Queued to resume${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}`) : lv.state === "limit" ? (lv.resets && Date.now() > lv.resets ? T("额度已恢复，等你继续", "Limit reset, waiting for you to continue") : T(`撞${lv.week ? "周" : ""}限额${lv.resets ? ` · ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")} 恢复` : ""}`, `Hit the ${lv.week ? "weekly " : ""}limit${lv.resets ? ` · resets ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")}` : ""}`)) : quiet <= AI_IDLE ? T("在跑", "Running") : T(`${dur(quiet)} 没动静`, `Quiet for ${dur(quiet)}`);
       mode = lv && lv.state === "run" && !perm && quiet <= AI_IDLE ? "run" : "wait";
       if (state) parts.push(state);
-      const step = !archived && lv && lv.state === "run" ? (lv.todo && lv.todo.cur) || lv.step : "";
+      const step = !archived && lv && lv.state === "run" ? (lv.agent === "claude" && lv.todo && lv.todo.cur) || lv.step : "";
       if (step) parts.push(step);
       tok = this.progTokens(x.sid);
     }
@@ -5563,8 +5690,8 @@ module.exports = class NautilusSpiral extends Plugin {
       tip: T(`${r.desc || "subagent"}（${r.type || "subagent"}${r.bg ? "，后台派的" : ""}）`, `${r.desc || "subagent"} (${r.type || "subagent"}${r.bg ? ", in the background" : ""})`) };
   }
   // 这一行对上的是哪个会话：下面有「🔗」行的（link = 那一行读出来的 { sid, agent }）优先，绑了就只听它，那个会话今天没动静也照样认；
-  // 没绑的在今天有动静的会话里找，几个都对得上取最近在动的
-  progSession(label, link = null) {
+  // 没绑的在今天有动静的会话里找（包括 Agent Deck 的 ^blockId 绑定和内联 (agent:sid8)），几个都对得上取最近在动的
+  progSession(label, link = null, rawLine = "") {
     const cfg = this.settings, dayKey = this.today().format(cfg.format);
     if (link && link.sid && aiOn(cfg).includes(link.agent || "claude")) {
       const days = this.aiStore ? this.aiStore.days : {};
@@ -5583,7 +5710,20 @@ module.exports = class NautilusSpiral extends Plugin {
     const list = c.list;
     if (!list.length) return null;
     const st = this.deckState(dayKey);
-    let hits = list.filter((x) => { const r = st[x.sid]; return r && r.key === label && !r.skip && !r.gone; });
+    const bindings = this.app.plugins?.plugins?.["agent-deck"]?.settings?.taskBindings || {};
+    const blkMatch = rawLine ? /\s\^([A-Za-z0-9-]+)\s*$/.exec(rawLine) : null;
+    const blkId = blkMatch ? blkMatch[1] : "";
+    const inlineMatch = rawLine ? /\((claude|codex|workbuddy|dsh|antigravity):([0-9a-f]{6,36})\)/i.exec(rawLine) : null;
+    let hits = list.filter((x) => {
+      const r = st[x.sid];
+      if (r && (r.key === label || (blkId && r.blockId === blkId)) && !r.skip && !r.gone) return true;
+      if (inlineMatch && x.agent === inlineMatch[1].toLowerCase() && x.sid.startsWith(inlineMatch[2].toLowerCase())) return true;
+      if (blkId) {
+        const b = bindings[`${x.agent}:${x.sid.slice(0, 8)}`];
+        if (b && b.blockId === blkId) return true;
+      }
+      return false;
+    });
     if (!hits.length) {
       const norm = (v) => String(v || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
       const want = norm(label);
@@ -6110,7 +6250,13 @@ class SpiralSettings extends PluginSettingTab {
           d.setValue(aiPrimary(s)).onChange(async (v) => { s.aiPrimary = v; await this.plugin.saveData(s); reset(); this.display(); });
         });
       const fs = require("fs"), path = require("path"), home = require("os").homedir();
-      const where = { claude: [".claude/projects", T("Claude Code 和 Claude 桌面版里的 Code 会话", "Claude Code, and Code sessions in the Claude desktop app")], codex: [".codex/sessions", T("Codex 桌面版和 codex 命令行，时长和 token 都读", "Codex desktop and the codex CLI; both time and tokens are read")], workbuddy: [".workbuddy/projects", T("WorkBuddy 桌面版", "WorkBuddy desktop")], dsh: [".dsh/sessions", T("DeepSeek Harness 的 token 由 dsh-token-usage-stats 插件统计，螺旋通过本机 API 读取", "DeepSeek Harness tokens are counted by the dsh-token-usage-stats plugin; the spiral reads them through a local API")] };
+      const where = {
+        claude: [".claude/projects", T("Claude Code 和 Claude 桌面版里的 Code 会话", "Claude Code, and Code sessions in the Claude desktop app")],
+        codex: [".codex/sessions", T("Codex 桌面版和 codex 命令行，时长和 token 都读", "Codex desktop and the codex CLI; both time and tokens are read")],
+        workbuddy: [".workbuddy/projects", T("WorkBuddy 桌面版", "WorkBuddy desktop")],
+        dsh: [".dsh/sessions", T("DeepSeek Harness 会话日志（~/.dsh/sessions），并支持 dsh-token-usage-stats API 兜底", "DeepSeek Harness session logs (~/.dsh/sessions), with fallback to the dsh-token-usage-stats local API")],
+        antigravity: [".gemini/antigravity/brain", T("Google Antigravity 会话日志", "Google Antigravity session logs")],
+      };
       for (const k of Object.keys(AI_AGENTS)) {
         const [dir, what] = where[k];
         const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
