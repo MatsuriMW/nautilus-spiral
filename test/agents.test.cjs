@@ -58,3 +58,38 @@ console.log('PASS agent hover uses segment overlap and separates daily tokens fr
 
 assert.equal(aiHoverSession(hits[0],{lastText:'- [发布说明](https://example.com/very-long-url)'},true).reply,'发布说明');
 console.log('PASS reply previews strip Markdown links and list markers');
+
+// 双击 Agent 内圈展开详情卡：把公开版里挂在 hit 上的事件接线取出来实际跑一遍，
+// 确认双击展开的是同一张卡，且单击、悬停、回车的行为没被改掉。
+// 这里测的是事件处理本身，不依赖 Obsidian 的 DOM；界面上的真实点击仍需人工验证。
+const js = fs.readFileSync(source, 'utf8');
+const block = js.slice(js.indexOf('hit.dataset.agent'), js.indexOf('// 再往里一圈：游戏时间'));
+assert.ok(block.length > 0, '公开版里应有 Agent 内圈的事件接线');
+assert.ok(block.includes('const show = (expanded = false, explicit = false)'), '详情卡由同一个 show() 生成');
+assert.ok(block.includes('naut-ai-hover-card'), '展开后创建同一张详情卡');
+const listeners = {}, calls = [];
+vm.runInNewContext(
+  block.split('\n').filter((l) => /^\s*hit\.addEventListener\(/.test(l)).join('\n'),
+  { hit: { addEventListener: (type, fn) => { listeners[type] = fn; } }, show: (...args) => calls.push(args), leaveHover: () => {} }
+);
+assert.deepEqual(Object.keys(listeners).sort(), ['blur','click','dblclick','focus','keydown','mouseenter','mouseleave'].sort());
+const evt = () => ({ prevented: 0, stopped: 0, preventDefault() { this.prevented++; }, stopPropagation() { this.stopped++; } });
+let e = evt();
+listeners.dblclick(e);
+assert.deepEqual(calls.pop(), [true, true], '双击应展开详情卡');
+assert.equal(e.prevented, 1);
+assert.equal(e.stopped, 1);
+listeners.click();
+assert.deepEqual(calls.pop(), [false, true], '单击仍只显示简讯');
+listeners.mouseenter();
+assert.deepEqual(calls.pop(), [], '悬停行为不变');
+listeners.focus();
+assert.deepEqual(calls.pop(), [], '聚焦行为不变');
+e = evt(); e.key = 'Enter';
+listeners.keydown(e);
+assert.deepEqual(calls.pop(), [true, true], '回车仍展开详情卡');
+assert.equal(e.prevented, 1);
+e = evt(); e.key = 'a';
+listeners.keydown(e);
+assert.equal(calls.length, 0, '其他按键不响应');
+console.log('PASS 双击内圈展开详情卡；单击、悬停、回车行为不变');
