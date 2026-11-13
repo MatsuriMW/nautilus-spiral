@@ -1,5 +1,12 @@
 # Nautilus Spiral（螺旋日程）
 
+## 2.4.0 · Fewer execution controls
+
+Removed the standalone direction-based focus round and its dialog/settings, plus the eating/workout auto-pause and return/resume workflow. Writing those words no longer changes other tasks. DOING time records and task timers remain.
+
+Commands no longer install default global hotkeys. Use the command palette or assign your own; existing custom bindings are preserved, leaving common combinations available for Agent Deck.
+
+
 > **Give every minute a job.**
 
 A spiral day planner for Obsidian that reads your daily note.
@@ -83,14 +90,13 @@ What it does not do: it does not schedule. Dispatched sessions each run on their
 
 ## Optional execution layer
 
-When planning is not enough and you want the doing tracked too, four pieces cover what Nautilus Log calls its execution layer. Each is small and can be left alone; with all of them ignored the plugin is still just a spiral and a list of estimates.
+When planning is not enough and you want the doing tracked too, three pieces cover what Nautilus Log calls its execution layer. Each is small and can be left alone; with all of them ignored the plugin is still just a spiral and a list of estimates.
 
-- **Timing.** A task is timed while it is `DOING`. The status bar shows how long the most recently started task has been running and how many are running; the text turns red after 45 minutes and asks you to check the timer after 2 hours. Neither stops anything. `⌃⌥V` shows the whole picture.
-- **Plan.** The list under the spiral: "Up next" is what fits today, in the order it was placed; "Won't fit" is what does not fit. `▶` or `⌘⇧↵` starts a task.
+- **Timing.** A task is timed while it is `DOING`. The status bar shows how long the most recently started task has been running and how many are running; the text turns red after 45 minutes and asks you to check the timer after 2 hours. Neither stops anything. The “Status now” command shows the whole picture.
+- **Plan.** The list under the spiral: "Up next" is what fits today, in the order it was placed; "Won't fit" is what does not fit. `▶` or the “Start the task under the cursor” command starts a task.
 - **Review.** "📋 Today's review" compares planned and actual for each task of the day. Only finished tasks with recorded time count towards the variance; running and paused work is listed but does not move the number. "📏 Estimate vs actual" does the same over 30 days.
-- **Focus.** `⌃⌥F` starts a round for a broad direction instead of a task. It only keeps time and changes no line in your note. The status bar counts up while it runs.
 
-The difference from Nautilus Log: there is no single master switch and no popover panel. The four pieces live in the status bar, the list and a few hotkeys, and the status bar, the daily review and the 30-day review each have their own toggle in settings.
+The difference from Nautilus Log: there is no single master switch and no popover panel. The three pieces live in the status bar, the list and a few hotkeys, and the status bar, the daily review and the 30-day review each have their own toggle in settings.
 
 ## Requirements
 
@@ -167,3 +173,5 @@ Hovering an agent segment shows only its time, agent and short title. Click **De
 Cards list sessions by overlap with the selected segment, with full task titles, live state, steps or turns, latest action, model, directory and recent reply. Segment overlap time, daily session time and daily tokens are labeled separately. Tokens are output plus fresh input for the whole daily session, never estimated per segment. Historical dates omit today's live state and reply. The first three sessions appear in the card; a separate action opens the complete list. Linked journal tasks and supported clients can be opened directly.
 
 Automatic journal writing, record granularity, compaction thresholds and record folding are configured in Agent Deck. Nautilus reads and displays that information without writing duplicate AI records.
+
+Commands have no default global hotkeys. Assign your own in Obsidian Settings → Hotkeys.

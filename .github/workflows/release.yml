@@ -29,7 +29,9 @@ jobs:
           node-version: 22
 
       - name: Test agent tracking
-        run: node test/agents.test.cjs
+        run: |
+          node test/agents.test.cjs
+          node test/workflow-removal.test.cjs
 
       - name: Read version
         id: ver

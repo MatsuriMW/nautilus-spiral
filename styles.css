@@ -183,7 +183,6 @@
 
 /* ⏱ 正在专注的这一轮 / 🍚 吃饭锻炼中：一条淡蓝底的小条 */
 .naut-focus-line { display: flex; align-items: center; gap: 6px; font-size: var(--font-ui-smaller); color: var(--text-normal); font-weight: 600; margin-top: 6px; padding: 3px 4px 3px 8px; border-radius: 6px; background: color-mix(in srgb, var(--naut-task) 9%, transparent); }
-.naut-focus-line.naut-break-line { background: color-mix(in srgb, var(--naut-event) 14%, transparent); }
 .naut-focus-line span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .naut-focus-stop { flex: none; font-size: .9em; padding: 0 8px; height: 20px; }
 
@@ -274,36 +273,10 @@
 /* 🧭 各个大方向今天花了多久 */
 .naut-dir-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
-/* ---------------- 开一轮专注：选大方向的框 ---------------- */
-/* 每个方向一种颜色（--c），选中的那张卡片和下面的「开始」按钮跟着它变 */
+/* ---------------- 主线目标弹窗 ---------------- */
 .naut-focus-modal { --c: var(--naut-task); --naut-task: #2b64c3; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-ai-dsh: #4d6bfe; --naut-ai-antigravity: #a855f7; --naut-game: #b04fa8; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
 .naut-fm-title { font-size: 1.25em; font-weight: 700; }
 .naut-fm-sub { color: var(--text-muted); font-size: var(--font-ui-small); margin: 4px 0 14px; line-height: 1.5; }
-.naut-fm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-.naut-fm-card { position: relative; padding: 14px 14px 12px; border-radius: 12px; cursor: pointer; user-select: none;
-  border: 1.5px solid color-mix(in srgb, var(--c) 28%, transparent); background: color-mix(in srgb, var(--c) 7%, var(--background-primary));
-  transition: transform .16s var(--naut-ease), box-shadow .16s var(--naut-ease), background-color .16s, border-color .16s;
-  animation: naut-fm-in .32s var(--naut-ease) backwards; animation-delay: calc(var(--naut-i, 0) * 45ms); }
-.naut-fm-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px color-mix(in srgb, var(--c) 22%, transparent); }
-.naut-fm-card:active { transform: translateY(0) scale(.98); }
-.naut-fm-card.is-on { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, var(--background-primary)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 22%, transparent); }
-.naut-fm-key { position: absolute; top: 8px; right: 10px; min-width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 5px; font-size: 11px; font-weight: 600;
-  color: color-mix(in srgb, var(--c) 75%, var(--text-normal)); background: color-mix(in srgb, var(--c) 14%, transparent); }
-.naut-fm-card.is-on .naut-fm-key { color: #fff; background: var(--c); }
-.naut-fm-emoji { display: inline-block; font-size: 26px; line-height: 1.2; transition: transform .2s var(--naut-ease); }
-.naut-fm-card.is-on .naut-fm-emoji { transform: scale(1.15) rotate(-6deg); }
-.naut-fm-name { font-weight: 700; margin-top: 6px; }
-.naut-fm-chips { display: flex; gap: 8px; margin-top: 14px; }
-.naut-fm-chips .naut-fm-chip { flex: 1; border-radius: 999px; box-shadow: none; border: 1.5px solid var(--background-modifier-border); background: transparent; color: var(--text-muted); cursor: pointer;
-  transition: background-color .16s, border-color .16s, color .16s; }
-.naut-fm-chips .naut-fm-chip:hover { border-color: color-mix(in srgb, var(--c) 50%, transparent); color: var(--text-normal); }
-.naut-fm-chips .naut-fm-chip.is-on { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); color: color-mix(in srgb, var(--c) 80%, var(--text-normal)); font-weight: 600; }
-.naut-fm-bar { display: flex; gap: 8px; margin-top: 16px; }
-.naut-fm-bar .naut-fm-no { flex: none; box-shadow: none; color: var(--text-muted); cursor: pointer; }
-.naut-fm-bar .naut-fm-go { flex: 1; border: none; box-shadow: none; border-radius: 8px; font-weight: 700; color: #fff; background: var(--c); cursor: pointer; transition: background-color .2s, transform .12s var(--naut-ease), filter .15s; }
-.naut-fm-bar .naut-fm-go:hover { filter: brightness(1.08); }
-.naut-fm-bar .naut-fm-go:active { transform: scale(.98); }
-@keyframes naut-fm-in { from { opacity: 0; transform: translateY(8px) scale(.97); } }
 @media (prefers-reduced-motion: reduce) {
   .naut-focus-modal *, .naut-focus-modal { animation: none !important; transition: none !important; }
 }
@@ -365,7 +338,7 @@
 .naut-st-row.is-doing.is-auto .naut-st-left::before { background: var(--naut-ai); }
 .naut-st-row.is-doing.is-auto .naut-st-right { color: color-mix(in srgb, var(--naut-ai) 80%, var(--text-normal)); }
 .naut-st-row.is-focus { border-left-color: var(--naut-task); }
-.naut-st-row.is-focus .naut-st-left, .naut-st-row.is-break .naut-st-left, .naut-st-row.is-paused .naut-st-left { min-width: 0; }
+.naut-st-row.is-focus .naut-st-left, .naut-st-row.is-paused .naut-st-left { min-width: 0; }
 .naut-st-row.is-task { border-left-color: var(--naut-task); }
 .naut-st-row.is-prio { border-left-color: var(--naut-prio); }
 .naut-st-row.is-event { border-left-color: var(--naut-event); }
