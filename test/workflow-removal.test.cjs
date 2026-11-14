@@ -16,8 +16,9 @@ p.touch = () => {};
 p.goalCheck = () => {};
 p.aiWork = () => () => false;
 p.editTasks = () => {throw Error('Writing a break must not change task state');};
-for(const key of ['startBreak','askBack','tgBreakStart','tgBreakEnd','suggestFocus']) assert.equal(typeof p[key],'undefined');
+for(const key of ['startBreak','askBack','tgBreakStart','tgBreakEnd','suggestFocus','projects','recomputeProjects','scheduleProjects']) assert.equal(typeof p[key],'undefined');
 assert.equal('breakWords' in DEFAULTS,false);
+assert.equal('showProjects' in DEFAULTS,false);
 (async()=>{
  for(const word of ['吃饭','锻炼']) {
   const content=`- DOING 写稿 30分钟\n- ${word}`;

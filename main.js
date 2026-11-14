@@ -3266,7 +3266,7 @@ class SpiralView extends ItemView {
         link(r.item, row);
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
         row.createSpan({ cls: "naut-time", text: r.time });
-        const lab = row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.mainA && !r.inMain ? "🎯 " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
+        row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.mainA && !r.inMain ? "🎯 " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
           attr: r.item.cal ? { title: T(`日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`, `Calendar: ${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`) } : {} });
         const sess = aiOf(r.item);
         if (sess.length) {
