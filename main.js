@@ -28,8 +28,6 @@ const DEFAULTS = {
   pomoMinutes: 45,        // 一件事连着做了这么久，状态栏的计时变红（只提示，不打断）。0 = 不提示
   forgottenMinutes: 120,  // 计时开了这么久，状态栏提醒「检查计时」（不替你停）。0 = 不提醒
   clockToNote: false,     // 你手动做的时段也写回日记：任务不再是 DOING 时，在它下面写一行「⏱ 实际时段」
-  lineProgress: true,     // 编辑器里 DOING 的那一行下面显示一行字符进度条（你写的进度 / 监听到的 Agent 会话 / 按预估时长）
-  agentAlert: true,       // Agent 会话刚停到「允许吗？」上、或者报错停了：弹一条系统通知，点一下跳到日记那一行（没挂在日记里的打开那个会话）
   showMain: true,         // 主线：块里带 [#A] 的任务是这一天的主线（最多 3 块），面板最上面列出来、先排、单独上色，状态栏和提醒都盯着它
   mainNudge: "15:00, 22:00",   // 到这几个时刻主线还没做完、手上也没在做主线，提醒一次（逗号分隔，空 = 不提醒）
   mainLog: {},            // { "2026_10_20": { done: 2, total: 3 } }：每天主线的完成情况（留 90 天）
@@ -279,7 +277,6 @@ const RESULT_LINE_RE = /^\s*[-*+]\s+💬/;
 //   DELEGATED = 块去向委派给 Agent 的（⌥⌘D）：会话在跑时保持 DELEGATED，停下来照上面切，再动起来回 DOING
 const AGENT_KW_RE = /^(TOREVIEW|HITLIMIT|NEEDOK|QUEUED|ERRORED|DELEGATED)$/;
 const indentWidthOf = (t) => { let w = 0; for (const c of /^[ \t]*/.exec(t)[0]) w += c === "\t" ? 4 : 1; return w; };
-const AGENT_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?(?:\[\/\]\s|(?:DOING|NOW|IN-PROGRESS|TOREVIEW|HITLIMIT|NEEDOK|QUEUED|ERRORED|DELEGATED)(?=\s|$))/;
 // 1.6.0 写过的「🤖 子代理 3：… ✓ 16k」汇总行：现在不写了（subagent 由 Agent Deck 写成子块），日记里留下的照旧当记号行认
 const SUB_LINE_RE = /^\s*[-*+]\s+🤖\s*(?:子代理|side chat)/;
 const isSubMark = (s) => /^🤖\s*(?:子代理|side chat)/.test(s);
@@ -2430,7 +2427,6 @@ function unionMin(segs) {
   return min;
 }
 
-const TOK_BLOCK_MAX = 30;   // 实心图标（每个 100 万）最多画几个
 const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
 // token 消耗 = 产出 + 读入。缓存命中（每轮重读上下文）不算进去，那个数大得多，也不代表干了多少活
 const tokUsed = (x) => (x ? (x.out || 0) + (x.fresh || 0) : 0);
@@ -2721,22 +2717,6 @@ class GoalModal extends OB.Modal {
     window.setTimeout(() => input.focus(), 30);
   }
   onClose() { this.contentEl.empty(); this.done(this.text); }
-}
-
-// 选一个会话绑到任务上：最近三天有动静的，今天的在前、最近在动的在前；归档了的不列
-class BindModal extends OB.FuzzySuggestModal {
-  constructor(app, list, today, current, done) {
-    super(app);
-    this.list = list; this.today = today; this.current = current; this.done = done;
-    this.setPlaceholder(T("绑到哪个会话…（搜标题、你发的第一句话、目录）", "Bind to which session… (search titles, your first message, folders)"));
-  }
-  getItems() { return this.list; }
-  getItemText(x) {
-    const first = (x.text || "").split(" / ")[0];
-    const when = x.day === this.today ? clock(x.segs[x.segs.length - 1][1]) : x.day.replace(/\D+/g, "-").slice(5);
-    return T(`${x.sid === this.current ? "🔗 " : ""}${x.title || first.slice(0, 40) || "（没有标题）"}　${aiWhere(x)} · ${x.dir} · ${when} · ${fmtTok(tokUsed(x))} tok`, `${x.sid === this.current ? "🔗 " : ""}${x.title || first.slice(0, 40) || "(untitled)"}  ${aiWhere(x)} · ${x.dir} · ${when} · ${fmtTok(tokUsed(x))} tok`);
-  }
-  onChooseItem(x) { this.done(x); }
 }
 
 class QuickPanel extends OB.FuzzySuggestModal {
@@ -3517,12 +3497,23 @@ const lucidify = (root) => {
 const lucideWatch = (plugin, win) => {
   if (!OB.setIcon || win.__nautLucide) return;
   const obs = new win.MutationObserver((recs) => {
-    const added = new Set();
+    const added = new Set(), scope = new Map();
+    const inScope = (el) => {
+      if (!el) return false;
+      let v = scope.get(el);
+      if (v === undefined) scope.set(el, v = !!el.closest(LUCIDE_SCOPE));
+      return v;
+    };
     for (const r of recs) {
+      if (r.type === "characterData") {
+        if (!r.target.nodeValue || !LUCIDE_ANY.test(r.target.nodeValue)) continue;
+        if (inScope(r.target.parentElement)) lucidifyText(r.target);
+        continue;
+      }
+      if (!r.addedNodes.length) continue;
       const t = r.target.nodeType === 1 ? r.target : r.target.parentElement;
-      if (!t || !t.closest(LUCIDE_SCOPE)) continue;
-      if (r.type === "characterData") lucidifyText(r.target);
-      else r.addedNodes.forEach((n) => added.add(n));
+      if (inScope(t)) r.addedNodes.forEach((n) => added.add(n));
+      else for (const n of r.addedNodes) if (n.nodeType === 1 && ((typeof n.className === "string" && n.className.includes("naut-")) || n.querySelector?.(LUCIDE_SCOPE))) added.add(n);
     }
     // 一次渲染里父节点和它下面的节点各来一条记录：只扫最外层的，里面的跟着一起扫到
     for (const n of added) {
@@ -3542,7 +3533,7 @@ const lucideWatch = (plugin, win) => {
 module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
-    const removedAiSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack"].filter(key => key in this.settings);
+    const removedAiSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert"].filter(key => key in this.settings);
     for (const key of removedAiSettings) delete this.settings[key];
     if (removedAiSettings.length) await this.saveData(this.settings);
     this.settings.aiAgents = Object.assign({}, DEFAULTS.aiAgents, this.settings.aiAgents);
@@ -3613,12 +3604,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this.kw = new Map();   // path -> kwSnapshot
     this.registerEvent(this.app.vault.on("modify", (f) => this.onAnyModify(f)));
     this.registerEditorExtension(this.kwLiveExtension());   // 编辑器里一改就响，不等写盘
-    // DOING 的那一行下面的字符进度条；每 10 秒看一眼监听着的会话有没有新动静
-    this.registerEditorExtension(this.lineProgressExtension());
     this.registerEditorExtension(this.mainSliderExtension());   // 主线块下面能拖的进度条
-    this.registerInterval(window.setInterval(() => this.progPoll().catch((e) => console.error("[螺旋日程] 进度条刷新失败", e)), 10 * 1000));
-    this.addCommand({ id: "bind-session", name: nm(T("把这一行绑定到一个 Agent 会话…（进度条只听它）", "Bind this line to an agent session… (the progress bar follows only that one)")), editorCallback: (editor) => this.bindSession(editor) });
-    this.addCommand({ id: "unbind-session", name: nm(T("解除这一行和 Agent 会话的绑定", "Unbind this line from its agent session")), editorCallback: (editor) => this.bindSession(editor, true) });
     this.registerEvent(this.app.workspace.on("file-open", (f) => this.kwBaseline(f)));
     this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
@@ -4014,15 +4000,22 @@ module.exports = class NautilusSpiral extends Plugin {
   async computeReview(days) {
     const cfg = this.settings;
     const rows = [];
+    const fileCache = (this._revFileCache ||= new Map());
+    const cacheSig = `${cfg.format}|${cfg.dayStart}|${cfg.dayEnd}|${cfg.defaultDur}`;
+    if (this._revFileSig !== cacheSig) { fileCache.clear(); this._revFileSig = cacheSig; }
     for (let i = 0; i < days; i++) {
       const d = this.today().subtract(i, "days");
       const f = this.app.vault.getAbstractFileByPath(this.journalPath(d));
       if (!(f instanceof TFile)) continue;
+      const key = d.format(cfg.format);
+      const workSnap = JSON.stringify((cfg.workLog || {})[key] || null);
+      const prev = fileCache.get(f.path);
+      if (prev && prev.mtime === f.stat.mtime && prev.workSnap === workSnap) { rows.push(...prev.rows); continue; }
       const text = await this.app.vault.cachedRead(f);
       const lines = text.split("\n");
-      const key = d.format(cfg.format);
       const items = parseJournal(text, cfg);
       applyWork(items, cfg, key, 0, -1, {});
+      const fileRows = [];
       for (const t of items) {
         if (t.kind !== "task" || t.state !== "done" || !(t.est > 0)) continue;
         const segs = [...(t.worked || []), ...(t.actual ? [t.actual] : [])];
@@ -4033,8 +4026,10 @@ module.exports = class NautilusSpiral extends Plugin {
         // 分类：行里的 #标签 和 [[链接]]（日记日期的链接不算）
         const cats = [...raw.matchAll(/#([^\s#\[\],，。;；:：]+)/gu)].map((m) => "#" + m[1])
           .concat([...raw.matchAll(/\[\[([^\]|#]+)/g)].map((m) => m[1].trim()).filter((x) => !/^\d{4}[-_]\d{2}[-_]\d{2}$/.test(x)));
-        rows.push({ day: key, path: f.path, line: t.line, label: t.label, est: t.est, actual, cats: [...new Set(cats)] });
+        fileRows.push({ day: key, path: f.path, line: t.line, label: t.label, est: t.est, actual, cats: [...new Set(cats)] });
       }
+      fileCache.set(f.path, { mtime: f.stat.mtime, workSnap, rows: fileRows });
+      rows.push(...fileRows);
       if (i % 5 === 4) await new Promise((r) => setTimeout(r, 0));   // 别把界面卡住
     }
     if (!rows.length) return { n: 0, days };
@@ -4423,7 +4418,7 @@ module.exports = class NautilusSpiral extends Plugin {
   aiWork(lines, items, auto) {
     const root = (n) => { while (n > 0 && /^(\s|$)/.test(lines[n])) n--; return n; };
     const roots = new Set(items.filter((t) => t.kind === "task" && t.state === "open"
-      && (auto.has(workKey(t.label)) || linkUnder(lines, t.line) || ((t.doing || t.agentKw) && this.progSession(workKey(t.label))))).map((t) => root(t.line)));
+      && (auto.has(workKey(t.label)) || linkUnder(lines, t.line) || t.agentKw || /\((claude|codex|workbuddy|dsh|antigravity):[0-9a-f]{6,36}\)/i.test(lines[t.line]))).map((t) => root(t.line)));
     return (t) => roots.has(root(t.line));
   }
 
@@ -4622,10 +4617,103 @@ module.exports = class NautilusSpiral extends Plugin {
     }
   }
 
+  // 缓存目录（放在 iCloud 之外的本机缓存里，避免大索引拖慢同步）
+  localCacheDir() {
+    const path = require("path"), os = require("os");
+    return process.platform === "darwin"
+      ? path.join(os.homedir(), "Library/Caches/nautilus-spiral")
+      : path.join(os.tmpdir(), "nautilus-spiral-cache");
+  }
+  aiCachePath() { return require("path").join(this.localCacheDir(), "ai-files-v1.json.gz"); }
+  aiBytesSig(ai) {
+    let n = ai.files.size;
+    for (const fc of ai.files.values()) n += (fc.offset || fc.size || 0);
+    return n;
+  }
+  aiCacheFields(src, dst) {
+    for (const k of ["sub", "cwd", "app", "model", "createdAt", "tot", "cur", "_inChars"]) if (src[k]) dst[k] = src[k];
+    return dst;
+  }
+  async loadAiCache(ai) {
+    if (ai._cacheLoaded) return false;
+    ai._cacheLoaded = true;
+    try {
+      const fs = require("fs"), zlib = require("zlib");
+      const raw = await fs.promises.readFile(this.aiCachePath());
+      const buf = await new Promise((res, rej) => zlib.gunzip(raw, (e, out) => (e ? rej(e) : res(out))));
+      const data = JSON.parse(buf.toString("utf8"));
+      if (!data || data.v !== 1 || !Array.isArray(data.files)) return false;
+      ai._lastScan = Number(data.lastScan) || 0;
+      for (const f of data.files) {
+        if (!f || !f.path) continue;
+        ai.files.set(f.path, this.aiCacheFields(f, {
+          size: f.size || 0, offset: f.offset || 0, agent: f.agent, sid: f.sid, id: f.id,
+          days: new Map((f.days || []).map(([k, d]) => [k, { prompts: d.prompts || 0, sess: new Map(d.sess || []) }])),
+          msgs: new Map(f.msgs || []),
+          titles: new Map(f.titles || []),
+        }));
+      }
+      for (const [sid, v] of data.live || []) if (v) ai.live.set(sid, v);
+      for (const [sid, entries] of data.subs || []) {
+        ai.subs.set(sid, new Map((entries || []).map(([id, r]) => [id, { ...r, tok: new Map(r.tok || []) }])));
+      }
+      return true;
+    } catch { return false; }
+  }
+  aiCachePayload(ai) {
+    const cut = moment().subtract(AI_FRESH_DAYS + 7, "days").format("YYYY_MM_DD");
+    const files = [];
+    for (const [p, fc] of ai.files) {
+      const days = [...fc.days].filter(([k]) => k >= cut).map(([k, d]) => [k, { prompts: d.prompts || 0, sess: [...d.sess] }]);
+      const msgs = [...fc.msgs].filter(([, m]) => !m || !m.key || m.key >= cut);
+      if (!days.length && !msgs.length && !fc.titles.size && !fc.offset && !fc.size) continue;
+      files.push(this.aiCacheFields(fc, {
+        path: p, size: fc.size || 0, offset: fc.offset || 0, agent: fc.agent, sid: fc.sid, id: fc.id,
+        days, msgs, titles: [...fc.titles],
+      }));
+    }
+    const liveCutoff = Date.now() - 2 * 864e5;
+    const live = [...ai.live].filter(([, v]) => v && (v.at || 0) >= liveCutoff);
+    const subs = [...ai.subs].map(([sid, m]) => [sid, [...m].map(([id, r]) => [id, { ...r, tok: [...(r.tok || [])] }])]);
+    return JSON.stringify({ v: 1, lastScan: ai._lastScan || 0, files, live, subs });
+  }
+  prepAiCacheSave(ai) {
+    const payload = this.aiCachePayload(ai);
+    ai._cacheDirty = false;
+    ai._cacheSavedAt = Date.now();
+    return payload;
+  }
+  saveAiCacheSync(ai) {
+    if (!ai || !ai._cacheDirty) return;
+    const fs = require("fs"), path = require("path"), zlib = require("zlib");
+    const file = this.aiCachePath(), tmp = `${file}.tmp`;
+    try {
+      const payload = this.prepAiCacheSave(ai);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(tmp, zlib.gzipSync(payload));
+      fs.renameSync(tmp, file);
+    } catch { ai._cacheDirty = true; }
+  }
+  async saveAiCache(ai) {
+    if (!ai || !ai._cacheDirty || this._aiCacheSaving) return;
+    this._aiCacheSaving = true;
+    const fs = require("fs"), path = require("path"), zlib = require("zlib");
+    const file = this.aiCachePath(), tmp = `${file}.tmp`;
+    try {
+      const payload = this.prepAiCacheSave(ai);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      const gz = await new Promise((res, rej) => zlib.gzip(payload, (e, out) => (e ? rej(e) : res(out))));
+      await fs.promises.writeFile(tmp, gz);
+      await fs.promises.rename(tmp, file);
+    } catch { ai._cacheDirty = true; }
+    finally { this._aiCacheSaving = false; }
+  }
+
   // 人机协作汇总：先用存下的（手机上也能看），再在后台读 Claude Code 日志更新，至多一分钟一次
   async aiUsage() {
     if (!this.aiStore) {
       try { this.aiStore = JSON.parse(await this.app.vault.adapter.read(this.aiStorePath)); } catch (e) { this.aiStore = { days: {} }; }
+      this._aiStoreVer = (this._aiStoreVer || 0) + 1;
     }
     if (OB.Platform && OB.Platform.isDesktopApp && !this._aiBusy && Date.now() - (this._aiAt || 0) > 55000) this.scanAi();
     return this.aiStore;
@@ -4635,6 +4723,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this._aiBusy = true;
     try {
       const ai = (this._ai ||= new AiUsage(this.settings));
+      await this.loadAiCache(ai);
       // 把库里已经记下的 DSH 汇总当作 API 的缓存：插件没开 / 端口暂时找不到时，不清空已有的数
       if (!ai.dshApi.size) {
         for (const [k, v] of Object.entries(this.aiStore.days || {})) {
@@ -4646,7 +4735,13 @@ module.exports = class NautilusSpiral extends Plugin {
       // 头一回（或汇总格式升级后）把现存日志全读一遍补历史；之后重启只读最近改过的
       const upgrade = this.aiStore.v !== AI_STORE_V;
       const since = this.aiStore.backfilled && !upgrade ? Date.now() - (AI_FRESH_DAYS + 2) * 864e5 : 0;
-      const touched = await ai.scan(ai.files.size ? Date.now() - 2 * 864e5 : since);
+      const scanSince = ai.files.size && this.aiStore.backfilled && !upgrade
+        ? (ai._lastScan ? Math.max(since, ai._lastScan - 120e3) : Date.now() - 2 * 864e5)
+        : since;
+      const scanStarted = Date.now(), prevSig = this.aiBytesSig(ai);
+      const touched = await ai.scan(scanSince);
+      ai._lastScan = scanStarted;
+      if (touched.size || this.aiBytesSig(ai) !== prevSig) ai._cacheDirty = true;
       // DSH 的数不在会话日志里自己算：只向 dsh-token-usage-stats 要结果
       if (aiOn(this.settings).includes("dsh")) {
         for (const k of await ai.fetchDshApi(ai.dshDays(AI_FRESH_DAYS))) touched.add(k);
@@ -4656,9 +4751,11 @@ module.exports = class NautilusSpiral extends Plugin {
       this.aiStore.backfilled = true;
       this.aiStore.v = AI_STORE_V;
       if (changed) {
+        this._aiStoreVer = (this._aiStoreVer || 0) + 1;
         await this.app.vault.adapter.write(this.aiStorePath, JSON.stringify(this.aiStore));
         this.refresh();
       }
+      if (ai._cacheDirty && (!ai._cacheSavedAt || Date.now() - ai._cacheSavedAt > 30000)) this.saveAiCache(ai);
     } catch (e) {
       console.error("[螺旋日程] 人机协作统计失败", e);
     } finally {
@@ -4679,171 +4776,10 @@ module.exports = class NautilusSpiral extends Plugin {
     el.addEventListener("click", (ev) => this.statusClick(ev).catch((e) => console.error("[螺旋日程] 状态栏", e)));
     this.registerInterval(window.setInterval(() => this.tickStatus(), 1000));
     this.registerInterval(window.setInterval(() => this.refreshCapacity(), 60 * 1000));
-    this.app.workspace.onLayoutReady(() => this.refreshCapacity());
-  }
-
-  // ---------------- 状态栏：Agent 汇总 ----------------
-  // 眼下挂在大纲上的 Agent 会话：开着的笔记和今天的日记里，下面有「🔗」行的任务，加上 DOING 的行自动对上的会话。
-  // 做完、取消了的任务不算，归档了的会话不算，这次打开 Obsidian 以来没读到过动静的也不算。
-  // 返回 [{ path, line, label, sid, agent, state }]：state = run 在跑 / wait 这一轮答完了在等你 / perm 停在「允许吗？」上等你点 / quiet 没答完但好几分钟没动静 / limit 撞限额
-  async agentScan() {
-    const cfg = this.settings, out = [], seen = new Set(), arch = this._archived || new Set(), on = aiOn(cfg), done = (this._agentDone = new Set());
-    if (cfg.showAi === false || !this._ai) return out;
-    const docs = [], paths = new Set();
-    this.app.workspace.iterateAllLeaves((l) => {
-      const v = l.view;
-      if (!(v instanceof OB.MarkdownView) || !v.file || !v.editor || paths.has(v.file.path)) return;
-      paths.add(v.file.path);
-      docs.push([v.file.path, v.editor.getValue()]);
+    this.app.workspace.onLayoutReady(() => {
+      this.refreshCapacity({ deferWidget: true });
+      this._widgetBootT = window.setTimeout(() => { this._widgetBootT = null; this.widgetTick().catch((e) => console.error("[螺旋日程] 小组件", e)); }, 1500);
     });
-    const today = this.todayFile();
-    if (today && !paths.has(today.path)) try { docs.push([today.path, await this.app.vault.cachedRead(today)]); } catch (e) { /* 读不到就不算 */ }
-    for (const [path, text] of docs) {
-      if (text.length > 2e6 || !(text.includes("🔗") || /DOING|NOW|IN-PROGRESS|TOREVIEW|HITLIMIT|NEEDOK|QUEUED|ERRORED|DELEGATED|\[\/\]/.test(text))) continue;
-      const lines = text.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const link = parseLink(lines[i]);
-        // 有 🔗 的任务等扫到它的 🔗 行再算；没有 🔗 的 DOING 行看它自动对上了哪个会话
-        const owner = link ? markOwner(lines, i) : AGENT_LINE_RE.test(lines[i]) && !linkUnder(lines, i) && !kidUnder(lines, i) ? i : -1;   // subagent / side chat 的子块不去对会话
-        if (owner < 0) continue;
-        const k = kwLine(lines[owner]);
-        if (!k || /^(DONE|CANCELED|CANCELLED|FAILED|YES|NO)$/.test(k.kw)) { if (link) done.add(link.sid); continue; }
-        let sid = link && link.sid, agent = link && link.agent;
-        if (!link) {
-          const it = parseJournal(lines[owner].replace(/^\s+/, ""), cfg).find((x) => x.kind === "task" && (x.doing || x.agentKw));
-          const x = it && this.progSession(workKey(it.label));
-          if (!x) continue;
-          sid = x.sid; agent = aiAgent(x);
-        }
-        const lv = this._ai.live.get(sid);
-        if (!lv || seen.has(sid) || arch.has(sid) || !on.includes(agent)) continue;
-        seen.add(sid);
-        out.push({ path, line: owner, label: k.body, kw: k.kw, sid, agent, bound: !!link, state: this.agentState(sid, lv) });
-      }
-    }
-    return out;
-  }
-  // 会话眼下算什么（进度条、通知都按这个）：wait / limit / error 看会话日志，limit 里排进了 limit-resume 续跑队列的是 queued；
-  // 日志停在调工具上的，有权限提示的记号就是 perm，否则 AI_IDLE 分钟内有动静算 run，再久算 quiet
-  agentState(sid, lv, now = Date.now()) {
-    if (lv.state === "error") return "error";
-    // 撞限额的：排上队了就是 queued（到点 limit-resume 自己续上，续上以后日志有动静就回 run）；
-    // 没排上队、过了恢复时刻还没续上（合着盖、limit-resume 没接）：额度已经回来了，算停在那儿等你
-    if (lv.state === "limit") return this.queuedOf(sid) ? "queued" : lv.resets && now > lv.resets ? "wait" : "limit";
-    if (lv.state === "wait") return "wait";
-    if (this.permOf(sid, lv)) return "perm";
-    return (now - lv.at) / 60e3 <= AI_IDLE ? "run" : "quiet";
-  }
-  // 停在「允许吗？」上的 Claude 会话。等权限时 Claude Code 不写会话日志，靠钩子 ~/.local/bin/agent-wait：
-  // 弹权限框（PermissionRequest / Notification 的 permission_prompt）时写 ~/.local/state/agent-wait/<会话号>.json，
-  // 你发话、这一轮结束、会话关掉时删掉。批准以后算已经放行：工具跑完日志里就有新动静，所以记号比日志里最后的动静早（留 1.5 秒余量）就不算；
-  // 长命令跑着时日志里一直没动静，就看 claude 进程（记号里的 pid）底下有没有在记号之后起的 Bash shell（参数里带 shell-snapshots）
-  async permScan() {
-    await this.queueScan();
-    const fs = require("fs"), path = require("path"), dir = path.join(require("os").homedir(), ".local", "state", "agent-wait"), out = new Map();
-    let names = [];
-    try { names = await fs.promises.readdir(dir); } catch (e) { /* 没装钩子 */ }
-    for (const f of names) {
-      if (!f.endsWith(".json")) continue;
-      try { const d = JSON.parse(await fs.promises.readFile(path.join(dir, f), "utf8")); if (d && d.sid && d.at) out.set(d.sid, d); } catch (e) { /* 正在写的半截文件 */ }
-    }
-    for (const [sid, d] of out) { const was = this._perm && this._perm.get(sid); if (was && was.at === d.at && was.released) d.released = true; }
-    this._perm = out;
-    const open = [...out.values()].filter((d) => d.pid && !d.released);
-    if (!open.length) return;
-    let ps = "";
-    try { ps = await new Promise((ok, no) => require("child_process").execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,etime=,args="], { maxBuffer: 16e6 }, (e, so) => (e ? no(e) : ok(so)))); } catch (e) { return; }
-    const secs = (t) => { const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(t); return m ? ((+m[1] || 0) * 24 + (+m[2] || 0)) * 3600 + +m[3] * 60 + +m[4] : Infinity; };
-    const now = Date.now();
-    for (const line of ps.split("\n")) {
-      const m = /^\s*\d+\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-      if (!m || !m[3].includes("shell-snapshots/snapshot-")) continue;
-      for (const d of open) if (+m[1] === d.pid && now - secs(m[2]) * 1000 >= d.at - 1000) d.released = true;
-    }
-  }
-  permOf(sid, lv) {
-    const p = this._perm && this._perm.get(sid);
-    return p && !p.released && lv && lv.state !== "wait" && lv.state !== "limit" && lv.state !== "error" && lv.at <= p.at + 1500 ? p : null;
-  }
-  // 撞限额后排进续跑队列的会话：limit-resume 的 ~/.local/state/limit-resume/queue.json，每条 { session_id, reset_at(秒), running }。
-  // running 的是已经在后台续上了（日志会有动静），不算排队；没装 limit-resume 就一直是空的
-  async queueScan() {
-    const f = require("path").join(require("os").homedir(), ".local", "state", "limit-resume", "queue.json"), out = new Map();
-    try {
-      const list = JSON.parse(await require("fs").promises.readFile(f, "utf8"));
-      for (const e of Array.isArray(list) ? list : []) if (e && e.session_id && !e.running) out.set(e.session_id, e);
-    } catch (e) { /* 没装 / 正在写 */ }
-    this._queue = out;
-  }
-  queuedOf(sid) { return (this._queue && this._queue.get(sid)) || null; }
-  // 状态栏 🤖 那一格和它的面板看的会话：最近一天里所有在跑、在等你的 Claude Code 会话，桌面版 Code 标签里的、终端里的 claude 都算
-  // （用户 2026-10-14 定的：只管 Claude Code，普通聊天本机也没有日志）。不管它在大纲里有没有挂一行，挂了的带上是哪一行（点了能跳过去）。
-  // 不算：归档了的；在大纲里挂的那一行已经做完 / 取消的；别的程序拉起来的后台会话（第一句话是机器塞的「<…>」）、没标题也没说过话的。
-  // 返回按最后动静从新到旧排好的 [{ sid, agent, state: run / wait / quiet, at, label, title, path?, line?, x }]
-  agentSessions(bound = []) {
-    const cfg = this.settings, out = [];
-    if (cfg.showAi === false || !this._ai) return out;
-    const arch = this._archived || new Set(), done = this._agentDone || new Set(), now = Date.now();
-    const byLine = new Map(bound.map((a) => [a.sid, a]));
-    for (const [sid, lv] of this._ai.live) {
-      const agent = lv.agent || "claude";
-      if (agent !== aiPrimary(cfg) || !lv.at || now - lv.at > 24 * 3600e3 || arch.has(sid) || done.has(sid)) continue;   // 只列主力的
-      const x = this.agentRecord(sid), raw = x ? x.title || String(x.text || "").split(" / ")[0] : "";
-      const title = /^\s*</.test(raw) ? "" : raw.trim();
-      if (!title && !byLine.has(sid)) continue;
-      const b = byLine.get(sid);
-      const state = this.agentState(sid, lv, now);
-      out.push({ sid, agent, state, at: lv.at, label: b ? b.label : title, title, path: b ? b.path : "", line: b ? b.line : -1, x });
-    }
-    return out.sort((a, b) => b.at - a.at);
-  }
-  // ⌥ 单击：跳到日记里等你的那一行；有好几个就轮着跳；没有在等的就跳到在跑的（只看在大纲里挂了一行的会话）
-  // 会话刚变成等批准 / 报错（上一轮还不是）：弹系统通知。范围和状态栏一样是最近一天的所有会话，不只挂在日记里的。
-  // 刚启动的第一轮只记下状态不弹（wasAll 为空），免得把早就停在那儿的一股脑弹出来。
-  // Obsidian 在最前面时状态音已经响过（WAITING / FAILED），通知不再带声；在后台时补一声系统提示音
-  agentAlert(list, wasAll) {
-    if (this.settings.agentAlert === false) return;
-    for (const a of list) {
-      if (a.state !== "perm" && a.state !== "error") continue;
-      const before = wasAll.get(a.sid);
-      if (before === a.state || (before === undefined && Date.now() - a.at > 60e3)) continue;
-      const lv = this._ai && this._ai.live.get(a.sid), perm = a.state === "perm" && this.permOf(a.sid, lv);
-      const title = a.state === "perm" ? T("✋ 等你批准", "✋ Waiting for your approval") : T("⚠️ 会话报错停了", "⚠️ Session stopped on an error");
-      const body = [a.label || a.title || T("Agent 会话", "Agent session"), a.state === "perm" ? (perm && perm.tool ? T(`要用 ${perm.tool}`, `Wants to use ${perm.tool}`) : T("停在「允许吗？」上", "Stopped at \"Allow?\"")) : (lv && lv.err) || ""].filter(Boolean).join("\n");
-      if (!document.hasFocus()) this.ding();
-      try {
-        const n = new Notification(title, { body, silent: true });
-        n.onclick = () => {
-          window.focus();
-          if (a.path) this.jumpToAgent(a).catch(() => {});
-          else if (a.agent === "claude") require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${a.sid}`], () => {});
-        };
-      } catch (e) { new OB.Notice(`${title}\n${body}`, 8000); }
-    }
-  }
-
-  // 这个会话最近 7 天里最后一天的记录（标题、从哪个 App 开的、活跃时段）
-  agentRecord(sid) {
-    const days = this.aiStore ? this.aiStore.days : {};
-    for (const k of Object.keys(days).sort().slice(-7).reverse()) {
-      const x = ((aiPick(days[k], this.settings) || {}).list || []).find((s) => s.sid === sid);
-      if (x) return x;
-    }
-    return null;
-  }
-  // 跳到这个会话挂着的那一行：扫的时候到现在行可能挪过，按会话的 🔗 行、再按正文重新找一遍
-  async jumpToAgent(t) {
-    const file = this.app.vault.getAbstractFileByPath(t.path);
-    if (!(file instanceof TFile)) return;
-    // 扫的时候到现在行可能挪过：按会话的 🔗 行、再按正文重新找一遍
-    let line = t.line;
-    try {
-      const lines = (await this.app.vault.cachedRead(file)).split("\n");
-      const at = lines.findIndex((l) => { const k = parseLink(l); return k && k.sid === t.sid; });
-      const owner = at >= 0 ? markOwner(lines, at) : lines.findIndex((l) => { const k = kwLine(l); return k && k.body === t.label; });
-      if (owner >= 0) line = owner;
-    } catch (e) { /* 读不到就用扫的时候的行号 */ }
-    await this.openLine(file, line);
   }
 
   tickStatus() {
@@ -4890,9 +4826,11 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 没在做事时状态栏显示的那句容量：一分钟算一次，日记改了也算一次
-  async refreshCapacity() {
+  async refreshCapacity(opts = {}) {
     try { await this.mainTick(); } catch (e) { console.error("[螺旋日程] 主线", e); }
-    try { await this.widgetTick(); } catch (e) { console.error("[螺旋日程] 小组件", e); }
+    if (!opts.deferWidget) {
+      try { await this.widgetTick(); } catch (e) { console.error("[螺旋日程] 小组件", e); }
+    }
     try {
       const cfg = this.settings;
       const file = this.todayFile();
@@ -5090,7 +5028,19 @@ module.exports = class NautilusSpiral extends Plugin {
   }
   // 全库还没做完的任务，按笔记缓存：笔记的修改时间没变就不重读。返回 [[path, { mtime, tasks }]]，最近改过的在前
   async todoScan() {
-    const idx = (this._todoIdx ||= new Map()), seen = new Set();
+    const fs = require("fs"), path = require("path");
+    const cacheFile = path.join(this.localCacheDir(), "todo-idx-v1.json");
+    if (!this._todoIdx) {
+      this._todoIdx = new Map();
+      try {
+        const raw = JSON.parse(await fs.promises.readFile(cacheFile, "utf8"));
+        if (raw && raw.v === 1 && Array.isArray(raw.entries)) {
+          for (const [p, mtime, tasks] of raw.entries) this._todoIdx.set(p, { mtime, tasks: tasks || [] });
+        }
+      } catch { /* 首次或无缓存 */ }
+    }
+    const idx = this._todoIdx, seen = new Set();
+    let dirty = false;
     for (const f of this.app.vault.getMarkdownFiles()) {
       seen.add(f.path);
       const c = idx.get(f.path);
@@ -5098,8 +5048,18 @@ module.exports = class NautilusSpiral extends Plugin {
       const meta = this.app.metadataCache.getFileCache(f);
       if (!meta) continue;   // 还没索引到：下一轮再看
       idx.set(f.path, { mtime: f.stat.mtime, tasks: meta.listItems ? openTasks(await this.app.vault.cachedRead(f)) : [] });
+      dirty = true;
     }
-    for (const k of [...idx.keys()]) if (!seen.has(k)) idx.delete(k);
+    for (const k of [...idx.keys()]) if (!seen.has(k)) { idx.delete(k); dirty = true; }
+    if (dirty && !this._todoSaving) {
+      this._todoSaving = true;
+      const payload = JSON.stringify({ v: 1, entries: [...idx].map(([p, v]) => [p, v.mtime, v.tasks]) });
+      fs.promises.mkdir(path.dirname(cacheFile), { recursive: true })
+        .then(() => fs.promises.writeFile(`${cacheFile}.tmp`, payload))
+        .then(() => fs.promises.rename(`${cacheFile}.tmp`, cacheFile))
+        .catch(() => {})
+        .finally(() => { this._todoSaving = false; });
+    }
     return [...idx].filter(([, v]) => v.tasks.length).sort((a, b) => b[1].mtime - a[1].mtime);
   }
   // 小组件的收件箱：小组件上点一下「做完 / 撤回」，它就往 inbox/ 里放一个文件。Obsidian 开着时马上处理，没开着的等下次打开
@@ -5430,7 +5390,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (record && prev) {
       const day = (this.settings.doneTimes[file.basename] ||= {});
       for (const [label, c] of cur) {
-        if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = now; changed = true; }
+        if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = c.doneAt != null ? c.doneAt : now; changed = true; }
         if (c.state === "open" && day[label] != null) { delete day[label]; changed = true; }
       }
     }
@@ -5489,277 +5449,6 @@ module.exports = class NautilusSpiral extends Plugin {
     try { this.kw.set(f.path, kwSnapshot(await this.app.vault.cachedRead(f))); } catch (e) { /* 读不到就算了 */ }
   }
 
-  // ---------------- 任务行下面的进度条 ----------------
-  // 编辑器里 DOING（或 [/]）的那一行下面显示一行字符进度条，像命令行那样用 # 填。数从哪来，按这个顺序：
-  //   1. 你自己写在这一行里的进度：60%、2/3、三分之一、一半
-  //   2. 监听对上的那个 Agent 会话：它自己列了待办，就按做完几步算；没列就没有百分比，# 来回走表示它在跑
-  //   3. 这一行写了预估时长、又有开始时刻：按已经做了多久算
-  // 对上了会话，后面还写它眼下的状态（在跑 / 等你回复 / 多久没动静）、最近一步在干什么、用了多少 token。
-  // 会话怎么对上：自动记日记记下的那一行；不然看重名（会话标题和这一行一样），或者你发过去的话里带着这一行的字
-  lineStatus(raw, link = null) {
-    const cfg = this.settings;
-    const cache = (this._progCache ||= new Map());
-    let it = cache.get(raw);
-    if (it === undefined) {
-      it = parseJournal(raw.replace(/^\s+/, ""), cfg).find((i) => i.kind === "task" && (i.doing || i.agentKw)) || null;
-      if (cache.size > 300) cache.clear();
-      cache.set(raw, it);
-    }
-    if (!it) return null;
-    const label = workKey(it.label);
-    const x = cfg.showAi !== false ? this.progSession(label, link, raw) : null;
-    const lv = x && this._ai ? this._ai.live.get(x.sid) : null;
-    // 你把这个会话归档了 = 做完了：进度拉满（这一行记成 DONE 由 Agent Deck 做）
-    const archived = !!(x && this._archived && this._archived.has(x.sid));
-    const nowM = moment(), now = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
-    let pct = null, lead = "", mode = "", tok = 0;
-    if (archived) pct = 1;
-    else if (it.progress != null) pct = it.progress;
-    else if (lv && lv.agent === "claude" && lv.todo && lv.todo.total) {
-      pct = lv.todo.done / lv.todo.total;
-      lead = T(`${lv.todo.done}/${lv.todo.total} 步`, `${lv.todo.done}/${lv.todo.total} steps`) + (lv.turns > 0 ? T(` · 第 ${lv.turns} 轮`, ` · Turn ${lv.turns}`) : "");
-    } else if (lv && lv.turns > 0) {
-      lead = T(`第 ${lv.turns} 轮`, `Turn ${lv.turns}`);
-    } else if (it.explicitDur && it.startedAt != null && now >= it.startedAt) {
-      const spent = now - it.startedAt;
-      pct = Math.min(1, spent / it.dur);
-      lead = spent > it.dur ? T(`${dur(spent)} / ${dur(it.dur)} · 超 ${dur(spent - it.dur)}`, `${dur(spent)} / ${dur(it.dur)} · ${dur(spent - it.dur)} over`) : `${dur(spent)} / ${dur(it.dur)}`;
-    }
-    const parts = lead ? [lead] : [];
-    if (x) {
-      (this._progSids ||= new Set()).add(x.sid);
-      const quiet = lv ? Math.max(0, Math.round((Date.now() - lv.at) / 60e3)) : null;
-      const perm = !archived && this.permOf(x.sid, lv);
-      const state = archived ? T("已归档", "Archived") : !lv ? "" : lv.state === "wait" ? T("等你回复", "Waiting for your reply") : lv.state === "error" ? T(`报错停了${lv.err ? ` · ${lv.err}` : ""}`, `Stopped on an error${lv.err ? ` · ${lv.err}` : ""}`) : perm ? T(`等你点允许${perm.tool ? ` · ${perm.tool}` : ""}`, `Waiting for you to allow${perm.tool ? ` · ${perm.tool}` : ""}`) : lv.state === "limit" && this.queuedOf(x.sid) ? T(`排队续跑${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}`, `Queued to resume${this.queuedOf(x.sid).reset_at ? ` · ${moment(this.queuedOf(x.sid).reset_at * 1000).format("HH:mm")}` : ""}`) : lv.state === "limit" ? (lv.resets && Date.now() > lv.resets ? T("额度已恢复，等你继续", "Limit reset, waiting for you to continue") : T(`撞${lv.week ? "周" : ""}限额${lv.resets ? ` · ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")} 恢复` : ""}`, `Hit the ${lv.week ? "weekly " : ""}limit${lv.resets ? ` · resets ${moment(lv.resets).format(moment(lv.resets).isSame(moment(), "day") ? "HH:mm" : "M/D HH:mm")}` : ""}`)) : quiet <= AI_IDLE ? T("在跑", "Running") : T(`${dur(quiet)} 没动静`, `Quiet for ${dur(quiet)}`);
-      mode = lv && lv.state === "run" && !perm && quiet <= AI_IDLE ? "run" : "wait";
-      if (state) parts.push(state);
-      const step = !archived && lv && lv.state === "run" ? (lv.agent === "claude" && lv.todo && lv.todo.cur) || lv.step : "";
-      if (step) parts.push(step);
-      tok = this.progTokens(x.sid);
-    }
-    if (pct == null && !x) return null;
-    const kids = x && !archived ? this.progKids(x.sid, lv) : null;
-    if (kids && kids.sum) parts.push(kids.sum);
-    return { pct, mode: pct != null ? "bar" : mode, agent: x ? aiAgent(x) : "", sid: x ? x.sid : "", tail: parts.join(" · "), tok,
-      tip: [archived ? T("这个会话归档了", "This session is archived") : it.progress != null ? T("进度是你写在这一行里的", "Progress is what you wrote on this line") : pct != null && lead.includes(T("步", "steps")) ? T("进度按这个会话自己列的待办算", "Progress follows the session's own to-do list") : pct != null ? T("进度按预估时长算", "Progress follows the estimated duration") : T("这个会话没有列待办，看不出做到百分之几", "This session keeps no to-do list, so there's no telling how far along it is"),
-        x ? T(`${x.bound ? "手动绑定的会话" : "监听的会话"}：${x.title || (x.text || "").slice(0, 40) || x.sid}（${aiWhere(x)}）`, `${x.bound ? "Manually bound session" : "Watched session"}: ${x.title || (x.text || "").slice(0, 40) || x.sid} (${aiWhere(x)})`) : ""].filter(Boolean).join("\n") };
-  }
-  // 一个 subagent 眼下算什么：{ st: run 在跑 / quiet 好久没动静 / done 跑完 / fail 出错或停了, word: 显示的字 }。
-  // 前台派的 subagent，父会话这一轮都答完了它还没收尾，是被打断了（你按了停）
-  kidState(r, parentWait) {
-    const quiet = (Date.now() - r.at) / 60e3;
-    if (r.state === "done") return { st: "done", word: T("跑完", "finished") };
-    if (r.state === "fail") return { st: "fail", word: r.end === "failed" ? T("出错", "error") : T("停了", "stopped") };
-    if (quiet <= AI_IDLE) return { st: "run", word: T("在跑", "running") };
-    if (!r.bg && parentWait) return { st: "fail", word: T("停了", "stopped") };
-    return { st: "quiet", word: T(`${dur(Math.round(quiet))} 没动静`, `quiet for ${dur(Math.round(quiet))}`) };
-  }
-  kidTok(r) {
-    return [...r.tok.values()].reduce((n, v) => n + v, 0);
-  }
-  // 母块进度条末尾那一截：这个会话今天派的 subagent 几个在跑、几个跑完，开着几个 side chat（各自的明细在子块上）
-  progKids(sid, lv) {
-    const ai = this._ai;
-    if (!ai) return null;
-    const parentWait = !lv || lv.state !== "run", key = this.today().format(this.settings.format);
-    const kids = ai.subsOf(sid).filter((r) => aiDay(r.start, this.settings).key === key).map((r) => this.kidState(r, parentWait).st);
-    const sides = (this._side && this._side.get(sid)) || [];
-    const n = (f) => kids.filter(f).length, bits = [];
-    if (n((k) => k === "run" || k === "quiet")) bits.push(T(`${n((k) => k === "run" || k === "quiet")} 跑`, `${n((k) => k === "run" || k === "quiet")} running`));
-    if (n((k) => k === "done")) bits.push(T(`${n((k) => k === "done")} 完`, `${n((k) => k === "done")} done`));
-    if (n((k) => k === "fail")) bits.push(T(`${n((k) => k === "fail")} 停`, `${n((k) => k === "fail")} stopped`));
-    const sum = [bits.length ? "🤖 " + bits.join(" ") : "", sides.length ? `side chat ${sides.length}` : ""].filter(Boolean).join(" · ");
-    return sum ? { sum } : null;
-  }
-  // 子块（下面有「🔗 子代理 / side chat」行的 DOING）自己的进度条：subagent 在跑还是跑完、最近一步、token；side chat 只知道开着、开了多久
-  kidStatus(kid) {
-    const base = { pct: null, mode: "wait", agent: "claude", finish: null };
-    if (kid.kind === "side") {
-      const s = [...(this._side || new Map()).values()].flat().find((x) => String(x.pid) === kid.id);
-      return { ...base, tail: s ? T(`side chat · 开着 · ${dur(Math.max(1, Math.round((Date.now() - s.since) / 60e3)))}`, `side chat · open · ${dur(Math.max(1, Math.round((Date.now() - s.since) / 60e3)))}`) : T("side chat · 关了", "side chat · closed"),
-        tip: T("Claude 桌面版的 side chat：只看得到它开着（桌面版为它起的 claude 进程还在），问了什么、在答还是等你、用了多少 token 都读不到", "A side chat in the Claude desktop app: all that's visible is that it's open (the claude process the app started for it is still running); what was asked, whether it's answering or waiting, and how many tokens it used can't be read") };
-    }
-    let r = null, parent = "";
-    for (const [sid, m] of (this._ai ? this._ai.subs : new Map())) for (const x of m.values()) if (x.id.startsWith(kid.id)) { r = x; parent = sid; }
-    if (!r) return { ...base, tail: T("子代理 · 还没读到它的日志", "subagent · log not read yet"), tip: "" };
-    const lv = this._ai.live.get(parent), k = this.kidState(r, !lv || lv.state !== "run"), tok = this.kidTok(r);
-    return { ...base, sid: parent, mode: k.st === "run" ? "run" : "wait", tail: [T("子代理", "subagent"), k.word, k.st === "run" ? r.step : ""].filter(Boolean).join(" · "), tok,
-      tip: T(`${r.desc || "subagent"}（${r.type || "subagent"}${r.bg ? "，后台派的" : ""}）`, `${r.desc || "subagent"} (${r.type || "subagent"}${r.bg ? ", in the background" : ""})`) };
-  }
-  // 这一行对上的是哪个会话：下面有「🔗」行的（link = 那一行读出来的 { sid, agent }）优先，绑了就只听它，那个会话今天没动静也照样认；
-  // 没绑的在今天有动静的会话里找（包括 Agent Deck 的 ^blockId 绑定和内联 (agent:sid8)），几个都对得上取最近在动的
-  progSession(label, link = null, rawLine = "") {
-    const cfg = this.settings, dayKey = this.today().format(cfg.format);
-    if (link && link.sid && aiOn(cfg).includes(link.agent || "claude")) {
-      const days = this.aiStore ? this.aiStore.days : {};
-      for (const k of Object.keys(days).sort().slice(-7).reverse()) {
-        const hit = (days[k].list || []).find((x) => x.sid === link.sid);
-        if (hit) return { ...hit, bound: true };
-      }
-      return { sid: link.sid, agent: link.agent || "claude", title: "", text: "", app: "", bound: true };
-    }
-    // 今天的会话清单几秒内重复用（一屏上有好几行 DOING，各问一遍）
-    let c = this._progDay;
-    if (!c || c.key !== dayKey || c.store !== this.aiStore || Date.now() - c.at > 5000) {
-      const day = this.aiStore && aiPick(this.aiStore.days[dayKey], cfg);
-      c = this._progDay = { key: dayKey, store: this.aiStore, at: Date.now(), list: ((day && day.list) || []).filter((x) => x.segs && x.segs.length) };
-    }
-    const list = c.list;
-    if (!list.length) return null;
-    const st = this.deckState(dayKey);
-    const bindings = this.app.plugins?.plugins?.["agent-deck"]?.settings?.taskBindings || {};
-    const blkMatch = rawLine ? /\s\^([A-Za-z0-9-]+)\s*$/.exec(rawLine) : null;
-    const blkId = blkMatch ? blkMatch[1] : "";
-    const inlineMatch = rawLine ? /\((claude|codex|workbuddy|dsh|antigravity):([0-9a-f]{6,36})\)/i.exec(rawLine) : null;
-    let hits = list.filter((x) => {
-      const r = st[x.sid];
-      if (r && (r.key === label || (blkId && r.blockId === blkId)) && !r.skip && !r.gone) return true;
-      if (inlineMatch && x.agent === inlineMatch[1].toLowerCase() && x.sid.startsWith(inlineMatch[2].toLowerCase())) return true;
-      if (blkId) {
-        const b = bindings[`${x.agent}:${x.sid.slice(0, 8)}`];
-        if (b && b.blockId === blkId) return true;
-      }
-      return false;
-    });
-    if (!hits.length) {
-      const norm = (v) => String(v || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
-      const want = norm(label);
-      if (want.length >= 4) hits = list.filter((x) => { const t = norm(x.title); return (t.length >= 4 && (t === want || t.includes(want) || (t.length >= 6 && want.includes(t)))) || norm(x.text).includes(want); });
-    }
-    const lastOf = (x) => x.segs[x.segs.length - 1][1];
-    return hits.sort((a, b) => lastOf(b) - lastOf(a))[0] || null;
-  }
-  // 这个会话最近 7 天一共用掉多少 token（产出 + 读入）
-  progTokens(sid) {
-    const days = this.aiStore ? this.aiStore.days : {};
-    let n = 0;
-    for (const k of Object.keys(days).sort().slice(-7)) for (const x of days[k].list || []) if (x.sid === sid) n += tokUsed(x);
-    return n;
-  }
-  lineProgressExtension() {
-    const { ViewPlugin, Decoration, WidgetType } = require("@codemirror/view");
-    const { RangeSetBuilder, StateEffect } = require("@codemirror/state");
-    const plugin = this, W = 20;
-    const refresh = (this.progEffect = StateEffect.define());
-    const DOING_LINE = AGENT_LINE_RE;
-    const resultOld = Decoration.line({ class: "naut-said" });
-    // 画一遍：有百分比的，# 从上次的格数一格一格长到新的格数，百分数跟着跳；没有百分比、会话在跑的，三个 # 来回走
-    const paint = (el, info) => {
-      const doc = el.ownerDocument, win = doc.defaultView || window;
-      if (!el._bar) {
-        for (const k of ["bar", "pct", "tail", "tok"]) { el["_" + k] = doc.createElement("span"); el["_" + k].className = "naut-prog-" + k; el.appendChild(el["_" + k]); }
-        el._n = 0; el._i = 0;
-      }
-      win.clearInterval(el._timer);
-      el._timer = 0;
-      el.dataset.mode = info.mode;
-      el.dataset.agent = info.agent;
-      el.dataset.sid = info.sid || "";
-      el.classList.toggle("is-linked", !!info.sid);
-      el.title = info.tip + (info.sid ? T("\n点一下打开这个会话（终端里跑的切到那个终端标签）", "\nClick to open this session (switches to its terminal tab if it runs in a terminal)") : "");
-      el._tail.textContent = (info.mode === "bar" ? "  " : " ") + info.tail;
-      // token：数字后面一串 database 图标，整块靠右：每 100 万一个实心的，余下每 10 万一个空心的（满 10 个空心就并成一个实心）。
-      // 实心太多就封顶，免得挤掉前面的字
-      const tok = info.tok || 0, full = Math.min(TOK_BLOCK_MAX, Math.floor(tok / 1e6)), part = Math.floor((tok % 1e6) / 1e5);
-      if (el._tokN !== info.tok) {
-        el._tokN = info.tok;
-        if (!el._tokNum) { el._tokNum = el._tok.appendChild(doc.createElement("span")); el._tokRow = el._tok.appendChild(doc.createElement("span")); el._tokRow.className = "naut-tok-dbs"; }
-        el._tokNum.textContent = info.tok ? fmtTok(info.tok) : "";
-        // 只换掉和原来不一样的那一截，新放上去的才有入场动画（不然每 10 秒整串重建、闪一下）；满 10 个空心时它们一起退场，换上一个实心的
-        const row = el._tokRow, want = Array.from({ length: full + part }, (_, i) => i < full);
-        let keep = 0;
-        while (keep < row.childElementCount && keep < want.length && row.children[keep].classList.contains("is-full") === want[keep]) keep++;
-        while (row.childElementCount > keep) row.lastElementChild.remove();
-        for (let i = keep; i < want.length; i++) { const c = row.appendChild(doc.createElement("span")); c.className = "naut-tok-db" + (want[i] ? " is-full" : ""); c.style.setProperty("--naut-db-i", String(i - keep)); OB.setIcon(c, "database"); }
-      }
-      el._tok.title = info.tok ? T(`${fmtTok(info.tok)} tok：实心的一个 100 万，空心的一个 10 万`, `${fmtTok(info.tok)} tok: each solid block is 1M, each hollow one 100k`) : "";
-      if (info.mode === "bar") {
-        const to = Math.max(0, Math.min(W, Math.round(info.pct * W)));
-        const show = (n) => { el._bar.textContent = "[" + "#".repeat(n) + "-".repeat(W - n) + "]"; el._pct.textContent = " " + Math.round(n === to ? info.pct * 100 : n / W * 100) + "%"; };
-        show(el._n);
-        if (el._n !== to) el._timer = win.setInterval(() => {
-          if (!el.isConnected) { win.clearInterval(el._timer); return; }
-          el._n += el._n < to ? 1 : -1;
-          show(el._n);
-          if (el._n === to) win.clearInterval(el._timer);
-        }, 28);
-      } else if (info.mode === "run") {
-        const show = () => { const a = Array(W).fill(" "); for (let k = 0; k < 3; k++) { const q = el._i % (W + 3) - k; if (q >= 0 && q < W) a[q] = "#"; } el._bar.textContent = "[" + a.join("") + "]"; };
-        el._pct.textContent = "";
-        show();
-        el._timer = win.setInterval(() => { if (!el.isConnected) { win.clearInterval(el._timer); return; } el._i++; show(); }, 110);
-      } else {
-        el._bar.textContent = "[" + "·".repeat(W) + "]";
-        el._pct.textContent = "";
-      }
-    };
-    class ProgWidget extends WidgetType {
-      constructor(info) { super(); this.info = info; this.sig = JSON.stringify(info); }
-      eq(other) { return other.sig === this.sig; }
-      toDOM(view) {
-        const el = view.dom.ownerDocument.createElement("span");
-        el.className = "naut-prog";
-        el.setAttribute("aria-hidden", "true");
-        // 点一下：打开对上的会话（子代理的打开派它的那个会话）。装了 Agent Deck 交给它：终端里跑的切到那个终端标签
-        el.addEventListener("click", (ev) => { if (!el.dataset.sid) return; ev.preventDefault(); ev.stopPropagation(); plugin.openAgentSession(el.dataset.sid, el.dataset.agent); });
-        paint(el, this.info);
-        return el;
-      }
-      updateDOM(dom) { if (!dom._bar) return false; paint(dom, this.info); return true; }
-      destroy(dom) { (dom.ownerDocument.defaultView || window).clearInterval(dom._timer); }
-      ignoreEvent() { return true; }
-    }
-    const build = (view) => {
-      const b = new RangeSetBuilder();
-      if (plugin.settings.lineProgress === false) return b.finish();
-      const doc = view.state.doc;
-      let last = -1;
-      for (const { from, to } of view.visibleRanges) {
-        for (let pos = from; pos <= to;) {
-          const line = doc.lineAt(pos);
-          if (line.number > last && line.length < 2000 && DOING_LINE.test(line.text)) {
-            let info = null;
-            try {
-              // 这一项下面几行里有没有「🔗」行（绑定写在正文里）
-              const below = [line.text];
-              for (let n = line.number + 1; n <= doc.lines && n <= line.number + 12; n++) below.push(doc.line(n).text);
-              // 子块下面有「🔗 子代理 / side chat」行的：它是会话派出去的 subagent / 开着的 side chat，进度条听它，不去对会话
-              const kid = kidUnder(below, 0);
-              info = kid ? plugin.kidStatus(kid) : plugin.lineStatus(line.text, linkUnder(below, 0));
-            } catch (e) { console.error("[螺旋日程] 进度条", e); }
-            if (info) b.add(line.to, line.to, Decoration.widget({ widget: new ProgWidget(info), side: 1 }));
-          } else if (line.number > last && RESULT_LINE_RE.test(line.text)) {
-            b.add(line.from, line.from, resultOld);   // 「💬」行（Agent Deck 写的会话结论）：颜色放淡
-          } else if (line.number > last && SUB_LINE_RE.test(line.text)) {
-            b.add(line.from, line.from, resultOld);   // 「🤖 子代理」行：和 💬 一样放淡
-          }
-          last = line.number;
-          pos = line.to + 1;
-        }
-      }
-      return b.finish();
-    };
-    // 「💬」「🤖 子代理」行双击也一样：往上找这件任务的「🔗」行，打开它绑着的会话
-    const { EditorView } = require("@codemirror/view");
-    const said = EditorView.domEventHandlers({
-      dblclick(ev, view) {
-        const lineEl = ev.target && ev.target.closest && ev.target.closest(".cm-line.naut-said");
-        if (!lineEl) return false;
-        const doc = view.state.doc, n = doc.lineAt(view.posAtDOM(lineEl)).number, own = indentWidthOf(doc.line(n).text);
-        for (let i = n - 1; i >= Math.max(1, n - 30); i--) {
-          const t = doc.line(i).text, w = indentWidthOf(t);
-          const k = w === own ? parseLink(t) : null;
-          if (k && k.agent === "claude") { ev.preventDefault(); plugin.openSession(k.sid); return true; }
-          if (w < own && t.trim()) break;   // 出了这件任务
-        }
-        return false;
-      },
-    });
-    return [ViewPlugin.fromClass(class {
-      constructor(view) { this.decorations = build(view); }
-      update(u) { if (u.docChanged || u.viewportChanged || u.transactions.some((tr) => tr.effects.some((e) => e.is(refresh)))) this.decorations = build(u.view); }
-    }, { decorations: (v) => v.decorations }), said];
-  }
   // 主线块第一行下面一条能拖的进度条：块里每件 A 级任务一条，松手把百分比写进那一行（已经写了 40%、1/3 这类的就换掉）。
   // 只在日记里画；做完了的那件显示「✓ 做完了」。拖的时候只动这一条，松手才改日记
   mainSliderExtension() {
@@ -5804,11 +5493,20 @@ module.exports = class NautilusSpiral extends Plugin {
       }
       ignoreEvent() { return true; }
     }
+    const mainDocCache = new WeakMap();
     const build = (view) => {
       const b = new RangeSetBuilder();
       if (plugin.settings.showMain === false || !isJournal(view)) return b.finish();
       const doc = view.state.doc;
-      for (const blk of mainOf(doc.toString()).blocks) {
+      let parsed = mainDocCache.get(doc);
+      if (!parsed) {
+        const text = doc.toString();
+        parsed = text.includes("#A") || /\b(?:TODO|DOING|DONE|LATER|NOW|WAITING|WAIT|HOLD|PAUSED)\s+a\b/i.test(text)
+          ? mainOf(text)
+          : { blocks: [] };
+        mainDocCache.set(doc, parsed);
+      }
+      for (const blk of parsed.blocks) {
         const rows = blk.tasks.map((t) => ({ label: t.label, done: t.state === "done", pct: Math.round((parseProgress(doc.line(t.line + 1).text) ?? 0) * 20) * 5 }));
         const top = doc.line(blk.line + 1);   // 挂在主线块第一行下面，不放到整块（子块）的末尾
         b.add(top.to, top.to, Decoration.widget({ widget: new SliderWidget(rows), side: 1 }));
@@ -5830,111 +5528,6 @@ module.exports = class NautilusSpiral extends Plugin {
   openSession(sid) {
     if (!sid || !/^[0-9a-f-]{36}$/i.test(sid)) return;
     require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${sid}`], (e) => { if (e) new OB.Notice(T("打不开 Claude 会话：", "Can't open the Claude session: ") + e.message); });
-  }
-  // 监听着的那几个会话有新动静就读进来，然后让各个编辑器把进度条重画一遍（没变的那几条不会动）
-  async progPoll() {
-    const s = this.settings;
-    if ((s.lineProgress === false && s.agentAlert === false) || this._progBusy || document.hidden) return;
-    this._progBusy = true;
-    try {
-      if (this.settings.showAi !== false && OB.Platform && OB.Platform.isDesktopApp) {
-        await this.aiUsage();
-        // 要盯的会话：画着进度条的那几行对上的，加上开着的笔记里所有「🔗」行绑着的
-        const recent = this._ai ? [...this._ai.live].filter(([, v]) => Date.now() - v.at < 30 * 60e3).map(([sid]) => sid) : [];
-        const sids = new Set([...(this._progSids || []), ...this.linkScan().map((h) => h.sid), ...(this._agents || []).map((a) => a.sid), ...recent]);
-        if (this._ai && sids && sids.size && !this._aiBusy) {
-          this._aiBusy = true;
-          try {
-            const touched = await this._ai.poll(sids);
-            if (touched && this._ai.merge(this.aiStore, touched)) this._aiDirty = true;
-          } finally { this._aiBusy = false; }
-        }
-        if (sids && sids.size) this._archived = await this.progArchived();
-      }
-      this.progRefresh();
-      const was = new Map((this._agents || []).map((a) => [a.sid, a.state]));
-      const wasAll = this._agentList ? new Map(this._agentList.map((a) => [a.sid, a.state])) : null;
-      await this.permScan();
-      this._agents = await this.agentScan();
-      this._agentList = this.agentSessions(this._agents);
-      if (wasAll) this.agentAlert(this._agentList, wasAll);
-      // 有会话刚答完一轮、或者刚停到权限框上，轮到你了：敲两下（和 WAITING 同一个音；Obsidian 不在最前面时不响）
-      const limited = (s) => s === "limit" || s === "queued";
-      if (this._agents.some((a) => (a.state === "wait" || a.state === "perm") && was.get(a.sid) === "run")) this.sound("WAITING");
-      else if (this._agents.some((a) => a.state === "error" && was.get(a.sid) && was.get(a.sid) !== "error")) this.sound("FAILED");
-      else if (this._agents.some((a) => limited(a.state) && was.get(a.sid) && !limited(was.get(a.sid)))) this.sound("SUSPENDED");
-    } finally { this._progBusy = false; }
-  }
-
-  // ---------------- 结果回写 ----------------
-  // 开着的笔记里所有的「🔗」行：[{ cm, path, sid, agent }]。同一篇笔记开在几个标签页里只算一个
-  linkScan() {
-    const out = [], seen = new Set();
-    this.app.workspace.iterateAllLeaves((l) => {
-      const v = l.view, cm = v instanceof OB.MarkdownView && v.editor && v.editor.cm;
-      if (!cm || !v.file || seen.has(v.file.path) || cm.state.doc.length > 2e6) return;
-      seen.add(v.file.path);
-      const text = cm.state.doc.toString();
-      if (!text.includes("🔗")) return;
-      for (const line of text.split("\n")) { const k = parseLink(line); if (k) out.push({ cm, path: v.file.path, ...k }); }
-    });
-    return out;
-  }
-  // 归档了哪些会话：Claude 桌面 app、Codex、DSH 里归档的（进度条拉满、通知不再管它）
-  // 顺带看一眼哪些会话上开着 side chat（this._side，见 sideChats；_sideSeen 记这次打开 Obsidian 以来每个会话开过几个），不受「归档 = 做完」那个开关管
-  async progArchived() {
-    const cfg = this.settings, out = new Set();
-    try { this._side = await sideChats(); } catch (e) { this._side = new Map(); }
-    const seen = (this._sideSeen ||= new Map());
-    for (const [sid, list] of this._side) for (const s of list) (seen.get(sid) || seen.set(sid, new Set()).get(sid)).add(s.pid);
-    // 桌面版的会话清单（this._desk）：子会话挂成子块要用，也不受那个开关管
-    try { this._desk = await deskSessions(this._archCache ||= new Map()); } catch (e) { this._desk = []; }
-    for (const d of this._desk) if (d.archived) out.add(d.sid);
-    if (aiOn(cfg).includes("codex")) try { for (const sid of await AiUsage.codexArchived()) out.add(sid); } catch (e) { /* 同上 */ }
-    if (aiOn(cfg).includes("dsh")) try { for (const sid of await dshArchivedSessions()) out.add(sid); } catch (e) { /* 同上 */ }
-    return out;
-  }
-
-  // 手动把光标所在的任务和一个会话绑起来（off = 解除）：在这一行下面写一行「🔗」。绑定就是日记里的这一行字，删掉它就解除了
-  bindSession(editor, off = false) {
-    const cfg = this.settings;
-    const n = editor.getCursor().line, raw = editor.getLine(n);
-    const it = parseJournal((todosKid(editor.getValue().split("\n"), n) ? withTodo(raw) : raw).replace(/^\s+/, ""), cfg).find((i) => i.kind === "task");
-    if (!it) { new OB.Notice(T("光标要放在一行任务上（TODO / DOING… 开头的列表项）", "Put the cursor on a task line (a list item starting with TODO / DOING…)")); return; }
-    const lines = editor.getValue().split("\n");
-    const had = linkUnder(lines, n);
-    if (off) {
-      if (!had) { new OB.Notice(T("这一行下面没有「🔗」绑定", "This line has no \"🔗\" binding under it")); return; }
-      editor.transaction({ changes: [{ from: { line: had.line - 1, ch: lines[had.line - 1].length }, to: { line: had.line, ch: lines[had.line].length }, text: "" }] });
-      this.progRefresh();
-      new OB.Notice(T("已解除绑定，这一行回到按名字自动对会话", "Unbound; this line goes back to matching sessions by name"));
-      return;
-    }
-    const days = this.aiStore ? this.aiStore.days : {}, keys = Object.keys(days).sort().slice(-3), seen = new Map();
-    for (const k of keys) for (const x of ((aiPick(days[k], cfg) || {}).list || [])) if (x.segs && x.segs.length) seen.set(x.sid, { ...x, day: k });
-    const arch = this._archived || new Set();
-    const list = [...seen.values()].filter((x) => !arch.has(x.sid)).sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : b.segs[b.segs.length - 1][1] - a.segs[a.segs.length - 1][1]));
-    if (!list.length) { new OB.Notice(T("最近三天没有读到 Agent 会话", "No agent sessions found in the last three days")); return; }
-    new BindModal(this.app, list, keys[keys.length - 1], had && had.sid, (x) => {
-      if (editor.getLine(n) !== raw) { new OB.Notice(T("这一行在这期间变了，没有绑，请再来一次", "This line changed in the meantime and was not bound; please try again")); return; }
-      const now = editor.getValue().split("\n"), cur = linkUnder(now, n);
-      const title = x.title || (x.text || "").split(" / ")[0];
-      const line = linkLine(/^\s*/.exec(raw)[0] + "\t", aiAgent(x), title, x.sid);
-      editor.transaction({ changes: [cur
-        ? { from: { line: cur.line, ch: 0 }, to: { line: cur.line, ch: now[cur.line].length }, text: line }
-        : { from: { line: n, ch: raw.length }, to: { line: n, ch: raw.length }, text: "\n" + line }] });
-      (this._progSids ||= new Set()).add(x.sid);
-      this.progRefresh();
-      new OB.Notice(T(`🔗 已绑定：${title.slice(0, 30) || x.sid.slice(0, 8)}${it.doing ? "" : "\n这一行是 DOING 的时候才显示进度条"}`, `🔗 Bound: ${title.slice(0, 30) || x.sid.slice(0, 8)}${it.doing ? "" : "\nThe progress bar shows only while this line is DOING"}`));
-    }).open();
-  }
-  progRefresh() {
-    if (!this.progEffect) return;
-    this._progSids = new Set();
-    this.app.workspace.iterateAllLeaves((l) => {
-      const cm = l.view instanceof OB.MarkdownView && l.view.editor && l.view.editor.cm;
-      if (cm) cm.dispatch({ effects: this.progEffect.of(null) });
-    });
   }
 
   // 界面上的小音效（设置里可以关）。Obsidian 不在最前面时不响：那时候日记多半是别的东西在改
@@ -5974,6 +5567,8 @@ module.exports = class NautilusSpiral extends Plugin {
 
   onunload() {
     window.clearTimeout(this._reloadT);
+    window.clearTimeout(this._widgetBootT);
+    if (this._ai) this.saveAiCacheSync(this._ai);
     for (const k in COLORS) document.body.style.removeProperty(`--naut-c-${k}`);
   }
 };
@@ -6121,10 +5716,6 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(!!s.clockToNote).onChange(async (v) => { s.clockToNote = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName(T("状态栏", "Status bar")).setDesc(T("右下角常驻一格：在做事时显示最近开始的那件做了多久，没在做时显示今天的容量。单击打开螺旋日程，⌥ 单击到日记里那一行，⇧ 单击在旁边分栏打开今天的日记", "A permanent item at the bottom right: while you're working it shows how long the most recently started task has run; otherwise today's capacity. Click to open Nautilus Spiral, ⌥-click to go to that line in the note, ⇧-click to open today's note in a split"))
       .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); }));
-    new Setting(containerEl).setName(T("任务行下面的进度条", "Progress bar under task lines")).setDesc(T("编辑器里 DOING 的那一行下面显示一行字符进度条 [#####-----] 45%。进度取你写在这一行里的 60%、2/3、一半；没写就看对上的 Agent 会话（它自己列了待办才有百分比，没列只显示在跑还是等你、眼下那一步、用了多少 token）；再不然按预估时长算", "Under a DOING line in the editor, shows a text progress bar [#####-----] 45%. Progress comes from what you wrote on the line (60%, 2/3); otherwise from the matched agent session (a percentage only if it keeps a to-do list; otherwise just running or waiting for you, the current step and tokens used); failing that, from the estimated duration"))
-      .addToggle((t) => t.setValue(s.lineProgress !== false).onChange(async (v) => { s.lineProgress = v; await this.plugin.saveData(s); this.plugin.progRefresh(); }));
-    new Setting(containerEl).setName(T("会话要你批准或报错时发通知", "Notify when a session needs approval or errors")).setDesc(T("最近一天的 Agent 会话（不只挂在日记里的）刚停到「允许吗？」权限提示上，或者这一轮以报错结束（过载、断网、认证失败、上下文满了），弹一条系统通知；点一下跳到日记里那一行，没挂在日记里的打开那个会话。Obsidian 在后台时带一声提示音", "When an agent session from the last day (not only those in the note) has just stopped at an \"Allow?\" permission prompt, or a turn ended on an error (overloaded, offline, auth failed, context full), show a system notification; click it to jump to that line in the note, or to open the session if it's not in the note. With a sound when Obsidian is in the background"))
-      .addToggle((t) => t.setValue(s.agentAlert !== false).onChange(async (v) => { s.agentAlert = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName(T("界面音效", "UI sounds")).setDesc(T("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在上面单独设", "A very soft synthesized sound for start, done, stop, and the start and end of playback. Silent when Obsidian isn't in front; the reminder sound is set separately above"))
       .addToggle((t) => t.setValue(s.uiSound !== false).onChange(async (v) => { s.uiSound = v; await this.plugin.saveData(s); if (v) this.plugin.sound("done"); }));
     num(T("番茄钟阈值（分钟）", "Pomodoro threshold (minutes)"), T("一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "After working on one thing this long without a break, the status bar timer turns red. Just a hint, no interruption. 0 = off"), "pomoMinutes", 0, 600);

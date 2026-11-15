@@ -16,20 +16,20 @@ p.touch = () => {};
 p.goalCheck = () => {};
 p.aiWork = () => () => false;
 p.editTasks = () => {throw Error('Writing a break must not change task state');};
-for(const key of ['startBreak','askBack','tgBreakStart','tgBreakEnd','suggestFocus','projects','recomputeProjects','scheduleProjects']) assert.equal(typeof p[key],'undefined');
-for (const key of ['autoLog', 'agentKw', 'autoLogArchiveDone', 'resultBack']) assert.equal(key in DEFAULTS, false, key + ' is no longer a Spiral setting');
+for(const key of ['startBreak','askBack','tgBreakStart','tgBreakEnd','suggestFocus','projects','recomputeProjects','scheduleProjects','progPoll','lineProgressExtension','agentAlert','permScan','queueScan','agentScan','bindSession']) assert.equal(typeof p[key],'undefined');
+for (const key of ['autoLog', 'agentKw', 'autoLogArchiveDone', 'resultBack', 'lineProgress', 'agentAlert']) assert.equal(key in DEFAULTS, false, key + ' is no longer a Spiral setting');
 assert.equal('breakWords' in DEFAULTS,false);
 assert.equal('showProjects' in DEFAULTS,false);
 (async()=>{
  const legacy = Object.create(Plugin.prototype);
- legacy.loadData = async () => ({autoLog:true, agentKw:true, autoLogArchiveDone:true, resultBack:true, showAi:true});
+ legacy.loadData = async () => ({autoLog:true, agentKw:true, autoLogArchiveDone:true, resultBack:true, lineProgress:true, agentAlert:true, showAi:true});
  let saved;
  legacy.saveData = async data => { saved = {...data}; };
  const stop = new Error('settings loaded');
  legacy.applyColors = () => { throw stop; };
  await assert.rejects(() => legacy.onload(), error => error === stop);
- for (const key of ['autoLog', 'agentKw', 'autoLogArchiveDone', 'resultBack']) assert.equal(key in legacy.settings, false, 'legacy ' + key + ' is discarded');
- assert.ok(saved && !('autoLog' in saved) && !('resultBack' in saved), 'removed writer settings are not persisted');
+ for (const key of ['autoLog', 'agentKw', 'autoLogArchiveDone', 'resultBack', 'lineProgress', 'agentAlert']) assert.equal(key in legacy.settings, false, 'legacy ' + key + ' is discarded');
+ assert.ok(saved && !('autoLog' in saved) && !('resultBack' in saved) && !('lineProgress' in saved) && !('agentAlert' in saved), 'removed writer/progress settings are not persisted');
  assert.equal(legacy.settings.showAi, true, 'read-only AI display is preserved');
  for(const word of ['吃饭','锻炼']) {
   const content=`- DOING 写稿 30分钟\n- ${word}`;

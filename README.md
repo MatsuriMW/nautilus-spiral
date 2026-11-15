@@ -1,4 +1,4 @@
-# Nautilus Spiral（螺旋日程）
+# 螺旋日程 Nautilus Spiral
 
 ## 2.4.0 · Fewer execution controls
 
@@ -156,7 +156,7 @@ This plugin takes one more step along that line. Part of the "record" book is ha
 
 ## Feedback and updates
 
-To follow new features, send feedback or keep up with progress, follow me on Twitter: [@Matsurimywaifu](https://x.com/Matsurimywaifu).
+See the [Roadmap](https://matsuri.site/portfolio/journal-workflow/#whistlist) to view planned features, submit suggestions, and vote on ideas. You can also follow [@Matsurimywaifu](https://x.com/Matsurimywaifu) on Twitter for updates and feedback.
 
 ## Credits
 

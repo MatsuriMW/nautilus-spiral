@@ -15,7 +15,7 @@
   --naut-ai-antigravity-grad: linear-gradient(90deg, #558ce6 0%, #4bb5a2 54%, #6cc48c 76%, #e3ba64 100%);
   --naut-ai: var(--naut-ai-claude);
   --naut-game: var(--naut-c-game, #9c6496);
-  --naut-done: #629c7f;
+  --naut-done: #9ed6b4;
   --naut-now: #5c6370;
   --naut-ease: cubic-bezier(.2, .7, .2, 1);
 }
@@ -362,33 +362,7 @@
 /* 人机协作里的项目行能点开看会话 */
 .naut-row.naut-ai-row { cursor: pointer; }
 
-/* ---------------- 任务行下面的进度条 ----------------
-   编辑器里 DOING 的那一行下面一行等宽字符：[#########-----------] 45%  监听 Claude · 在跑 · 改 main.js · 48k tok
-   挂在那一行里面（不是单独一行），所以跟着这一行的缩进走；占满一整行宽的 inline-block，自己折到下一行（写成 block 的话行尾会多出一个空行）；# 的颜色：自己做的是 DOING 的红，监听着 Agent 的用那个 Agent 的颜色 */
-.naut-prog { display: inline-flex; align-items: baseline; width: 100%; vertical-align: top; text-indent: 0; font-family: var(--font-monospace); font-size: 0.76em; line-height: 1.6; color: color-mix(in srgb, var(--text-muted) 80%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; -webkit-user-select: none; cursor: default; --naut-prog: #c8635f; animation: naut-prog-in .28s var(--naut-ease, ease-out) both; }
-.naut-prog[data-agent="claude"] { --naut-prog: #d97757; }
-/* 对上了 Claude 会话的：双击打开那个会话，悬停时字亮一点、底下出一道细线提示能点 */
-.naut-prog.is-linked { cursor: pointer; border-radius: 4px; transition: color .15s ease, background-color .15s ease; }
-.naut-prog.is-linked:hover { color: var(--text-normal); background: color-mix(in srgb, var(--naut-prog) 8%, transparent); }
-.naut-prog.is-linked:active { transform: scale(.995); }
-.cm-line.naut-said { cursor: default; }
-.naut-prog[data-agent="codex"] { --naut-prog: #525663; }
-.naut-prog[data-agent="workbuddy"] { --naut-prog: #17a57f; }
-.naut-prog[data-agent="dsh"] { --naut-prog: #4d6bfe; }
-.naut-prog[data-agent="antigravity"] { --naut-prog: #558ce6; }
-.naut-prog-bar { white-space: pre; color: var(--naut-prog); }
-.naut-prog-pct { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
-.naut-prog-bar, .naut-prog-pct { flex: none; }
-.naut-prog-tail { flex: 1 1 auto; min-width: 0; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-/* token：数字 + 每 10 万一个方块，整块靠右 */
-.naut-prog-tok { flex: none; margin-left: auto; padding-left: 1ch; font-variant-numeric: tabular-nums; }
-.naut-prog-tok:empty { display: none; }
-.naut-prog[data-mode="wait"] .naut-prog-bar { opacity: .5; }
-.naut-prog[data-mode="run"] .naut-prog-tail { animation: naut-breathe 1.8s ease-in-out infinite; }
 @keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
-/* 任务下面的「💬」行（Agent Deck 写的会话结论）：字放淡 */
-.cm-line.naut-said { color: var(--text-muted); }
-@media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail { animation: none !important; } }
 /* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
 /* 主线进度条：紧贴在主线块第一行下面，细轨、主线色调淡，不抢正文；悬停或拖动时才清楚一点 */
 .naut-main-slider { display: block; max-width: 240px; margin: 0 0 3px; text-indent: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); --naut-ms: color-mix(in srgb, var(--naut-c-main, #cf4d4a) 35%, var(--text-faint)); --slider-thumb-width: 7px; --slider-thumb-height: 7px; --slider-thumb-radius: 50%; --slider-thumb-y: 1.5px; --slider-track-height: 2px; --slider-thumb-border-width: 1.5px; --slider-thumb-border-color: var(--naut-ms); animation: naut-prog-in .3s ease-out both; }
@@ -431,19 +405,10 @@
 .naut-ico[data-tone="orange"] { color: var(--color-orange); }
 .naut-ico[data-tone] svg { fill: currentColor; }
 .naut-ico[data-emoji="🗄"] { color: var(--color-purple); }
-/* token：每 10 万一个数据库图标 */
-.naut-tok-dbs { display: inline-flex; gap: 1px; margin-left: 0.35em; vertical-align: -0.12em; color: var(--color-purple); opacity: .8; }
-.naut-tok-dbs:empty { display: none; }
-.naut-tok-db { display: inline-flex; animation: naut-db-in .28s ease calc(var(--naut-db-i, 0) * 18ms) both; }
-.naut-tok-db svg { width: 0.85em; height: 0.85em; stroke-width: 2.2; }
-/* 实心的一个 = 100 万：盖子和柱身填满，中间那道弧用底色描一笔，看得出是 database */
-.naut-tok-db.is-full svg :is(ellipse, path) { fill: currentColor; }
-.naut-tok-db.is-full svg path:last-child { fill: none; stroke: var(--background-primary); stroke-width: 1.6; }
-@keyframes naut-db-in { from { opacity: 0; transform: translateY(2px) scale(.7); } to { opacity: 1; transform: none; } }
 
 /* Obsidian 不在前台时，一直循环的动画停在当前帧，切回来接着播。只要有一个循环动画在播，整个窗口每一帧都要重新算样式、重画，
    窗口大的时候很费：实测空闲时渲染进程 CPU 约 50%、GPU 约 11%，停下来以后约 23%、2%。入场动画不停，免得卡在没画出来的第一帧 */
-body:not(.is-focused) :is(.naut-burn, .naut-now-halo, .naut-seg.naut-live, .naut-st-day-now, .naut-prog[data-mode="run"] .naut-prog-tail, .status-bar-item.naut-status.is-forgotten),
+body:not(.is-focused) :is(.naut-burn, .naut-now-halo, .naut-seg.naut-live, .naut-st-day-now, .status-bar-item.naut-status.is-forgotten),
 body:not(.is-focused) :is(.naut-row.is-doing .naut-time, .naut-dayrev.is-live .naut-time, .naut-st-row.is-doing .naut-st-left)::before { animation-play-state: paused; }
 body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: running, paused; }   /* 这条同时挂着入场描线和呼吸：只停呼吸 */
 

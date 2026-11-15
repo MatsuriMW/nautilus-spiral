@@ -1,4 +1,4 @@
-# 螺旋日程（Nautilus Spiral）
+# 螺旋日程 Nautilus Spiral
 
 ## 2.4.0 · 精简执行入口
 
@@ -173,7 +173,7 @@ Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 O
 
 ## 反馈与后续
 
-想追踪后续功能、反馈问题、关注后续进展，欢迎关注我的 Twitter：[@Matsurimywaifu](https://x.com/Matsurimywaifu)。
+后续规划与功能需求整理在 [Roadmap](https://matsuri.site/portfolio/journal-workflow/#whistlist) 中，欢迎在里面添加建议或为你想要的功能投票。也可以通过我的 Twitter 关注进展与反馈问题：[@Matsurimywaifu](https://x.com/Matsurimywaifu)。
 
 ## 致谢
 
