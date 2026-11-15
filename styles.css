@@ -1,21 +1,22 @@
-/* 颜色：按浅色底配的一套。各色明度拉开（蓝最深、黄最亮），主带上会挨着的黄 / 蓝 / 红 / 青两两都分得开；
-   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝），游戏是紫的，靠位置和粗细再区分一层。
+/* 颜色：按浅色底配的一套低饱和纸面墨水色。主带上挨着的黄 / 蓝 / 红 / 青 / 绿彼此区分、不刺眼；
+   内圈细线一个 Agent 一种颜色（Claude 橙、Codex 灰黑、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 柔彩渐变），游戏是紫的，靠位置和粗细再区分一层。
    Agent 以外的几种设置里能改：改过的由插件挂在 body 上（--naut-c-xxx），没改过用这里的默认值，和 main.js 的 COLORS 一致 */
 .naut-root, .naut-ai-modal, .naut-status-modal {
-  --naut-event: var(--naut-c-event, #e3a924);
-  --naut-task: var(--naut-c-task, #2b64c3);
-  --naut-prio: var(--naut-c-prio, #d03739);
-  --naut-main: var(--naut-c-main, #e60012);   /* 主线（[#A]）：大红 */
-  --naut-review: var(--naut-c-review, #31b0c6);
+  --naut-event: var(--naut-c-event, #d9a441);
+  --naut-task: var(--naut-c-task, #5c86b4);
+  --naut-prio: var(--naut-c-prio, #c8635f);
+  --naut-main: var(--naut-c-main, #cf4d4a);   /* 主线（[#A]）：柔砖红 */
+  --naut-review: var(--naut-c-review, #4ca3b3);
   --naut-ai-claude: #d97757;
-  --naut-ai-codex: #62b0ea;
+  --naut-ai-codex: #525663;
   --naut-ai-workbuddy: #17a57f;
   --naut-ai-dsh: #4d6bfe;
-  --naut-ai-antigravity: #a855f7;
+  --naut-ai-antigravity: #558ce6;
+  --naut-ai-antigravity-grad: linear-gradient(90deg, #558ce6 0%, #4bb5a2 54%, #6cc48c 76%, #e3ba64 100%);
   --naut-ai: var(--naut-ai-claude);
-  --naut-game: var(--naut-c-game, #b04fa8);
-  --naut-done: var(--text-faint);
-  --naut-now: var(--text-normal);
+  --naut-game: var(--naut-c-game, #9c6496);
+  --naut-done: #629c7f;
+  --naut-now: #5c6370;
   --naut-ease: cubic-bezier(.2, .7, .2, 1);
 }
 .naut-root { padding: 10px 12px 24px; }
@@ -70,7 +71,7 @@
 .naut-bg-codex { background: var(--naut-ai-codex); }
 .naut-bg-workbuddy { background: var(--naut-ai-workbuddy); }
 .naut-bg-dsh { background: var(--naut-ai-dsh); }
-.naut-bg-antigravity { background: var(--naut-ai-antigravity); }
+.naut-bg-antigravity { background: var(--naut-ai-antigravity-grad); }
 .naut-game-line::before { background: var(--naut-game); }
 .naut-review-line::before { background: var(--naut-review); width: 8px; height: 8px; }
 
@@ -84,10 +85,10 @@
 .naut-svg { width: 100%; max-width: 340px; display: block; margin: 0 auto; overflow: visible; }
 .naut-track { fill: none; stroke: var(--background-modifier-border); stroke-width: 14; stroke-linecap: round; }
 /* 没有记录的过去：斜纹（图案在螺旋自己的 <defs> 里，颜色跟着这里的 stripe） */
-.naut-gap { fill: none; stroke-width: 14; stroke-linecap: butt; opacity: .85; transition: opacity .16s ease-out, stroke-width .16s var(--naut-ease); }
-.naut-gap:hover { opacity: 1; stroke-width: 17; }
-.naut-hatch-stripe { stroke: var(--text-faint); stroke-width: 2.4; }
-.naut-has-hot .naut-gap { opacity: .3; }
+.naut-gap { fill: none; stroke-width: 14; stroke-linecap: butt; opacity: .42; transition: opacity .16s ease-out, stroke-width .16s var(--naut-ease); }
+.naut-gap:hover { opacity: .85; stroke-width: 17; }
+.naut-hatch-stripe { stroke: var(--text-faint); stroke-width: 1.4; }
+.naut-has-hot .naut-gap { opacity: .2; }
 /* 还空着的时段：平时看不见，鼠标划过去亮一下；「现在」正落在里面的那一段更亮一点 */
 .naut-slot { fill: none; stroke: var(--naut-task); stroke-opacity: 0; stroke-width: 14; stroke-linecap: butt; pointer-events: stroke; transition: stroke-opacity .16s ease-out, stroke-width .16s var(--naut-ease); }
 .naut-slot:hover { stroke-opacity: .14; stroke-width: 17; }
@@ -109,24 +110,24 @@
 /* 中间时间下面的复习张数 */
 .naut-center-rev { font-size: 9px; font-weight: 600; fill: var(--naut-review); text-anchor: middle; font-variant-numeric: tabular-nums; cursor: help; }
 /* 现在：一根中性色的指针（红色留给「重要」），圆点外面一圈底色，压在线段上也看得清 */
-.naut-now { stroke: var(--naut-now); stroke-width: 1.25; stroke-linecap: round; opacity: 0.5; }
-.naut-now-dot { fill: var(--naut-now); stroke: var(--background-primary); stroke-width: 2; }
+.naut-now { stroke: var(--naut-now); stroke-width: 1.1; stroke-linecap: round; opacity: 0.42; }
+.naut-now-dot { fill: var(--naut-now); stroke: var(--background-primary); stroke-width: 1.75; }
 .naut-now-halo { fill: var(--naut-now); opacity: 0; pointer-events: none; transform-box: fill-box; transform-origin: center; animation: naut-pulse 2.6s ease-out infinite; }
 
 /* 🤖 人机协作 / 🎮 游戏：内圈细线 */
-.naut-ai, .naut-game, .naut-rev { fill: none; stroke-width: 3; stroke-linecap: round; opacity: 0.9; transition: stroke-width .16s var(--naut-ease); }
+.naut-ai, .naut-game, .naut-rev { fill: none; stroke-width: 3; stroke-linecap: round; opacity: 0.82; transition: stroke-width .16s var(--naut-ease); }
 .naut-ai { stroke: var(--naut-ai); }
 .naut-game { stroke: var(--naut-game); }
 .naut-rev { stroke: var(--naut-review); }
-.naut-ai.is-hot, .naut-game.is-hot, .naut-rev.is-hot { stroke-width: 5; opacity: 1; }
+.naut-ai.is-hot, .naut-ai.is-pinned, .naut-game.is-hot, .naut-rev.is-hot { stroke-width: 5; opacity: 1; }
 /* 细线上面叠的一条看不见的粗线，只管接鼠标 */
 .naut-hit { fill: none; stroke: transparent; stroke-width: 9; stroke-linecap: round; pointer-events: stroke; }
 
 /* 这天实际开始之前 / 结束之后 */
 .naut-off { fill: none; stroke: var(--background-modifier-border); stroke-width: 3; stroke-dasharray: 2 5; stroke-linecap: round; }
 /* 起止把手 */
-.naut-handle { fill: var(--background-primary); stroke: var(--text-muted); stroke-width: 2; cursor: grab; touch-action: none; transition: stroke .15s, stroke-width .15s var(--naut-ease); }
-.naut-handle:hover { stroke: var(--text-accent); stroke-width: 3; }
+.naut-handle { fill: var(--background-primary); stroke: var(--text-faint); stroke-width: 1.6; opacity: 0.85; cursor: grab; touch-action: none; transition: stroke .15s, stroke-width .15s var(--naut-ease), opacity .15s; }
+.naut-handle:hover { stroke: var(--text-accent); stroke-width: 2.5; opacity: 1; }
 .naut-handle-label { font-size: 10px; font-weight: 600; fill: var(--text-normal); text-anchor: middle; pointer-events: none; font-variant-numeric: tabular-nums; }
 
 /* 鼠标停在螺旋的一段或列表的一行上：同一件事的线段和那一行一起亮，其余的线段淡下去 */
@@ -273,7 +274,7 @@
 .naut-dir-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
 /* ---------------- 主线目标弹窗 ---------------- */
-.naut-focus-modal { --c: var(--naut-task); --naut-task: #2b64c3; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-ai-dsh: #4d6bfe; --naut-ai-antigravity: #a855f7; --naut-game: #b04fa8; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
+.naut-focus-modal { --c: var(--naut-task); --naut-task: #5c86b4; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-ai-dsh: #4d6bfe; --naut-ai-antigravity: #558ce6; --naut-game: #9c6496; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
 .naut-fm-title { font-size: 1.25em; font-weight: 700; }
 .naut-fm-sub { color: var(--text-muted); font-size: var(--font-ui-small); margin: 4px 0 14px; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) {
@@ -371,10 +372,10 @@
 .naut-prog.is-linked:hover { color: var(--text-normal); background: color-mix(in srgb, var(--naut-prog) 8%, transparent); }
 .naut-prog.is-linked:active { transform: scale(.995); }
 .cm-line.naut-said { cursor: default; }
-.naut-prog[data-agent="codex"] { --naut-prog: #62b0ea; }
+.naut-prog[data-agent="codex"] { --naut-prog: #525663; }
 .naut-prog[data-agent="workbuddy"] { --naut-prog: #17a57f; }
 .naut-prog[data-agent="dsh"] { --naut-prog: #4d6bfe; }
-.naut-prog[data-agent="antigravity"] { --naut-prog: #a855f7; }
+.naut-prog[data-agent="antigravity"] { --naut-prog: #558ce6; }
 .naut-prog-bar { white-space: pre; color: var(--naut-prog); }
 .naut-prog-pct { color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
 .naut-prog-bar, .naut-prog-pct { flex: none; }
@@ -390,10 +391,10 @@
 @media (prefers-reduced-motion: reduce) { .naut-prog, .naut-prog-tail { animation: none !important; } }
 /* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
 /* 主线进度条：紧贴在主线块第一行下面，细轨、主线色调淡，不抢正文；悬停或拖动时才清楚一点 */
-.naut-main-slider { display: block; max-width: 240px; margin: 0 0 3px; text-indent: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); --naut-ms: color-mix(in srgb, var(--naut-c-main, #e60012) 35%, var(--text-faint)); --slider-thumb-width: 7px; --slider-thumb-height: 7px; --slider-thumb-radius: 50%; --slider-thumb-y: 1.5px; --slider-track-height: 2px; --slider-thumb-border-width: 1.5px; --slider-thumb-border-color: var(--naut-ms); animation: naut-prog-in .3s ease-out both; }
+.naut-main-slider { display: block; max-width: 240px; margin: 0 0 3px; text-indent: 0; font-size: var(--font-ui-smaller); color: var(--text-faint); --naut-ms: color-mix(in srgb, var(--naut-c-main, #cf4d4a) 35%, var(--text-faint)); --slider-thumb-width: 7px; --slider-thumb-height: 7px; --slider-thumb-radius: 50%; --slider-thumb-y: 1.5px; --slider-track-height: 2px; --slider-thumb-border-width: 1.5px; --slider-thumb-border-color: var(--naut-ms); animation: naut-prog-in .3s ease-out both; }
 .naut-ms-row { display: flex; align-items: center; gap: 6px; line-height: 1.4; transition: color .2s ease; }
 .naut-ms-row + .naut-ms-row { margin-top: 2px; }
-.naut-ms-row:hover, .naut-ms-row:focus-within { color: var(--text-muted); --naut-ms: color-mix(in srgb, var(--naut-c-main, #e60012) 45%, var(--text-muted)); }
+.naut-ms-row:hover, .naut-ms-row:focus-within { color: var(--text-muted); --naut-ms: color-mix(in srgb, var(--naut-c-main, #cf4d4a) 45%, var(--text-muted)); }
 .naut-ms-name { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .naut-main-slider input.naut-ms-range { flex: 1; min-width: 80px; height: 2px; margin: 0; padding: 4px 0; box-sizing: content-box; border-radius: 1px; -webkit-appearance: none; appearance: none; cursor: pointer; background: linear-gradient(to right, var(--naut-ms) var(--v, 0%), color-mix(in srgb, var(--text-faint) 30%, transparent) var(--v, 0%)) content-box; }
 .naut-main-slider input.naut-ms-range::-webkit-slider-thumb { -webkit-appearance: none; width: 7px; height: 7px; margin-top: 1.5px; border-radius: 50%; background: var(--background-primary); border: 1.5px solid var(--naut-ms); box-shadow: 0 0 0 1.5px var(--background-primary); transition: transform .15s ease; }
@@ -448,6 +449,7 @@ body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: ru
 
 /* Agent 内圈详情浮层不撑动螺旋，鼠标可移入卡片点击操作。 */
 .naut-hover.is-agent { position: relative; overflow: visible; z-index: 8; }
+.naut-hover.is-agent.is-pinned { border-radius: 6px; background: color-mix(in srgb, var(--naut-hover-agent) 9%, transparent); }
 .naut-hover.is-agent .naut-hover-text { color: var(--naut-hover-agent); flex: none; }
 .naut-ai-hover-card { position: absolute; top: calc(100% + 5px); left: 0; right: 0; max-height: min(420px, 60vh); overflow: auto; padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-top: 2px solid var(--naut-hover-agent); border-radius: 8px; background: var(--background-primary); box-shadow: var(--shadow-s); text-align: left; white-space: normal; line-height: 1.5; font-size: var(--font-ui-small); }
 .naut-ai-hover-caption { color: var(--text-faint); font-size: var(--font-ui-smaller); }

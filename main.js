@@ -16,7 +16,7 @@ const DEFAULTS = {
   doneTimes: {},        // { "2026_09_29": { "任务文字": 872 } }，在 Bike 里改成 DONE 时记下的完成时间（分钟）
   autoOpened: false,
   showAi: true,         // 显示人机协作（各个 Agent 的协作时长和 token）
-  aiAgents: { claude: true, codex: true, workbuddy: true, dsh: true, antigravity: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token、自动记进日记
+  aiAgents: { claude: true, codex: true, workbuddy: true, dsh: true, antigravity: true },   // 追踪哪几个 Agent：开着的才读它的会话日志、画进螺旋、算 token
   dshApiPort: 0,        // DSH 的 dsh-token-usage-stats API 端口：0 = 自动从 lsof 找；插件没开时保留库里上次的数
   aiPrimary: "claude",  // 主力 Agent：全量追踪（历史、跨天补记、状态栏）；其余开着的只追踪今天有动静的会话
   googleCal: false,       // 读 Google 日历里的事件当固定事件（只读，走 Google Calendar API）
@@ -35,9 +35,6 @@ const DEFAULTS = {
   mainLog: {},            // { "2026_10_20": { done: 2, total: 3 } }：每天主线的完成情况（留 90 天）
   mainClosed: "",         // 最近一次「一天结束」结算到了哪一天（这一天的前一天已经写进日记属性）
   mainNudged: {},         // { "2026_10_20": [900] }：今天已经提醒过的时刻
-  // 会话写回日记（自动记日记、改状态关键词、💬）已经交给 Agent Deck，螺旋不再做。这三个只是留着 false 给 Agent Deck 看：
-  // 它按这几个判断螺旋还写不写日记，没有这几项就以为螺旋还在写，自己就让开不写了
-  autoLog: false, agentKw: false, resultBack: false,
   widgets: false,         // 给 macOS 小组件导出数据：今天的主线、计划甘特图（配套的小组件 App 在仓库的 widgets/ 里，要自己编译安装）
   widgetPlan: T("上班计划.md", "Plan.md"),  // 甘特图画哪篇计划：列表项里写了 🛫 开始 / ⏳ 计划 / 📅 截止日期的各画一条；没有这一篇就新建一篇
   uiSound: true,          // 界面上的小音效：开始做、做完、停下、回放起止各一声很轻的合成音（Obsidian 不在最前面时不响）
@@ -72,12 +69,12 @@ const DEFAULTS = {
 };
 // 螺旋上各类的颜色（设置里能改）：[设置里的名字, 默认值]。默认值和 styles.css 开头的一致；Agent 的颜色跟各家自己的界面走，不放进来
 const COLORS = {
-  main: [T("主线", "Mainline"), "#e60012"],
-  event: [T("固定事件", "Fixed events"), "#e3a924"],
-  task: [T("待办", "To-dos"), "#2b64c3"],
-  prio: [T("重要 / 超出", "Important / over"), "#d03739"],
-  review: [T("复习卡片", "Flashcard review"), "#31b0c6"],
-  game: [T("游戏时间", "Gaming"), "#b04fa8"],
+  main: [T("主线", "Mainline"), "#cf4d4a"],
+  event: [T("固定事件", "Fixed events"), "#d9a441"],
+  task: [T("待办", "To-dos"), "#5c86b4"],
+  prio: [T("重要 / 超出", "Important / over"), "#c8635f"],
+  review: [T("复习卡片", "Flashcard review"), "#4ca3b3"],
+  game: [T("游戏时间", "Gaming"), "#9c6496"],
 };
 
 // ---------------- 解析 ----------------
@@ -374,40 +371,43 @@ function parseJournal(content, cfg) {
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
-      const lr = new RegExp("^" + RANGE_RE.source).exec(s);
-      const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(s);
+      const ts = s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/, "");   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
+      const lr = new RegExp("^" + RANGE_RE.source).exec(ts);
+      const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
       if (state === "done" && lr) {
         const start = normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
         let end = normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
         if (end <= start) end += 720;
         // est = 写着的预估（DONE 14:05-14:20 写周报 15分钟 里的 15 分钟），复盘「预估 vs 实际」用
-        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(s.slice(lr[0].length)) });
+        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(lr[0].length)) });
         return;
       }
       // 「DONE 10-12 hsy」这种只写整点的时间段，只在紧跟关键词的位置认
-      const br = !lr && state === "done" && /^(\d{1,2})\s*(?:-|–|~|～|到|至)\s*(\d{1,2})(?![\d:：点])/.exec(s);
+      const br = !lr && state === "done" && /^(\d{1,2})\s*(?:-|–|~|～|到|至)\s*(\d{1,2})(?![\d:：点])/.exec(ts);
       if (br && +br[1] <= 24 && +br[2] <= 24) {
         const start = normalize(+br[1] * 60, cfg);
         let end = normalize(+br[2] * 60, cfg);
         if (end <= start) end += 720;
-        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(s.slice(br[0].length)) });
+        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(br[0].length)) });
         return;
       }
       // DONE 18:02 写稿 2h：这里的 2h 是做了多久（Telegram 的 done 写稿 2h），不是预估
       if (state === "done" && ls) {
         const at = normalize(tokenMinutes(ls[1], ls[2], ls[3], ls[4]), cfg);
-        items.push({ ...base, kind: "task", dur: parseDuration(s.slice(ls[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(s.slice(ls[0].length)) != null, doneAt: at });
+        items.push({ ...base, kind: "task", dur: parseDuration(ts.slice(ls[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(ts.slice(ls[0].length)) != null, doneAt: at });
         return;
       }
-      // SUSPENDED 17:12 / PAUSED 17:12 / WAITING 17:12：后面的时刻是当初开始做的记录，不是约好的时间，不当事件
-      if (state === "open" && !doing && (suspended || paused) && ls) {
-        const d = parseDuration(s.slice(ls[0].length));
+      // SUSPENDED 17:12 / PAUSED 17:12 / WAITING 17:12 / PAUSED 🤖 19:17-19:23：后面的时刻是当初开始做的记录，不是约好的时间，不当事件
+      if (state === "open" && !doing && (suspended || paused) && (lr || ls)) {
+        const m = lr || ls;
+        const d = parseDuration(ts.slice(m[0].length));
         items.push({ ...base, kind: "task", dur: d ?? cfg.defaultDur, explicitDur: d != null });
         return;
       }
-      if (state === "open" && doing && ls) {
-        const startedAt = normalize(tokenMinutes(ls[1], ls[2], ls[3], ls[4]), cfg);
-        items.push({ ...base, kind: "task", dur: parseDuration(s.slice(ls[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(s.slice(ls[0].length)) != null, startedAt });
+      if (state === "open" && doing && (lr || ls)) {
+        const m = lr || ls;
+        const startedAt = normalize(tokenMinutes(m[1], m[2], m[3], m[4]), cfg);
+        items.push({ ...base, kind: "task", dur: parseDuration(ts.slice(m[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(ts.slice(m[0].length)) != null, startedAt });
         return;
       }
     }
@@ -1488,7 +1488,7 @@ function aiDay(ms, cfg) {
   return { key: fmtKey(d, cfg), t: (ms - mid) / 60000 };   // t 和螺旋同一个坐标：当天 0 点起的分钟数，凌晨会超过 1440
 }
 
-// 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 淡蓝、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 紫
+// 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 黑、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 彩虹渐变
 const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", dsh: "DeepSeek Harness", antigravity: "Antigravity" };
 const aiAgent = (x) => (x && AI_AGENTS[x.agent] ? x.agent : "claude");   // 旧记录没写来源的都是 Claude
 // 主力 Agent：全量追踪；没设过是 Claude
@@ -3011,16 +3011,31 @@ class SpiralView extends ItemView {
 
     // 鼠标划到螺旋的哪一段，这一行立刻显示那一段的时间和做的事（不等系统的悬停提示），位置固定在螺旋上方
     const hover = root.createDiv({ cls: "naut-hover" });
-    const clearHover = (force = false) => { if (!force && hover.hasClass("is-expanded")) return; clearTimeout(this._hoverClose); hover.empty(); hover.removeClass("is-agent", "is-expanded"); if (force) this._agentHoverExpanded = null; };
-    const leaveHover = () => { clearTimeout(this._hoverClose); this._hoverClose = setTimeout(clearHover, 180); };
+    let svg = null;
+    const clearHover = (force = false) => {
+      if (!force && (hover.hasClass("is-expanded") || hover.hasClass("is-pinned"))) return;
+      clearTimeout(this._hoverClose);
+      hover.empty();
+      hover.removeClass("is-agent", "is-expanded", "is-pinned");
+      if (svg) svg.querySelectorAll(".naut-ai.is-pinned").forEach((el) => el.classList.remove("is-pinned"));
+      if (force) { this._agentHoverExpanded = null; this._agentHoverPinned = null; }
+    };
+    const leaveHover = () => {
+      if (hover.hasClass("is-expanded") || hover.hasClass("is-pinned")) return;
+      clearTimeout(this._hoverClose);
+      this._hoverClose = setTimeout(clearHover, 180);
+    };
     hover.addEventListener("mouseenter", () => clearTimeout(this._hoverClose));
     hover.addEventListener("mouseleave", leaveHover);
     hover.addEventListener("focusin", () => clearTimeout(this._hoverClose));
     hover.addEventListener("focusout", (e) => { if (!hover.contains(e.relatedTarget)) leaveHover(); });
-    hover.addEventListener("keydown", (e) => { if (e.key === "Escape") clearHover(true); });
+    root.addEventListener("keydown", (e) => { if (e.key === "Escape" && (hover.hasClass("is-pinned") || hover.hasClass("is-expanded"))) clearHover(true); });
+    root.addEventListener("click", (e) => {
+      if ((hover.hasClass("is-pinned") || hover.hasClass("is-expanded")) && !hover.contains(e.target) && !e.target.closest?.(".naut-hit")) clearHover(true);
+    });
     const hov = (el, time, text, sub) => {
       el.addEventListener("mouseenter", () => {
-        if (hover.hasClass("is-expanded")) return;
+        if (hover.hasClass("is-expanded") || hover.hasClass("is-pinned")) return;
         clearHover();
         hover.createSpan({ cls: "naut-hover-time", text: time });
         hover.createSpan({ cls: "naut-hover-text", text });
@@ -3051,7 +3066,7 @@ class SpiralView extends ItemView {
       for (let i = 0; i <= n; i++) d += (i ? " L " : "M ") + pt(a + (b - a) * i / n, dr).map((v) => v.toFixed(2)).join(" ");
       return d;
     };
-    const svg = svgEl("svg", { viewBox: `0 0 ${size} ${size}`, class: "naut-svg" });
+    svg = svgEl("svg", { viewBox: `0 0 ${size} ${size}`, class: "naut-svg" });
     root.appendChild(svg);
     // 入场时各段按自己的时刻先后出来：从早上往夜里，跟着轨道一路画过去
     const late = (el, t) => { if (enter && el) el.style.setProperty("--naut-d", `${Math.round(60 + 640 * (Math.min(Math.max(t, S), E) - S) / (E - S))}ms`); return el; };
@@ -3067,10 +3082,12 @@ class SpiralView extends ItemView {
     svgEl("path", { d: arc(S1, E1), class: "naut-track", pathLength: 1 }, svg);
     if (S1 > S) svgEl("path", { d: arc(S, S1), class: "naut-off" }, svg);
     if (E1 < E) svgEl("path", { d: arc(E1, E), class: "naut-off" }, svg);
+    let defsEl = null;
+    const ensureDefs = () => defsEl || (defsEl = svgEl("defs", {}, svg));
     // 没有记录的过去：斜纹
     if (gaps.length) {
       const pid = `naut-hatch-${++hatchSeq}`;
-      const pat = svgEl("pattern", { id: pid, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, svgEl("defs", {}, svg));
+      const pat = svgEl("pattern", { id: pid, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, ensureDefs());
       svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 7, class: "naut-hatch-stripe" }, pat);
       for (const [a, b] of gaps) {
         const d = arc(a, b);
@@ -3089,12 +3106,21 @@ class SpiralView extends ItemView {
       tx.textContent = String(h % 24);
     }
     const aiName = (x) => x.title || (x.text || "").split(" / ")[0].slice(0, 40) || x.dir;
+    let agGradId = null;
+    if (agents.some(([k]) => k === "antigravity")) {
+      agGradId = `naut-ag-${++hatchSeq}`;
+      const g = svgEl("linearGradient", { id: agGradId, gradientUnits: "userSpaceOnUse", x1: 55, y1: 255, x2: 265, y2: 65 }, ensureDefs());
+      for (const [offset, color] of [["0%", "#558ce6"], ["54%", "#4bb5a2"], ["76%", "#6cc48c"], ["100%", "#e3ba64"]]) {
+        svgEl("stop", { offset, "stop-color": color }, g);
+      }
+    }
     // 内圈细线：各个 Agent 在干活的时段，一个 Agent 一圈、各用各的颜色
     agents.forEach(([k, g], lane) => {
       for (const [a, b] of g.segs) {
         const d = arc(a, Math.max(b, a + 3), -10 - 4.5 * lane);
         if (!d) continue;
         const vis = late(svgEl("path", { d, class: `naut-ai naut-by-${k}`, pathLength: 1 }, svg), a);
+        if (k === "antigravity" && agGradId) vis.style.stroke = `url(#${agGradId})`;
         const sessions = aiSegmentSessions(ai.list, k, a, b);
         const hit = fat(d, vis);
         hit.dataset.agent = k;
@@ -3102,13 +3128,21 @@ class SpiralView extends ItemView {
         hit.setAttribute("role", "button");
         hit.setAttribute("aria-label", `${AI_AGENTS[k]} ${clock(a)}–${clock(b)} · ${sessions.length} ${T("个会话，查看详情", "sessions, view details")}`);
         const show = (expanded = false, explicit = false) => {
-          if (hover.hasClass("is-expanded") && !explicit) return;
+          if ((hover.hasClass("is-expanded") || hover.hasClass("is-pinned")) && !explicit) return;
+          const samePinned = this._agentHoverPinned?.agent === k && this._agentHoverPinned?.start === a && this._agentHoverPinned?.day === dayKey;
+          const wasExpanded = hover.hasClass("is-expanded");
+          if (explicit && !expanded && samePinned && !wasExpanded && hover.hasClass("is-pinned")) { clearHover(true); return; }
           clearHover(true); hover.addClass("is-agent"); hover.style.setProperty("--naut-hover-agent", `var(--naut-ai-${k})`);
+          if (explicit) { hover.addClass("is-pinned"); vis.classList.add("is-pinned"); this._agentHoverPinned = { agent: k, start: a, day: dayKey }; }
           hover.createSpan({ cls: "naut-hover-time", text: `${clock(a)}–${clock(b)} · ${dur(b - a)}` });
           hover.createSpan({ cls: "naut-hover-text", text: AI_AGENTS[k] });
           hover.createSpan({ cls: "naut-hover-sub", text: sessions[0]?.title || T(`${sessions.length} 个会话`, `${sessions.length} sessions`), attr: { title: sessions.map(aiName).join("\n") } });
           const toggle = hover.createEl("button", { cls: "naut-ai-hover-toggle", text: expanded ? T("收起详情", "Hide details") : T("详情", "Details"), attr: { "aria-expanded": String(expanded) } });
           toggle.onclick = (e) => { e.stopPropagation(); show(!expanded, true); };
+          if (explicit) {
+            const unpin = hover.createEl("button", { cls: "naut-ai-hover-toggle", text: "×", attr: { title: T("取消固定", "Unpin"), "aria-label": T("取消固定", "Unpin") } });
+            unpin.onclick = (e) => { e.stopPropagation(); clearHover(true); };
+          }
           if (!expanded) return;
           hover.addClass("is-expanded");
           this._agentHoverExpanded = { agent: k, start: a, day: dayKey };
@@ -3152,6 +3186,7 @@ class SpiralView extends ItemView {
         hit.addEventListener("dblclick", (e) => { e.preventDefault(); e.stopPropagation(); show(true, true); });
         hit.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(true, true); } });
         if (this._agentHoverExpanded?.agent === k && this._agentHoverExpanded.start === a && this._agentHoverExpanded.day === dayKey) show(true, true);
+        else if (this._agentHoverPinned?.agent === k && this._agentHoverPinned.start === a && this._agentHoverPinned.day === dayKey) show(false, true);
       }
     });
     // 再往里一圈：游戏时间
@@ -3207,18 +3242,19 @@ class SpiralView extends ItemView {
       hov(late(svgEl("circle", { cx: x, cy: y, r: 2.6, class: "naut-log" }, svg), l.start), clock(l.start), l.label);
     }
     if (dayRel === 0 && now >= S && now <= E) {
+      const nr = rad(now);
       const [x0, y0] = [c + 27 * Math.cos(ang(now)), c + 27 * Math.sin(ang(now))];   // 从中间的时间外面起，不压着字
-      const [x1, y1] = [c + (R0 + 10) * Math.cos(ang(now)), c + (R0 + 10) * Math.sin(ang(now))];
+      const [x1, y1] = [c + (nr + 9) * Math.cos(ang(now)), c + (nr + 9) * Math.sin(ang(now))];   // 停在当前轨道外沿，不穿出外圈
       const g = svgEl("g", { class: "naut-now-g" }, svg);
       svgEl("line", { x1: x0, y1: y0, x2: x1, y2: y1, class: "naut-now" }, g);
       const [px, py] = pt(now);
-      svgEl("circle", { cx: px, cy: py, r: 4, class: "naut-now-halo" }, g);
-      svgEl("circle", { cx: px, cy: py, r: 4, class: "naut-now-dot" }, g);
+      svgEl("circle", { cx: px, cy: py, r: 3.5, class: "naut-now-halo" }, g);
+      svgEl("circle", { cx: px, cy: py, r: 3.5, class: "naut-now-dot" }, g);
     }
     // 起止把手：沿着螺旋拖 = 改这天实际的开始 / 结束时间（5 分钟一格），双击恢复默认
     const handle = (kind, t0) => {
       const [x, y] = pt(t0);
-      const h = svgEl("circle", { cx: x, cy: y, r: 6, class: `naut-handle naut-handle-${kind}` }, svg);
+      const h = svgEl("circle", { cx: x, cy: y, r: 4.5, class: `naut-handle naut-handle-${kind}` }, svg);
       const name = kind === "start" ? T("开始", "start") : T("结束", "end");
       svgEl("title", {}, h).textContent = T(`这天实际${name} ${clock(t0)}${bounds[kind] == null ? "（默认）" : ""}\n拖动调整，双击恢复默认`, `Actual ${name} of this day ${clock(t0)}${bounds[kind] == null ? " (default)" : ""}\nDrag to adjust, double-click to restore the default`);
       const label = svgEl("text", { x, y, class: "naut-handle-label" }, svg);
@@ -3506,6 +3542,9 @@ const lucideWatch = (plugin, win) => {
 module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    const removedAiSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack"].filter(key => key in this.settings);
+    for (const key of removedAiSettings) delete this.settings[key];
+    if (removedAiSettings.length) await this.saveData(this.settings);
     this.settings.aiAgents = Object.assign({}, DEFAULTS.aiAgents, this.settings.aiAgents);
     this.applyColors();
     lucideWatch(this, window);
@@ -6046,7 +6085,7 @@ class SpiralSettings extends PluginSettingTab {
     text(T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停、自动记成做完 / 暂停、专注到点）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, auto-marked done / paused, focus time's up) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
     text(T("本机提醒的提示音", "Reminder sound on this Mac"), T("系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "A system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file; empty = silent"), "notifySound");
     containerEl.createEl("h3", { text: T("🎨 颜色", "🎨 Colors") });
-    containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 淡蓝……），不在这里改", "Colors of each kind of item on the spiral, the list and the progress bars. Agent sessions use each tool's own colors (Claude orange, Codex light blue…) and can't be changed here") });
+    containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 黑……），不在这里改", "Colors of each kind of item on the spiral, the list and the progress bars. Agent sessions use each tool's own colors (Claude orange, Codex black…) and can't be changed here") });
     const colorDesc = { main: T("块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", "Tasks whose block carries [#A], and the progress bar under mainline blocks in the editor"), event: T("日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", "Events with a time written in the daily note (calendar events use their calendar's color)"), task: T("其余待办", "All other to-dos"), prio: T("带重要标记的任务，也用在排不下、超时的提示上", "Tasks with an important marker; also used for won't-fit and overtime warnings"), review: T("做完的「复习卡片 N 张」", "Finished \"复习卡片 N 张\" (review N cards) tasks"), game: T("螺旋最里面一圈的游戏时间", "Gaming time on the innermost ring of the spiral") };
     for (const [k, [name, d]] of Object.entries(COLORS)) {
       const set = async (v) => {

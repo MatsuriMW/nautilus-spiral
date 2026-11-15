@@ -6,7 +6,7 @@ const source = process.argv[2] || path.join(__dirname, '..', 'main.js');
 const OB = {Plugin:class{},ItemView:class{},PluginSettingTab:class{},Modal:class{},FuzzySuggestModal:class{},getLanguage:()=> 'zh'};
 const ctx = {require:(id)=>id==='obsidian'?OB:require(id),module:{exports:{}},console,process,Buffer,setTimeout,clearTimeout};
 vm.runInNewContext(fs.readFileSync(source,'utf8'), ctx, {filename:source});
-const {AiUsage,parseLink,DEFAULTS} = ctx.module.exports.core;
+const {AiUsage,parseLink,DEFAULTS,parseJournal} = ctx.module.exports.core;
 const ai = new AiUsage(DEFAULTS);
 const tool = (name,input) => ({type:'assistant',message:{content:[{type:'tool_use',name,input}]}});
 ai.liveClaude({type:'user',message:{content:'实现设置'}},'claude-test',1);
@@ -93,3 +93,16 @@ e = evt(); e.key = 'a';
 listeners.keydown(e);
 assert.equal(calls.length, 0, '其他按键不响应');
 console.log('PASS 双击内圈展开详情卡；单击、悬停、回车行为不变');
+
+const parsedAiTasks = parseJournal([
+  '- DONE 🤖 18:46-19:10 修复颜色解析',
+  '- DOING 🤖 20:37-21:40 运行测试 30m',
+  '- PAUSED 🤖 19:17-19:23 中断任务'
+].join('\n'), DEFAULTS);
+assert.equal(parsedAiTasks.length, 3);
+assert.equal(JSON.stringify(parsedAiTasks.map(it => [it.kind, it.state, it.doing, it.paused, it.label.startsWith('🤖 ')])), JSON.stringify([
+  ['task', 'done', false, false, true],
+  ['task', 'open', true, false, true],
+  ['task', 'open', false, true, true]
+]));
+console.log('PASS parseJournal 正确识别带 🤖 时段的 DONE/DOING/PAUSED 任务');
