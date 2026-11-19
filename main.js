@@ -46,13 +46,6 @@ const DEFAULTS = {
   minChunk: 25,         // 最短一段（分钟）：切开的任务每段至少这么长；不够切成两段的整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满
   calendar: false,      // 读 macOS「日历」里的事件当固定事件（只读）
   calendarSkip: "",     // 不读这些日历，逗号分隔
-  focus: true,          // ▶ 开始做时顺带开一段 Raycast 专注
-  focusMinutes: 0,      // 专注多久：0 = 按条目上写的时长（没写按默认任务时长；写了进度按还剩的），填 25 = 固定番茄钟
-  focusCategories: "social, gaming",   // Raycast Focus 的屏蔽类别，留空 = 不带类别和模式参数
-  focusMode: "block",                  // block = 只屏蔽这些类别；allow = 只允许这些类别
-  focusAutoComplete: true,             // 那件任务不再是 DOING（做完 / 改回 TODO / 挪走）时结束专注
-  focusAsk: true,                      // 专注到点弹窗问「做完了吗」：做完了 / 再来一轮 / 先停下
-  focusSession: null,                  // 进行中的这一轮专注：{ tasks: [{ key, label, path, start }], start, end, minutes, round }（毫秒）；几件并行就是几条线
   doingLimit: 3,        // 同时最多几件 DOING：再开始一件，就把最早开始的那件改成 PAUSED。0 = 不限
   staleHours: 3,        // DOING 超过几小时没动过（这一行和下面的子项都没改）就改成 PAUSED。0 = 不管
   doingTouch: {},       // { workKey: { sig, at } }：每件 DOING 最后一次被动过的时刻
@@ -61,7 +54,7 @@ const DEFAULTS = {
   reviewDays: 30,       // 复盘看最近几天（计时记录保留 45 天）  // 几件 DOING 并行排：一起从现在开始，重叠在同一段时间里，只占最长那件的时间
   discordChannel: "",   // 提醒中枢：不用你回答的提醒发到 Discord 的哪个频道（本机 notify-discord 脚本认的频道名）；空着 = 不发，只在本机弹
   discordCmd: "~/.local/bin/notify-discord",
-  askVia: "dialog",     // 到点问做完没有：dialog = 弹到最前面的系统对话框；notification = 带按钮的系统通知（试验：要系统允许本机编的小 App 发通知）
+  askVia: "dialog",     // 带按钮提醒的方式：dialog = 默认通知；notification = 带按钮的系统通知（试验：要系统允许本机编的小 App 发通知）
   notifySound: "Pop",   // 在本机弹提醒时响哪个声音：系统声音的名字（/System/Library/Sounds 里的，Pop、Glass、Ping…）或一个声音文件的路径；空 = 不响
   colors: {},           // { main: "#rrggbb" }：设置里改过的颜色，没改过的不存，用 COLORS 的默认值
 };
@@ -108,17 +101,6 @@ function todosKidRest(rest) {
   const s = rest.replace(STAMP_RE, "");
   return !!s.trim() && !CHECKBOX_RE.test(s) && !TODOS_KW_RE.test(s)
     && !/^-{3,}\s*$/.test(s) && !isMarkText(s);
-}
-// 第 n 行是不是 todos 母块下面没写关键词的子条目（往上找第一行缩进更浅的列表项，看它是不是「todos：」）
-function todosKid(lines, n) {
-  const m = TODOS_KID_RE.exec(lines[n] || "");
-  if (!m || !todosKidRest(m[2])) return false;
-  const w = indW(lines[n]);
-  for (let j = n - 1; j >= 0; j--) {
-    if (!lines[j].trim() || !TODOS_KID_RE.test(lines[j]) || indW(lines[j]) >= w) continue;
-    return TODOS_HEAD_RE.test(lines[j]);
-  }
-  return false;
 }
 // 读的时候在这些子条目的列表符号后面补一个 TODO（只在内存里补，不写回）
 const withTodo = (l) => l.replace(/^(\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?)/, "$1TODO ");
@@ -265,9 +247,6 @@ function markOwner(lines, i) {
   return -1;
 }
 
-// 任务下面的「💬」行：绑着的那个会话最后说的话——做完时的结论，或者它停下来等你回答的那一句。机器写的，会话每答完一轮换成新的一句。
-// 和 🔗 / ⏱ 一样是记号行：解析日记、状态音效都跳过它，发给 Agent 的话里也不带它。你自己想留话，别用 💬 开头
-const RESULT_LINE_RE = /^\s*[-*+]\s+💬/;
 // Agent 会话的 DOING 中间态（Agent Deck 按会话状态自动切，交互和 PAUSED 一样，⌘/ 或点一下回 DOING）：
 //   TOREVIEW = 对话不再有新内容了（答完了 / 被你打断了 / 好几分钟没动静，后台派的 subagent 也都跑完了）；
 //   NEEDOK   = 停在「允许吗？」权限提示上（靠 agent-wait 钩子的记号认，TODOseq 显示成 NEEDOK?）；
@@ -316,19 +295,8 @@ function statusCls(item, prefix, deckState = null) {
   return ` ${prefix}${st}`;
 }
 const indentWidthOf = (t) => { let w = 0; for (const c of /^[ \t]*/.exec(t)[0]) w += c === "\t" ? 4 : 1; return w; };
-// 1.6.0 写过的「🤖 子代理 3：… ✓ 16k」汇总行：现在不写了（subagent 由 Agent Deck 写成子块），日记里留下的照旧当记号行认
-const SUB_LINE_RE = /^\s*[-*+]\s+🤖\s*(?:子代理|side chat)/;
+// 1.6.0 写过的「🤖 子代理 3：… ✓ 16k」汇总行：日记里留下的照旧当记号行跳过
 const isSubMark = (s) => /^🤖\s*(?:子代理|side chat)/.test(s);
-// 会话派出去的 subagent、开着的 side chat 写成任务的子块，子块下面一行「🔗 子代理 `a7de3cf8`」「🔗 side chat `pid 40948`」认它是谁。
-// 和会话的 🔗 一样是记号行（SID_RE 对不上，parseLink 不认它）；跑完换成 ⏱ 行，⏱ 行末尾的「子代理 `a7de3cf8`」还认得是谁
-const KID_LINK_RE = /^\s*[-*+]\s+🔗\s*(子代理|side chat)\s*`(?:pid\s*)?([0-9a-z]+)`/;
-function parseKid(line) {
-  const m = KID_LINK_RE.exec(line);
-  return m ? { kind: m[1] === "子代理" ? "sub" : "side", id: m[2] } : null;
-}
-function kidUnder(lines, n) {
-  return childMark(lines, n, parseKid);
-}
 
 // 任务下面那一行「⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · 48k tok · Claude」读回来（最后的 Claude 可以是指向那个会话的链接）：
 //   { segs: [[开始, 结束]…], total: 合计分钟（没写就是 null）, who: 谁记的（"Claude" / "Claude / Codex"，你自己做的没有）, partial: 段数太多只写了后面几段 }
@@ -354,16 +322,43 @@ function parseClock(s, cfg) {
   return { segs: unionSegs(segs), total, who, tok, sid: sm ? sm[1] : "", partial: /^⏱\uFE0F?\s*…/.test(s) };
 }
 
+const BLOCK_ID_RE = /^\^[\w-]+\s*$/;
+// 共享行首前缀解析：时间戳、复选框、关键词（含 prioShort 简写）顺序不固定，parseJournal 与 mainOf 共用
+function parseStatusPrefix(s, kwRe = KEYWORD_RE, shortRe = SHORT_KW_RE) {
+  let stamp = null, cb = null, kw = null, prio = null;
+  for (let i = 0; i < 3; i++) {
+    let m;
+    if (!stamp && (m = STAMP_RE.exec(s))) { stamp = m; s = s.slice(m[0].length); continue; }
+    if (!cb && (m = CHECKBOX_RE.exec(s))) { cb = m; s = s.slice(m[0].length); continue; }
+    if (!kw) {
+      const ps = prioShort(s, shortRe);
+      if (ps) { prio = ps.prio; s = `${ps.kw} [#${ps.prio}] ${ps.rest}`; }
+    }
+    if (!kw && (m = kwRe.exec(s))) { kw = m; s = s.slice(m[0].length); continue; }
+    break;
+  }
+  const kwName = kw ? kw[1].toUpperCase() : (cb ? (cb[1] === "/" ? "DOING" : cb[1] === " " ? "TODO" : cb[1] === "-" ? "CANCELLED" : "DONE") : null);
+  return { rest: s, stamp, cb, kw, kwName, prio };
+}
+// 共享祖先栈推进：同缩进或更浅时出栈，取最顶层非 TODO 祖先控制源
+function stepAnc(anc, indent, selfOverride) {
+  while (anc.length && anc[anc.length - 1].indent >= indent) anc.pop();
+  const inherited = anc.length ? anc[anc.length - 1].override : null;
+  anc.push({ indent, override: inherited || selfOverride });
+  return inherited;
+}
+
 function parseJournal(content, cfg) {
   const prio = cfg.priorityMarkers.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
   const items = [];
   const lines = withTodos(content.split("\n"));   // todos 母块下面没写关键词的子条目当 TODO
+  const anc = [];   // 祖先列表项栈：{ indent, override }，母块为非 TODO 状态时覆盖下面带状态的子块
   let inCode = false;
   lines.forEach((raw, line) => {
     if (/^\s*```/.test(raw)) { inCode = !inCode; return; }
     if (inCode) return;
     const lm = LIST_RE.exec(raw);
-    if (!lm) return;
+    if (!lm) { if (raw.trim() && !BLOCK_ID_RE.test(raw)) anc.length = 0; return; }
     let s = lm[2];
     if (s.startsWith("🔗") || s.startsWith("💬") || s.startsWith("📋") || s.startsWith("❓") || isSubMark(s) || isGoal(s)) return;   // 任务下面的「🔗 绑定的会话」「💬 会话最后说的话」「📋 步骤/轮次进度」「❓ 追问」「🤖 子代理」「🎯 目标」是记号，不是事件也不是任务（里面带着时间也不算）
     if (s.startsWith("⏱")) {
@@ -372,39 +367,40 @@ function parseJournal(content, cfg) {
       if (c) for (let j = items.length - 1; j >= 0; j--) if (items[j].indent < ind) { if (items[j].kind === "task" && !items[j].clock) items[j].clock = c; break; }
       return;
     }
-    let stamp = null, state = "none", cb = null, kw = null;
-    // 时间戳、复选框、关键词三者前后顺序不固定（「**07:37** DONE …」「[x] **01:44** …」都有）
-    for (let i = 0; i < 3; i++) {
-      let m;
-      if (stamp === null && (m = STAMP_RE.exec(s))) { stamp = normalize(tokenMinutes(m[1], m[2]), cfg); s = s.slice(m[0].length); continue; }
-      if (!cb && (m = CHECKBOX_RE.exec(s))) {
-        cb = m;
-        state = m[1] === " " || m[1] === "/" ? "open" : m[1] === "-" ? "drop" : "done";
-        s = s.slice(m[0].length);
-        continue;
-      }
-      if (!kw) { const ps = prioShort(s, SHORT_KW_RE); if (ps) s = `${ps.kw} [#${ps.prio}] ${ps.rest}`; }   // 简写 todo a 写稿 = TODO [#A] 写稿
-      if (!kw && (m = KEYWORD_RE.exec(s))) {
-        kw = m;
-        state = /DONE|^YES$/.test(m[1]) ? "done" : /CANCEL|FAILED|^NO$/.test(m[1]) ? "drop" : "open";
-        s = s.slice(m[0].length);
-        continue;
-      }
-      break;
+    const indent = lm[1].replace(/\t/g, "    ").length;
+    const p = parseStatusPrefix(s);
+    s = p.rest;
+    const stamp = p.stamp ? normalize(tokenMinutes(p.stamp[1], p.stamp[2]), cfg) : null;
+    let kwName = p.kwName;
+    let state = !kwName ? "none" : /DONE|^YES$/.test(kwName) ? "done" : /CANCEL|FAILED|^NO$/.test(kwName) ? "drop" : "open";
+    let doing = !!(kwName && /DOING|NOW|IN-PROGRESS/.test(kwName));
+    let suspended = !!(kwName && /^(WAIT|SUSPENDED|MAYBE)/.test(kwName));   // WAITING / SUSPENDED / MAYBE = 搁置：短期不推，今天不排、不占容量，做过的时间和进度留着
+    let paused = !!(kwName && (kwName === "PAUSED" || AGENT_KW_RE.test(kwName)));   // PAUSED = 暂停：只是停一下，照常排，接着做时剩余时间扣掉做过的；TOREVIEW / NEEDOK / ERRORED / HITLIMIT / QUEUED 同
+    let agentKw = kwName && AGENT_KW_RE.test(kwName) ? kwName : null;
+    if (p.kw) s = s.replace(/^\[#[ABC]\]\s*/, "");   // 优先级（TODO [#A] …）不挡住后面的时刻
+    let labelPreview = state === "none" ? s : stripProgress(s);
+    for (const pr of prio) labelPreview = labelPreview.split(pr).join("");
+    labelPreview = cleanLabel(labelPreview) || s.trim();
+    // 母块无状态或为 TODO 时不覆盖子块；母块为其他状态（DOING / DONE / SUSPENDED / PAUSED / CANCELLED 等）时，下面带状态的子块以母块状态为准
+    const selfOverride = state !== "none" && KW_STATUS[kwName] !== "todo"
+      ? { line, label: labelPreview, state, kw: kwName, doing, suspended, paused, agentKw }
+      : null;
+    const inherited = stepAnc(anc, indent, selfOverride);
+    let inheritedFrom = null, inheritedLabel = null;
+    if (inherited && state !== "none") {
+      state = inherited.state;
+      kwName = inherited.kw;
+      doing = inherited.doing;
+      suspended = inherited.suspended;
+      paused = inherited.paused;
+      agentKw = inherited.agentKw;
+      inheritedFrom = inherited.line;
+      inheritedLabel = inherited.label;
     }
     if (state === "drop") return;
-    if (kw) s = s.replace(/^\[#[ABC]\]\s*/, "");   // 优先级（TODO [#A] …）不挡住后面的时刻
-    const doing = kw && /DOING|NOW|IN-PROGRESS/.test(kw[1]) || (cb && cb[1] === "/");
-    const suspended = !!kw && /^(WAIT|SUSPENDED|MAYBE)/.test(kw[1]);   // WAITING / SUSPENDED / MAYBE = 搁置：短期不推，今天不排、不占容量，做过的时间和进度留着
-    const paused = !!kw && (kw[1] === "PAUSED" || AGENT_KW_RE.test(kw[1]));   // PAUSED = 暂停：只是停一下，照常排，接着做时剩余时间扣掉做过的；TOREVIEW / NEEDOK / ERRORED / HITLIMIT / QUEUED 同
-    const agentKw = kw && AGENT_KW_RE.test(kw[1]) ? kw[1] : null;
-    const kwName = kw ? kw[1].toUpperCase() : (cb ? (cb[1] === "/" ? "DOING" : cb[1] === " " ? "TODO" : "DONE") : null);
     const progress = state === "none" ? null : parseProgress(s);
-    let label = state === "none" ? s : stripProgress(s);
-    for (const p of prio) label = label.split(p).join("");
-    label = cleanLabel(label) || s.trim();
-    const indent = lm[1].replace(/\t/g, "    ").length;
-    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp };
+    const label = labelPreview;
+    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp, ...(inheritedFrom != null ? { inheritedFrom, inheritedLabel } : {}) };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
@@ -487,28 +483,22 @@ function parseJournal(content, cfg) {
 // 多出来的不算（日记整理会把它们降成 [#B]）。完成率按块里 A 级的任务算：做完几件 / 一共几件，取消了的不算进去
 const MAIN_MAX = 3;
 const MAIN_KW_RE = new RegExp(`^(TODOFORAI|TODO4AI|TODO2AI|TODOTOAI|${KW_ALT})`, "i");
+const MAIN_KW_FULL_RE = new RegExp(`^(TODOFORAI|TODO4AI|TODO2AI|TODOTOAI|${KW_ALT})\\s+`);
+const mainStateOf = (kwName) => (/DONE|^YES$/.test(kwName) ? "done" : /CANCEL|^NO$/.test(kwName) ? "drop" : /FAILED/.test(kwName) ? "failed" : /DOING|NOW|IN-PROGRESS/.test(kwName) ? "doing" : "open");
 // 一行任务是不是 A 级：返回 { state: done / doing / open / failed / drop, label }，不是就返回 null。
 // FAILED = 没做成：算进一共几件、不算做完，也不再当「下一件」；CANCELLED 才是不算进去
 function mainTask(raw) {
   const lm = LIST_RE.exec(raw);
   if (!lm) return null;
-  let s = lm[2].replace(STAMP_RE, ""), kw = null, cb = null, a = false;
-  const k = MAIN_KW_RE.exec(s), ps = prioShort(s, MAIN_KW_RE);
-  if (ps) { if (ps.prio !== "A") return null; a = true; s = ps.rest; kw = ps.kw; }
-  else if (k) {
-    const r = s.slice(k[0].length);
-    if (/^\s/.test(r) && k[1] === k[1].toUpperCase()) { kw = k[1]; s = r.trimStart(); }
-  }
-  if (!kw && (cb = CHECKBOX_RE.exec(s))) s = s.slice(cb[0].length);
-  if (!kw && !cb) return null;
-  if (!a && !s.includes("[#A]")) return null;
-  const state = cb ? (cb[1] === " " ? "open" : cb[1] === "/" ? "doing" : cb[1] === "-" ? "drop" : "done")
-    : /DONE|^YES$/.test(kw) ? "done" : /CANCEL|^NO$/.test(kw) ? "drop" : /FAILED/.test(kw) ? "failed" : /DOING|NOW|IN-PROGRESS/.test(kw) ? "doing" : "open";
-  return { state, label: cleanLabel(stripProgress(s.replace(/\[#A\]\s*/g, ""))) || s.trim() };
+  const p = parseStatusPrefix(lm[2], MAIN_KW_FULL_RE, MAIN_KW_RE);
+  if (!p.kwName) return null;
+  if (p.prio ? p.prio !== "A" : !p.rest.includes("[#A]")) return null;
+  return { state: mainStateOf(p.kwName), label: cleanLabel(stripProgress(p.rest.replace(/\[#A\]\s*/g, ""))) || p.rest.trim() };
 }
 // 返回 { blocks: [{ line, end, label, tasks: [{ line, label, state }], done, total }], over: [多出来的块的标题], tasks: 各块的 A 级任务拍平, done, total }
 function mainOf(content) {
   const lines = withTodos(content.split("\n")), blocks = [], over = [];   // todos 母块下面没写关键词的 [#A] 子条目也算，和 parseJournal 一样
+  const anc = [];   // 与 parseJournal 共享同一套祖先栈规则：非 TODO 母块状态覆盖下面带状态的 [#A] 子块
   let cur = null, inCode = false;
   const close = () => {
     if (!cur) return;
@@ -520,8 +510,21 @@ function mainOf(content) {
   };
   lines.forEach((raw, i) => {
     if (/^\s*```/.test(raw)) inCode = !inCode;
-    const t = !inCode && mainTask(raw);
-    if (!inCode && raw.trim() && !/^\s/.test(raw) && !/^\^[\w-]+\s*$/.test(raw)) {   // 顶格的块 ID 那一行跟着上一块
+    let inherited = null;
+    if (!inCode) {
+      const lm = LIST_RE.exec(raw);
+      if (lm) {
+        const ind = lm[1].replace(/\t/g, "    ").length;
+        const p = parseStatusPrefix(lm[2], MAIN_KW_FULL_RE, MAIN_KW_RE);
+        const selfOverride = p.kwName && KW_STATUS[p.kwName] !== "todo" && !/^TODO(?:FOR|4|2|TO)AI$/.test(p.kwName) ? mainStateOf(p.kwName) : null;
+        inherited = stepAnc(anc, ind, selfOverride);
+      } else if (raw.trim() && !BLOCK_ID_RE.test(raw)) {
+        anc.length = 0;
+      }
+    }
+    let t = !inCode && mainTask(raw);
+    if (t && inherited) t = { ...t, state: inherited };
+    if (!inCode && raw.trim() && !/^\s/.test(raw) && !BLOCK_ID_RE.test(raw)) {   // 顶格的块 ID 那一行跟着上一块
       close();
       const lm = LIST_RE.exec(raw);
       if (!lm || /^[-*+]\s+-{3,}\s*$/.test(raw)) return;
@@ -772,7 +775,7 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
   const eventLeft = unionSegs(busy).reduce((s, [a, b]) => s + b - a, 0);   // 重叠的事件按并集算，同一分钟不重复算
   // 没排进去的分钟。总量超了是一回事（overflow），总量够、但没有一段连续空档放得下是另一回事，容量条上分开报
   const unplaced = (parallel ? Math.max(...doing.map((t) => t.overflow)) : 0) + queue.filter((t) => !(parallel && t.doing)).reduce((n, t) => n + t.overflow, 0);
-  const suspended = items.filter((i) => i.kind === "task" && i.state === "open" && i.suspended);
+  const suspended = items.filter((i) => i.kind === "task" && i.state === "open" && !i.container && i.suspended);
   for (const t of suspended) t.remaining = t.progress != null ? t.dur * (1 - t.progress) : Math.max(5, t.dur - ((t.spentToday || 0) + (t.spentBefore || 0)));
   // free = 排完以后还空着的时段（螺旋上悬停能看到每段空档多长）
   return { from, available, demand, overflow: Math.max(0, demand - available), unplaced, free: free.map(([a, b]) => [a, b]), eventLeft, queue, suspended };
@@ -1003,6 +1006,8 @@ function resetFromText(text, at) {
   else if (!m[1] && t.valueOf() <= at) t.add(1, "day");
   return t.valueOf();
 }
+const CANON_KW = { LATER: "TODO", NOW: "DOING", "IN-PROGRESS": "DOING", WAIT: "WAITING", MAYBE: "WAITING", YES: "DONE", CANCELED: "CANCELLED", NO: "CANCELLED" };
+const canonKw = (kw) => { const u = String(kw || "").toUpperCase(); return CANON_KW[u] || u; };
 function splitTask(raw) {
   const m = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/.exec(raw);
   if (!m) return null;
@@ -1011,16 +1016,35 @@ function splitTask(raw) {
   if (st) { prefix += st[0]; rest = rest.slice(st[0].length); }   // **07:37** 记录点留在原位
   const cb = CHECKBOX_RE.exec(rest);
   if (cb) rest = rest.slice(cb[0].length);
+  const ps = prioShort(rest, SHORT_KW_RE);
+  if (ps) rest = `${ps.kw} [#${ps.prio}] ${ps.rest}`;   // 简写 todo a 写稿 → TODO [#A] 写稿
   const kw = KEYWORD_RE.exec(rest);
   if (kw) rest = rest.slice(kw[0].length);
-  // 优先级（[#A]）先拿出来，时刻读完再放回正文开头：改状态时写成 DOING 14:05 [#A] …
-  const pr = kw && /^\[#[ABC]\]\s*/.exec(rest);
-  if (pr) rest = rest.slice(pr[0].length);
-  let since = null;
-  const t = kw && /^(\d{1,2})[:：](\d{2})(?![\d:：]|\s*[-–~～到至])\s*/.exec(rest);
-  if (t) { since = `${pad(+t[1])}:${t[2]}`; rest = rest.slice(t[0].length); }
-  if (pr) rest = `${pr[0].trim()} ${rest}`;
-  return { prefix, rest, since, kw: kw ? kw[1] : null, cb: cb ? cb[1] : null };
+  const kwUpper = kw ? kw[1].toUpperCase() : null;
+  const kwCanon = kwUpper ? canonKw(kwUpper) : null;
+  // 🤖 与优先级（[#A]）先暂存，剥完紧跟的记录时刻/时段后再放回正文开头：改状态时写成 DOING 14:05 🤖 [#A] …
+  const leads = [];
+  if (kw) {
+    let lm;
+    while ((lm = /^(🤖|\[#[ABC]\])\s*/.exec(rest))) { leads.push(lm[1]); rest = rest.slice(lm[0].length); }
+  }
+  let since = null, range = null;
+  // 仅非 TODO 状态（DONE / DOING / PAUSED / SUSPENDED / WAITING 等）紧跟的时刻/时段是状态记录，切状态时剥离；TODO 后的时刻属于固定事件预约时间，保留不动
+  if (kw && kwCanon !== "TODO") {
+    const rg = /^(\d{1,2}[:：]\d{2}\s*[-–~～到至]\s*\d{1,2}[:：]\d{2})\s*/.exec(rest);
+    if (rg) {
+      if (kwCanon === "DONE") range = rg[1];
+      rest = rest.slice(rg[0].length);
+    } else {
+      const t = /^(\d{1,2})[:：](\d{2})(?![\d:：]|\s*[-–~～到至])\s*/.exec(rest);
+      if (t) {
+        if (kwCanon !== "DONE") since = `${pad(+t[1])}:${t[2]}`;
+        rest = rest.slice(t[0].length);
+      }
+    }
+  }
+  if (leads.length) rest = `${leads.join(" ")} ${rest}`;
+  return { prefix, rest, since, range, kw: kwUpper, cb: cb ? cb[1] : null };
 }
 // 写法和 ⌘/ 任务状态快切一样：DOING HH:MM … → DONE HH:MM-HH:MM …（复选框也改成关键词，⌘/ 才能接着切）
 function toDoing(raw) { const p = splitTask(raw); return p ? `${p.prefix}DOING ${moment().format("HH:mm")} ${p.rest}` : raw; }
@@ -1031,26 +1055,23 @@ function toKeyword(raw, kw, nowStr = moment().format("HH:mm")) {
   const p = splitTask(raw);
   if (!p) return raw;
   const target = String(kw || "TODO").toUpperCase();
-  let rest = p.rest;
-  if (p.kw === "DONE" && target !== "DONE") {
-    rest = rest.replace(/^\d{1,2}[:：]\d{2}\s*[-–~～到至]\s*\d{1,2}[:：]\d{2}\s+/, "");
-  }
-  if (target === "DOING") return `${p.prefix}DOING ${nowStr} ${rest}`;
-  if (target === "DONE") return `${p.prefix}DONE ${p.since ? `${p.since}-${nowStr}` : nowStr} ${rest}`;
-  return `${p.prefix}${target} ${rest}`;
+  if (p.kw && canonKw(p.kw) === canonKw(target)) return raw;
+  if (target === "DOING") return `${p.prefix}DOING ${nowStr} ${p.rest}`;
+  if (target === "DONE") return `${p.prefix}DONE ${p.since ? `${p.since}-${nowStr}` : nowStr} ${p.rest}`;
+  return `${p.prefix}${target} ${p.rest}`;
 }
 // 「接下来」面板点击循环：原状态 → DONE → SUSPENDED → 原状态
 function cycleUpNextStatus(raw, origRaw = null, nowStr = moment().format("HH:mm")) {
   const p = splitTask(raw);
   if (!p) return { nextRaw: raw, nextKw: null, origRaw };
-  const cur = (p.kw || (p.cb === "x" || p.cb === "X" ? "DONE" : p.cb === "/" ? "DOING" : "TODO")).toUpperCase();
+  const cur = canonKw(p.kw || (p.cb === "x" || p.cb === "X" ? "DONE" : p.cb === "/" ? "DOING" : "TODO"));
   if (cur === "DONE") {
     return { nextRaw: toKeyword(raw, "SUSPENDED", nowStr), nextKw: "SUSPENDED", origRaw: origRaw ?? raw };
   }
   if (cur === "SUSPENDED") {
     if (origRaw != null) {
       const op = splitTask(origRaw);
-      const okw = (op?.kw || (op?.cb === "/" ? "DOING" : op?.cb === "x" || op?.cb === "X" ? "DONE" : "TODO")).toUpperCase();
+      const okw = canonKw(op?.kw || (op?.cb === "/" ? "DOING" : op?.cb === "x" || op?.cb === "X" ? "DONE" : "TODO"));
       return { nextRaw: origRaw, nextKw: okw, origRaw: null };
     }
     return { nextRaw: toKeyword(raw, "TODO", nowStr), nextKw: "TODO", origRaw: null };
@@ -1088,31 +1109,7 @@ function subtree(lines, n) {
   return out.join("\n");
 }
 
-// 这件任务专注多久：条目上写了 10min 就是 10 分钟；没写按默认任务时长；写了进度（2h 40%）按还剩的；设置里填了固定时长就用固定的
-function focusMinutes(t, cfg) {
-  if (cfg.focusMinutes > 0) return cfg.focusMinutes;
-  if (t.progress != null) return Math.max(5, Math.round(t.dur * (1 - t.progress)));
-  return Math.max(1, Math.round(t.dur));
-}
-
-// 系统对话框（osascript）：Obsidian 在后台也会弹到最前面。返回点的按钮，没回答（超时）返回 ""
 const asStr = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
-async function dialog(msg, buttons, def, wait) {
-  const script = `activate\ndisplay dialog ${asStr(msg)} with title ${asStr(T("螺旋日程", "Nautilus Spiral"))} buttons {${buttons.map(asStr).join(", ")}} default button ${asStr(def)} giving up after ${wait}`;
-  const r = await run("/usr/bin/osascript", ["-e", script], (wait + 60) * 1000);
-  if (/gave up:true/.test(r.stdout)) return "";
-  return (/button returned:([^,\n]*)/.exec(r.stdout) || [])[1] || "";
-}
-// 多选列表：返回勾上的那几项；点取消返回 []；没回答（半小时超时）返回 null
-async function pickList(prompt, items, ok, cancel, defaults = []) {
-  const def = defaults.length ? ` default items {${defaults.map(asStr).join(", ")}}` : "";
-  const script = `activate\nset r to choose from list {${items.map(asStr).join(", ")}} with title ${asStr(T("螺旋日程", "Nautilus Spiral"))} with prompt ${asStr(prompt)}${def} OK button name ${asStr(ok)} cancel button name ${asStr(cancel)} with multiple selections allowed and empty selection allowed\nif r is false then return "__CANCEL__"\nset AppleScript's text item delimiters to linefeed\nreturn r as text`;
-  const r = await run("/usr/bin/osascript", ["-e", script], 1800e3);
-  if (r.code !== 0) return null;
-  const out = r.stdout.replace(/\n$/, "");
-  return out === "__CANCEL__" ? [] : out ? out.split("\n") : [];
-}
-const groupBy = (tasks) => { const m = new Map(); for (const t of tasks) (m.get(t.path) || m.set(t.path, []).get(t.path)).push(t); return m; };
 
 // ---------------- 带按钮的系统通知 ----------------
 // Obsidian 自己发的通知（new Notification）带不了按钮。这里在本机编一个很小的通知 App（和读日历的小助手一样，第一次用时编译，
@@ -1227,79 +1224,6 @@ function notifyTool() {
   return notifyApp;
 }
 
-// ---------------- Claude 桌面 app 的会话清单 ----------------
-// app 给每个会话存一份 claude-code-sessions/<账号>/<组织>/local_….json：归档只是把里面的 isArchived 设成 true，
-// 会话记录（~/.claude/projects 里的 .jsonl）原样留着；从一个会话里开出来的新会话（侧栏里挂在它下面的）记着 spawnedFrom.sessionId = 母会话的 local_ 号。
-// 返回 [{ sid, local, title, parent, created, active, archived }]，sid 是 cliSessionId（和 .jsonl 的文件名是同一个），parent 是母会话的 local_ 号。
-// cache：路径 → 上面那一项 + mtime，没变的文件不重读；一周没动过的文件不看（自动记录的状态只留几天）
-async function deskSessions(cache) {
-  const os = require("os"), path = require("path"), fs = require("fs");
-  const home = os.homedir();
-  const base = process.platform === "darwin" ? path.join(home, "Library/Application Support")
-    : process.platform === "win32" ? (process.env.APPDATA || path.join(home, "AppData/Roaming"))
-    : (process.env.XDG_CONFIG_HOME || path.join(home, ".config"));
-  const out = [];
-  const walk = async (dir, depth) => {
-    let ents;
-    try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
-    for (const e of ents) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (depth < 3) await walk(p, depth + 1); continue; }
-      if (!e.isFile() || !/^local_.*\.json$/.test(e.name)) continue;
-      let st;
-      try { st = await fs.promises.stat(p); } catch (err) { continue; }
-      if (st.mtimeMs < Date.now() - 7 * 864e5) continue;
-      let c = cache.get(p);
-      if (!c || c.mtime !== st.mtimeMs) {
-        c = { mtime: st.mtimeMs, sid: "", local: e.name.replace(/\.json$/, ""), title: "", parent: "", created: 0, active: 0, archived: false };
-        try {
-          const d = JSON.parse(await fs.promises.readFile(p, "utf8"));
-          c.sid = String(d.cliSessionId || "");
-          c.local = String(d.sessionId || c.local);
-          c.title = String(d.title || "");
-          c.parent = String((d.spawnedFrom && d.spawnedFrom.sessionId) || "");
-          c.created = +d.createdAt || 0;
-          c.active = +d.lastActivityAt || c.created;
-          c.archived = d.isArchived === true;
-        } catch (err) { c.mtime = 0; }   // app 正好在写这个文件：下一轮再读
-        cache.set(p, c);
-      }
-      if (c.sid) out.push(c);
-    }
-  };
-  await walk(path.join(base, "Claude", "claude-code-sessions"), 0);
-  return out;
-}
-
-// ---------------- Claude 桌面版的 side chat ----------------
-// side chat 是在一个 Code 会话上开的只读分叉。桌面 app 为它起一个 claude 进程：
-//   claude … --resume=<父会话号> --fork-session --no-session-persistence --tools=Read,Grep,Glob
-// 不落盘：没有自己的 .jsonl，app 的会话清单里也没有它，所以只能看进程——进程在就是开着，关掉进程就没了。
-// 问了什么、在答还是等你、用了多少 token 都读不到。返回 Map(父会话号 → [{ pid, since }])
-function sideChats() {
-  return new Promise((resolve) => {
-    const out = new Map();
-    if (process.platform === "win32") return resolve(out);
-    require("child_process").execFile("/bin/ps", ["-axo", "pid=,etime=,command="], { maxBuffer: 16 << 20 }, (err, text) => {
-      if (err) return resolve(out);
-      for (const line of String(text).split("\n")) {
-        // 外面那层 disclaimer 包装带着同样的参数，只认真正的 claude 进程
-        if (!line.includes("--fork-session") || !line.includes("--no-session-persistence") || line.includes("disclaimer")) continue;
-        const r = /--resume[= ]([0-9a-f]{8}-[0-9a-f-]{27})/.exec(line);
-        if (!r) continue;
-        const [pid, et] = line.trim().split(/\s+/);
-        // etime：[[天-]时:]分:秒
-        const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(et || "");
-        const age = m ? ((+m[1] || 0) * 86400 + (+m[2] || 0) * 3600 + +m[3] * 60 + +m[4]) * 1000 : 0;
-        (out.get(r[1]) || out.set(r[1], []).get(r[1])).push({ pid: +pid, since: Date.now() - age });
-      }
-      resolve(out);
-    });
-  });
-}
-
-
-
 // 两篇文字前后不一样的那一段，换成编辑器的一次改动（光标和滚动位置不乱，⌘Z 一步撤销）。一样就返回 null
 function diffLines(before, after) {
   const a = before.split("\n"), b = after.split("\n");
@@ -1381,24 +1305,6 @@ for e in store.events(matching: pred) {
   ])
 }
 out(list)
-`;
-
-// 小助手二：看一眼现在的状态。idle = 键盘鼠标多少秒没动；
-// panel = Raycast 专注的悬浮小窗在不在（专注进行时屏幕上有个 Raycast 的高 40 左右、层级 ≥ 100 的小窗，点完成就没了）
-const PROBE_SWIFT = String.raw`import AppKit
-import CoreGraphics
-
-let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
-var panel = false
-let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-for w in list where (w[kCGWindowOwnerName as String] as? String) == "Raycast" {
-  let layer = (w[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-  let b = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
-  let h = (b["Height"] as? NSNumber)?.doubleValue ?? 0
-  if layer >= 100 && h >= 30 && h <= 60 { panel = true }
-}
-let obj: [String: Any] = ["idle": idle, "panel": panel]
-FileHandle.standardOutput.write((try? JSONSerialization.data(withJSONObject: obj, options: [])) ?? Data("{}".utf8))
 `;
 
 // 编译 Swift 小助手到 ~/Library/Caches/nautilus-spiral/<名字>-<源码哈希>，源码一改就重新编译
@@ -1710,16 +1616,6 @@ function dshApiGet(port, path, timeout = 8000) {
     req.on("error", reject);
   });
 }
-// DSH 的归档不是往会话日志里写事件，而是记在 ~/.dsh/storages/workspace.json 的
-// global.archivedSessionIds 里；归档后会话日志还在，dsh-token-usage-stats 也照样统计。
-async function dshArchivedSessions() {
-  try {
-    const home = process.env.DSH_HOME || require("path").join(require("os").homedir(), ".dsh");
-    const p = require("path").join(home, "storages/workspace.json");
-    const d = JSON.parse(await require("fs").promises.readFile(p, "utf8"));
-    return new Set((d.global && d.global.archivedSessionIds) || []);
-  } catch (e) { return new Set(); }
-}
 // 插件的一天 → 螺旋的 by.dsh：产出 = output，读入 = uncached input + cache write，缓存命中单列；
 // 活跃时段只能用插件的按小时桶近似（插件只存聚合，不存每一步的时间）
 async function dshApiDay(port, cfg, key) {
@@ -1763,7 +1659,6 @@ class AiUsage {
     this.live = new Map();    // 会话号 -> { agent, at, state, step, todo }：这个会话眼下在干什么，只在内存里（见 liveOf）
     this.files = new Map();   // path -> { size, offset, days: Map(key -> { sess: Map(sid -> {proj, ts[], text}), prompts }), msgs: Map(id -> 用量), titles: Map(sid -> 标题) }
     this.titles = new Map();  // Codex 的会话标题（不在会话文件里，另外读）
-    this.subs = new Map();    // 会话号 -> Map(agentId -> 子代理)：这个会话派出去的 subagent，见 subOf
     this.dshApi = new Map();  // 日记日 -> dsh-token-usage-stats 给的那一天的汇总（螺旋只接收这个）
     this._dshApiKeys = new Set();   // 已经从 API 取过的日子；历史只取一次，今天每次都取
     this._dshPort = 0;        // 上次找到的 DSH 端口，下次先试它
@@ -1811,84 +1706,6 @@ class AiUsage {
       this._todayAt = now;
     }
     return aiDay(ms, this.cfg).key < this._freshKey;
-  }
-
-  // ---- Claude Code 的 subagent ----
-  // 会话派一个 subagent，日志另起一个文件：<会话号>/subagents/agent-<agentId>.jsonl，每行 isSidechain、sessionId 还是父会话的；
-  // 旁边的 agent-<agentId>.meta.json 写着 { description, agentType, requestShape: foreground / background }。
-  // 在跑 / 跑完看它自己最后一行：最后一条回复 end_turn 了就是跑完；后台派的跑完、出错、被停掉，父会话还会收到一条
-  // <task-notification>（<status>completed / failed / killed</status>），按那条为准。token 和会话一样算产出 + 读入
-  subOf(sid, id) {
-    let m = this.subs.get(sid);
-    if (!m) this.subs.set(sid, m = new Map());
-    let r = m.get(id);
-    if (!r) m.set(id, r = { id, desc: "", type: "", bg: false, start: 0, at: 0, state: "run", step: "", end: "", endAt: 0, tok: new Map() });
-    return r;
-  }
-  subsOf(sid) {
-    return [...(this.subs.get(sid) || new Map()).values()].filter((r) => r.start).sort((a, b) => a.start - b.start);
-  }
-  async subMeta(p, r) {
-    try {
-      const m = JSON.parse(await require("fs").promises.readFile(p.replace(/\.jsonl$/, ".meta.json"), "utf8"));
-      r.desc = String(m.description || ""); r.type = String(m.agentType || ""); r.bg = m.requestShape === "background";
-    } catch (e) { /* 老版本没有 meta：描述等父会话的通知或者干脆不写 */ }
-  }
-  subLine(fc, d, ms) {
-    const r = this.subOf(fc.sid, fc.sub);
-    if (!r.start || ms < r.start) r.start = ms;
-    if (ms < r.at) return;
-    r.at = ms;
-    if (r.end && ms > r.endAt) r.end = "";   // 结束以后又动了：父会话给它续了一句话
-    const c = d.message && d.message.content;
-    // 新版的 subagent 用 SubagentHandback 把报告交回去：交了就算跑完，后面那条「已送达」的工具结果不算又动了
-    if (d.type === "user") { if (!r.end && !r.handed) r.state = "run"; return; }
-    const stop = d.message && d.message.stop_reason;
-    const tools = (Array.isArray(c) ? c : []).filter((b) => b.type === "tool_use");
-    if (tools.length) r.handed = tools.some((b) => b.name === "SubagentHandback");
-    if (!r.end) r.state = r.handed || stop === "end_turn" || stop === "stop_sequence" ? "done" : "run";
-    for (const b of tools) if (b.name !== "SubagentHandback") r.step = aiStep(b.name, b.input);
-    // 它交回来的结论（写成子块下面的 💬）：新版在 SubagentHandback 的参数里，老版是最后一条回复的文字
-    const hb = tools.find((b) => b.name === "SubagentHandback"), said = (Array.isArray(c) ? c : []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
-    if (hb && hb.input) r.last = String(hb.input.message || hb.input.report || hb.input.result || "");
-    else if (said && !r.handed) r.last = said;
-    const u = d.message && d.message.usage;
-    if (u && d.message.id) r.tok.set(d.message.id, (u.output_tokens || 0) + (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0));
-  }
-  // 父会话收到的「后台任务结束了」：只管 subagent 的（后台命令也发这种通知，没有对应子代理的不管）
-  subNotice(sid, text, ms) {
-    const id = (/<task-id>([^<]+)<\/task-id>/.exec(text) || [])[1], st = (/<status>([^<]+)<\/status>/.exec(text) || [])[1];
-    if (!id || !st) return;
-    const known = this.subs.get(sid) && this.subs.get(sid).get(id), sum = /<summary>Agent "([^"]*)"/.exec(text);
-    if (!known && !sum) return;
-    const r = this.subOf(sid, id);
-    if (!r.desc && sum) r.desc = sum[1];
-    if (!r.start) r.start = ms;
-    if (ms < r.endAt) return;
-    r.end = st; r.endAt = ms; r.at = Math.max(r.at, ms);
-    r.state = st === "completed" ? "done" : "fail";
-  }
-  // 会话自己的那个日志文件（不是它的 subagent 文件，也不是抄了它历史的 side chat）
-  fileOf(sid) {
-    for (const [p, fc] of this.files) if (fc.agent === "claude" && !fc.sub && fc.id === sid) return p;
-    return "";
-  }
-  // 父会话目录下新冒出来的 subagent 文件：轮询时找一下（全量扫描一分钟才一趟，等不及）
-  async watchNew(sids) {
-    const fs = require("fs"), path = require("path"), touched = new Set();
-    for (const sid of sids) {
-      const p = this.fileOf(sid);
-      if (!p) continue;
-      const want = [];
-      try { for (const f of await fs.promises.readdir(path.join(path.dirname(p), sid, "subagents"))) if (/^agent-.+\.jsonl$/.test(f)) want.push(path.join(path.dirname(p), sid, "subagents", f)); } catch (e) { /* 没派过 */ }
-      for (const q of want) {
-        if (this.files.has(q)) continue;
-        let st;
-        try { st = await fs.promises.stat(q); } catch (e) { continue; }
-        await this.readNew(q, "claude", st, touched);
-      }
-    }
-    return touched;
   }
 
   // [目录, 哪个 Agent]；只给设置里开着的那几个 Agent 的目录，关掉的不读
@@ -2043,9 +1860,9 @@ class AiUsage {
       this.files.set(p, fc = { size: 0, offset: 0, days: new Map(), msgs: new Map(), titles: new Map(), agent,
         sid: (/([0-9a-f]{8}-[0-9a-f-]{27})/i.exec(p) || [])[1] || path.basename(p, ".jsonl") });
       fc.id = fc.sid;   // 这个文件自己的会话号（Codex 的子线程会把 sid 换成主线程的）
-      // Claude 的 subagent 文件（<会话号>/subagents/agent-<id>.jsonl）挂在父会话名下：轮询父会话时一起读
+      // Claude 的 subagent 文件（<会话号>/subagents/agent-<id>.jsonl）用量归入父会话
       const sm = agent === "claude" && /([0-9a-f]{8}-[0-9a-f-]{27})[\\/]subagents[\\/]agent-([^\\/]+)\.jsonl$/.exec(p);
-      if (sm) { fc.sid = fc.id = sm[1]; fc.sub = sm[2]; await this.subMeta(p, this.subOf(sm[1], sm[2])); }
+      if (sm) { fc.sid = fc.id = sm[1]; fc.sub = sm[2]; }
       // Codex 归档时文件换了位置：原来那个位置读过的那份不要了，免得同一个会话算两遍
       if (agent === "codex") for (const [q, o] of this.files) if (q !== p && o.agent === "codex" && o.id === fc.id) this.files.delete(q);
     }
@@ -2063,21 +1880,6 @@ class AiUsage {
         if (i % 3000 === 2999) await new Promise((r) => setTimeout(r, 0));   // 大文件分段，别把界面卡住
       }
     } finally { await fh.close(); }
-  }
-
-  // 只看这几个会话的日志有没有新内容（任务行下面的进度条用，比整个扫一遍轻得多）。读到新东西就返回碰到的日记日，没有返回 null
-  async poll(sids) {
-    const fs = require("fs"), touched = await this.watchNew(sids);
-    let got = touched.size > 0;
-    for (const [p, fc] of [...this.files]) {
-      if (!sids.has(fc.sid) && !sids.has(fc.id)) continue;
-      let st;
-      try { st = await fs.promises.stat(p); } catch (e) { continue; }
-      if (st.size === fc.size) continue;
-      await this.readNew(p, fc.agent, st, touched);
-      got = true;
-    }
-    return got ? touched : null;
   }
 
   // 读 mtime >= since 的日志；读过的文件只读新追加的部分。返回这次碰到的日记日
@@ -2365,14 +2167,6 @@ class AiUsage {
     if (fc.agent === "codex") return this.ingestCodex(line, fc, touched);
     if (fc.agent === "dsh") return this.ingestDsh(line, fc, touched);
     if (fc.agent === "antigravity") return this.ingestAntigravity(line, fc, touched);
-    // 父会话正忙时，subagent 的结束通知先进排队（queue-operation），再作为附件（queued_command）塞进下一轮，不是 user 行
-    if (line && line.indexOf("<task-notification>") >= 0 && line.indexOf('"type":"user"') < 0 && line.indexOf('"isSidechain":true') < 0) {
-      let q;
-      try { q = JSON.parse(line); } catch (e) { return; }
-      const text = q.type === "queue-operation" && q.operation === "enqueue" ? q.content : q.attachment && q.attachment.type === "queued_command" ? q.attachment.prompt : "";
-      if (typeof text === "string" && text.startsWith("<task-notification>") && q.sessionId) this.subNotice(q.sessionId, text, Date.parse(q.timestamp) || 0);
-      return;
-    }
     if (!line || (line.indexOf('"type":"assistant"') < 0 && line.indexOf('"type":"user"') < 0 && line.indexOf('"type":"custom-title"') < 0)) return;
     let d;
     try { d = JSON.parse(line); } catch (e) { return; }
@@ -2390,11 +2184,6 @@ class AiUsage {
     if (!s) day.sess.set(sid, s = { proj, cwd: d.cwd || "", app: d.entrypoint || "", agent: "claude", ts: [], text: "" });
     s.ts.push(t);
     if (!d.isSidechain && !d.isMeta) this.liveClaude(d, sid, ms);
-    if (fc.sub && d.isSidechain) this.subLine(fc, d, ms);
-    else if (d.type === "user" && !d.isSidechain) {
-      const c = d.message && d.message.content;
-      if (typeof c === "string" && c.startsWith("<task-notification>")) this.subNotice(sid, c, ms);
-    }
     if (d.type === "user") {
       const text = aiIsPrompt(d);
       if (text) {
@@ -2667,11 +2456,7 @@ class StatusModal extends OB.Modal {
         return rt;
       };
       this.timers = [];
-      if (d.session || d.doing.length) sec(T("在做", "Doing"), d.doing.length || null);
-      if (d.session) for (const t of d.session.tasks) {
-        const el = row("is-focus", "⏱", T(`专注 · ${short(t.label)}`, `Focus · ${short(t.label)}`), "", null);
-        this.timers.push(() => el.setText(Date.now() < t.end ? T(`还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}`, `${dur(Math.ceil((t.end - Date.now()) / 60e3))} left`) : T("到点了", "Time's up")));
-      }
+      if (d.doing.length) sec(T("在做", "Doing"), d.doing.length);
       for (const x of d.doing) {
         const el = row("is-doing" + (x.auto ? " is-auto" : ""), "", short(x.item.label), "", x.item);
         if (x.since) this.timers.push(() => el.setText(elapsedText(Date.now() - x.since)));
@@ -2685,7 +2470,7 @@ class StatusModal extends OB.Modal {
       for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? T("进行中", "Now") : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item);
       if (d.over.length) row("is-over", "—", T(`排不下 ${d.over.length} 件：${d.over.slice(0, 3).map((t) => short(t.label)).join("、")}${d.over.length > 3 ? "…" : ""}`, `${d.over.length} won't fit: ${d.over.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.over.length > 3 ? "…" : ""}`), "", d.over[0]);
       if (d.suspended.length) row("is-paused", "💤", T(`搁置 ${d.suspended.length} 件：${d.suspended.slice(0, 3).map((t) => short(t.label)).join("、")}${d.suspended.length > 3 ? "…" : ""}`, `${d.suspended.length} parked: ${d.suspended.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.suspended.length > 3 ? "…" : ""}`), "", d.suspended[0]);
-      if (!d.doing.length && !d.session && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: T("今天没有排着的事了", "Nothing else scheduled today") }));
+      if (!d.doing.length && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: T("今天没有排着的事了", "Nothing else scheduled today") }));
 
       // 今天的成绩
       sec(T("今天", "Today"));
@@ -2700,8 +2485,7 @@ class StatusModal extends OB.Modal {
     // 这会儿最可能要按的
     const bar = rise(contentEl.createDiv({ cls: "naut-st-btns" }));
     const btn = (text, key, fn, cta) => { const b = bar.createEl("button", { cls: cta ? "mod-cta" : "", text }); if (key) b.createSpan({ cls: "naut-kbd", text: key }); b.onclick = () => { plugin.sound("tick"); this.close(); fn(); }; };
-    if (d.file && d.next.length && !d.doing.length) btn(T("▶ 开始下一件", "▶ Start next"), plugin.hotkeyText("start-next"), () => plugin.startNext(), true);
-    btn(T("打开螺旋", "Open spiral"), plugin.hotkeyText("open"), () => plugin.activate(), !(d.file && d.next.length && !d.doing.length));
+    btn(T("打开螺旋", "Open spiral"), plugin.hotkeyText("open"), () => plugin.activate(), true);
     btn(T("Agent 会话", "Agent sessions"), plugin.hotkeyText("doing-ai"), () => plugin.showDoingAi());
 
     const tick = () => { this.clockEl.setText(moment().format("HH:mm")); for (const f of this.timers || []) f(); };
@@ -2872,19 +2656,47 @@ class SpiralView extends ItemView {
     this._playRaf = 0;
     this._play = null;
   }
-  async onClose() { this.stopPlay(); }
+  _hideDotTip() {
+    this._dotTipAc?.abort();
+    this._dotTipAc = null;
+    this._dotTip?.remove();
+    this._dotTip = null;
+  }
+  _showDotTip(el, text) {
+    this._hideDotTip();
+    const tip = document.body.createDiv({ cls: "naut-dot-tip", text });
+    this._dotTip = tip;
+    const r = el.getBoundingClientRect();
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    const left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - tw - 8));
+    const top = r.bottom + 6 + th <= window.innerHeight - 8 ? r.bottom + 6 : Math.max(8, r.top - th - 6);
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+    const ac = (this._dotTipAc = new AbortController());
+    const hide = () => this._hideDotTip();
+    window.addEventListener("scroll", hide, { capture: true, once: true, signal: ac.signal });
+    window.addEventListener("blur", hide, { once: true, signal: ac.signal });
+    window.addEventListener("pointerdown", hide, { capture: true, once: true, signal: ac.signal });
+  }
+  async onClose() { this._hideDotTip(); this.stopPlay(); }
 
   date() { return this.plugin.today().add(this.offset, "days"); }
   path() { return this.plugin.journalPath(this.date()); }
 
   async render() {
+    const seq = (this._renderSeq = (this._renderSeq || 0) + 1);
     const root = this.containerEl.children[1];
     const cfg = this.plugin.settings;
     const date = this.date();
     const file = this.app.vault.getAbstractFileByPath(this.path());
     const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage() : null;
+    if (seq !== this._renderSeq) return;
     const gameLog = cfg.trackGames !== false ? await this.plugin.gameLog() : null;
+    if (seq !== this._renderSeq) return;
+    const content = file instanceof TFile ? await this.plugin.readLiveContent(file) : null;
+    if (seq !== this._renderSeq) return;
     clearTimeout(this._hoverClose);
+    this._hideDotTip();
     root.empty();
     // 入场动效只在打开视图、换一天时放一次；每分钟的刷新和日记改动直接换成新的，不闪
     const enter = !!this._enter;
@@ -2916,7 +2728,6 @@ class SpiralView extends ItemView {
       root.createDiv({ cls: "naut-empty", text: T(`还没有 ${this.path()}`, `${this.path()} doesn't exist yet`) });
       return;
     }
-    const content = await this.app.vault.cachedRead(file);
     {
       const pb = head.createEl("button", { cls: "naut-playback", attr: { "aria-label": T("回放一整天（只是重画，不改日记）", "Play back the whole day (just redraws; the note is not changed)") } });
       if (OB.setIcon) OB.setIcon(pb, "play"); else pb.setText("⏵");
@@ -2973,7 +2784,7 @@ class SpiralView extends ItemView {
     // 进度条下面只留一眼能看完的几行，每行左边一格图标、文字对齐：
     //   📋 排得下吗（已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几）；可安排的时间正在流逝时图标换成会闪的 🔥
     //   🤖 Agent 这一天干了多少（协作时长 · token）
-    //   正在发生的事（专注中）各另起一行；日历读不到时说一声
+    //   日历读不到时另起一行说一声
     // 细账（可安排和事件两笔预算、按以往的校准、各个大方向、复习、游戏、有没有记录）都收进这两行的悬停提示，不再各占一行；
     // 全天事件下面「固定事件」里有，这里不列。鼠标划过螺旋时，上面那一行详情照旧（见 hover）
     const C = capacity(items, plan, cfg, now, dayRel, bounds);
@@ -3064,16 +2875,6 @@ class SpiralView extends ItemView {
       ].filter(Boolean).join("\n"));
       line.createSpan({ text: T(`协作 ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok`, `Agents ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok`) });
       for (const [k] of agents) line.createSpan({ cls: `naut-sw naut-bg-${k}` });
-    }
-    // ⏱ 正在专注的这一轮
-    const fs = this.plugin.session();
-    if (fs && realRel === 0 && !playing) {
-      const line = cap.createDiv({ cls: "naut-focus-line" });
-      const leftOf = (t) => Math.max(0, Math.ceil((t.end - Date.now()) / 60e3));
-      const one = (t) => `${t.label} ${leftOf(t) ? T(`还剩 ${dur(leftOf(t))}`, `${dur(leftOf(t))} left`) : T("到点了", "time's up")}${fs.tasks.length === 1 ? ` / ${dur(t.minutes)}` : ""}${t.round > 1 ? T(`（第 ${t.round} 轮）`, ` (round ${t.round})`) : ""}`;
-      line.createSpan({ text: `⏱ ${fs.tasks.length > 1 ? T(`${fs.tasks.length} 条线 · `, `${fs.tasks.length} threads · `) : ""}${fs.tasks.map(one).join(" · ")}`, attr: { title: fs.tasks.map((t) => T(`· ${t.label}：${dur(t.minutes)} 一轮，${moment(t.end).format("HH:mm")} 到点`, `· ${t.label}: ${dur(t.minutes)} per round, ends at ${moment(t.end).format("HH:mm")}`)).join("\n") } });
-      const stop = line.createEl("button", { cls: "naut-focus-stop", text: T("结束", "End"), attr: { title: T("提前结束这一轮：问你做完了没有", "End this round early: you'll be asked whether it's done") } });
-      stop.onclick = () => this.plugin.askDone(fs);
     }
     // 📅 日历读不到时说明原因（全天事件本身在下面「固定事件」里）
     if (cal && cal.error) row("is-error", "📅", cal.error).setText(cal.error.split("\n")[0]);
@@ -3404,12 +3205,22 @@ class SpiralView extends ItemView {
         link(r.item, row);
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
         if (r.upNext) {
-          const curKw = (r.item.kw || "").toUpperCase();
-          row.createSpan({
+          const curKw = canonKw(r.item.kw);
+          const parentPrefix = r.item.inheritedFrom != null
+            ? T(`随母块「${r.item.inheritedLabel}」状态\n`, `Controlled by parent "${r.item.inheritedLabel}"\n`)
+            : "";
+          const dotTip = parentPrefix + (curKw === "DONE"
+            ? T("点击切换：SUSPENDED（再点恢复原状态）\n右键任务行：选择更多状态", "Click: SUSPENDED (click again to restore)\nRight-click row: more states")
+            : curKw === "SUSPENDED"
+              ? T("点击恢复原状态\n右键任务行：选择更多状态", "Click: restore original state\nRight-click row: more states")
+              : T("点击切换：DONE → SUSPENDED → 原状态\n右键任务行：选择更多状态", "Click: DONE → SUSPENDED → original\nRight-click row: more states"));
+          const dot = row.createSpan({
             cls: "naut-st-dot",
             text: curKw === "DONE" ? "✓" : curKw === "SUSPENDED" ? "⏸" : "●",
-            attr: { title: T("左键：DONE → SUSPENDED → 原状态 · 右键：更多状态", "Click: DONE → SUSPENDED → original · Right-click: more states") },
           });
+          dot.addEventListener("mouseenter", () => this._showDotTip(dot, dotTip));
+          dot.addEventListener("mouseleave", () => this._hideDotTip());
+          dot.onclick = (e) => { e.stopPropagation(); this._hideDotTip(); this.cycleUpNext(file, dayKey, r.item, r.upNextIdx); };
         }
         row.createSpan({ cls: "naut-time", text: r.time });
         row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.mainA && !r.inMain ? "🎯 " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
@@ -3422,18 +3233,9 @@ class SpiralView extends ItemView {
           badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.app, T(`「${r.item.label}」期间的 Agent 会话`, `Agent sessions during "${r.item.label}"`), [{ list: sess }]).open(); };
         }
         row.createSpan({ cls: "naut-dur", text: r.dur, attr: r.tip ? { title: r.tip } : {} });
-        if (r.play) {
-          const t = r.item;
-          const tip = T(`${t.doing ? "" : "改成 DOING，"}专注 ${dur(focusMinutes(t, cfg))}${cfg.focus ? "（Raycast Focus）" : ""}，到点问你做完没有`, `${t.doing ? "" : "Switch to DOING, "}focus for ${dur(focusMinutes(t, cfg))}${cfg.focus ? " (Raycast Focus)" : ""}, then you'll be asked whether it's done`);
-          const b = row.createEl("button", { cls: "naut-play", text: "▶", attr: { title: tip } });
-          b.onclick = (e) => { e.stopPropagation(); this.plugin.startTask(file, t); };
-        }
+        row.onclick = () => this.plugin.openItem(file, r.item);
         if (r.upNext) {
-          row.setAttr("title", T("左键：DONE → SUSPENDED → 原状态 · 右键：更多状态", "Click: DONE → SUSPENDED → original · Right-click: more states"));
-          row.onclick = () => this.cycleUpNext(file, dayKey, r.item);
           row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item);
-        } else {
-          row.onclick = () => this.plugin.openItem(file, r.item);
         }
       }
     };
@@ -3459,7 +3261,7 @@ class SpiralView extends ItemView {
         const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clock(it.doneAt) : "") : it.kind === "event" ? clock(it.start)
           : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
         rows.push({ item: it, inMain: true, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
-          time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "", play: !!q && realRel === 0 && !playing });
+          time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "" });
       }
       section(T(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, `🎯 Mainline ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`), rows);
     }
@@ -3470,18 +3272,19 @@ class SpiralView extends ItemView {
     const upNextRows = placed.map((t) => ({
       item: t, cls: (t.mainA ? "is-main" : t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
       time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clock(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
-      dur: durText(t), tip: tipOf(t), play: realRel === 0 && !playing, upNext: !playing,
+      dur: durText(t), tip: tipOf(t), upNext: !playing,
     }));
     // 刚在「接下来」里点成 DONE / SUSPENDED 的项暂时留在原地，方便再点一下继续循环回原状态
     const hold = this._upNextHold?.get(dayKey);
     if (hold && hold.size && !playing) {
-      const seen = new Set(placed.map((t) => t.line));
+      const seen = new Set();
+      for (const t of placed) { seen.add(t.line); if (t.inheritedFrom != null) seen.add(t.inheritedFrom); }
       const extras = [];
       for (const [ln, rec] of [...hold.entries()]) {
         if (seen.has(ln)) { hold.delete(ln); continue; }
         const it = items.find((i) => i.line === ln && i.kind === "task");
-        const curKw = (it?.kw || "").toUpperCase();
-        if (!it || (curKw !== "DONE" && curKw !== "SUSPENDED")) { hold.delete(ln); continue; }
+        const curKw = canonKw(it?.kw);
+        if (!it || (rec.key && workKey(it.label) !== rec.key) || (curKw !== "DONE" && curKw !== "SUSPENDED")) { hold.delete(ln); continue; }
         extras.push({
           idx: rec.idx ?? upNextRows.length,
           row: {
@@ -3496,6 +3299,7 @@ class SpiralView extends ItemView {
       extras.sort((a, b) => a.idx - b.idx);
       for (const ex of extras) upNextRows.splice(Math.min(ex.idx, upNextRows.length), 0, ex.row);
     }
+    upNextRows.forEach((r, idx) => { r.upNextIdx = idx; });
     section(T("接下来", "Up next"), upNextRows);
     const over = plan.queue.filter((t) => t.overflow);
     section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
@@ -3517,52 +3321,70 @@ class SpiralView extends ItemView {
     stagger();
   }
 
-  // 「接下来」面板左键循环状态：原状态 → DONE → SUSPENDED → 原状态
-  async cycleUpNext(file, dayKey, item) {
-    if (!file || item?.line == null) return;
+  // 「接下来」面板改写单行状态的统一入口：互斥锁 + 边界校验 + 音效去重 + 重绘
+  async _mutateUpNext(file, dayKey, item, mutate) {
+    const targetLine = item?.inheritedFrom ?? item?.line;
+    if (!file || targetLine == null || this._upNextBusy) return;
+    this._upNextBusy = true;
+    try {
+      let beforeRaw = null, out = null;
+      const changed = await this.plugin.editFile(file, (lines) => {
+        if (targetLine < 0 || targetLine >= lines.length) return 0;
+        const cur = lines[targetLine];
+        out = mutate(cur, targetLine);
+        if (!out || out.nextRaw === cur) return 0;
+        beforeRaw = cur;
+        lines[targetLine] = out.nextRaw;
+        return 1;
+      });
+      if (!changed || !out) return;
+      out.after?.(targetLine);
+      const ch = beforeRaw != null ? kwLineChange(beforeRaw, out.nextRaw) : null;
+      const shouldSound = ch ? this.plugin.kwFresh(file.path, [ch]).length > 0 : true;
+      if (shouldSound && out.soundKw) this.plugin.kwSound(KW_SOUND[out.soundKw] || "TODO");
+      await this.render();
+    } finally {
+      this._upNextBusy = false;
+    }
+  }
+
+  // 「接下来」面板状态图标点击循环：原状态 → DONE → SUSPENDED → 原状态
+  async cycleUpNext(file, dayKey, item, rowIdx = 0) {
     if (!this._upNextHold) this._upNextHold = new Map();
     let hold = this._upNextHold.get(dayKey);
     if (!hold) { hold = new Map(); this._upNextHold.set(dayKey, hold); }
-    const prev = hold.get(item.line);
-    let result = null;
-    const changed = await this.plugin.editFile(file, (lines) => {
-      if (item.line < 0 || item.line >= lines.length) return 0;
-      const cur = lines[item.line];
-      result = cycleUpNextStatus(cur, prev?.origRaw ?? null);
-      if (result.nextRaw === cur) return 0;
-      lines[item.line] = result.nextRaw;
-      return 1;
+    const key = workKey(item.inheritedFrom != null ? (item.inheritedLabel || item.label) : item.label);
+    return this._mutateUpNext(file, dayKey, item, (cur, targetLine) => {
+      const rawPrev = hold.get(targetLine);
+      const prev = rawPrev && (!rawPrev.lastRaw || rawPrev.lastRaw === cur) ? rawPrev : null;
+      const res = cycleUpNextStatus(cur, prev?.origRaw ?? null);
+      return {
+        nextRaw: res.nextRaw,
+        soundKw: res.nextKw,
+        after: () => {
+          if (res.origRaw != null) hold.set(targetLine, { origRaw: res.origRaw, lastRaw: res.nextRaw, key, idx: rawPrev?.idx ?? rowIdx });
+          else hold.delete(targetLine);
+        },
+      };
     });
-    if (!changed || !result) return;
-    if (result.origRaw != null) hold.set(item.line, { origRaw: result.origRaw, idx: prev?.idx ?? 0 });
-    else hold.delete(item.line);
-    if (result.nextKw) this.plugin.kwSound(KW_SOUND[result.nextKw] || "TODO");
-    this.render();
   }
 
   // 「接下来」面板右键切到指定状态
   async setUpNextKeyword(file, dayKey, item, kw) {
-    if (!file || item?.line == null) return;
     const target = String(kw || "TODO").toUpperCase();
-    const changed = await this.plugin.editFile(file, (lines) => {
-      if (item.line < 0 || item.line >= lines.length) return 0;
-      const cur = lines[item.line];
-      const next = toKeyword(cur, target);
-      if (next === cur) return 0;
-      lines[item.line] = next;
-      return 1;
-    });
-    if (!changed) return;
-    this._upNextHold?.get(dayKey)?.delete(item.line);
-    this.plugin.kwSound(KW_SOUND[target] || "TODO");
-    this.render();
+    return this._mutateUpNext(file, dayKey, item, (cur, targetLine) => ({
+      nextRaw: toKeyword(cur, target),
+      soundKw: target,
+      after: () => this._upNextHold?.get(dayKey)?.delete(targetLine),
+    }));
   }
 
   openUpNextMenu(e, file, dayKey, item) {
     e.preventDefault();
     e.stopPropagation();
+    this._hideDotTip();
     const menu = new OB.Menu();
-    const curKw = (item.kw || "").toUpperCase();
+    const curKw = canonKw(item.kw);
     UP_NEXT_MENU_GROUPS.forEach((group, gi) => {
       if (gi > 0) menu.addSeparator();
       for (const [kw, title] of group) {
@@ -3758,9 +3580,9 @@ const lucideWatch = (plugin, win) => {
 module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, await this.loadData());
-    const removedAiSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert"].filter(key => key in this.settings);
-    for (const key of removedAiSettings) delete this.settings[key];
-    if (removedAiSettings.length) await this.saveData(this.settings);
+    const removedSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert", "focus", "focusMinutes", "focusCategories", "focusMode", "focusAutoComplete", "focusAsk", "focusSession"].filter(key => key in this.settings);
+    for (const key of removedSettings) delete this.settings[key];
+    if (removedSettings.length) await this.saveData(this.settings);
     this.settings.aiAgents = Object.assign({}, DEFAULTS.aiAgents, this.settings.aiAgents);
     this.applyColors();
     lucideWatch(this, window);
@@ -3795,9 +3617,6 @@ module.exports = class NautilusSpiral extends Plugin {
       else cmd.callback = () => a.run();
       this.addCommand(cmd);
     }
-    // 专注到点了没有：每 10 秒看一眼（用时间戳比，电脑睡眠醒来也不会漏）；上次没回答就关了 Obsidian 的，重新问
-    if (this.session()) { const s = this.settings.focusSession; s.asked = false; s.noPanel = true; for (const t of s.tasks) t.asked = false; }   // 重启后不再看悬浮窗，到点照样问
-    this.registerInterval(window.setInterval(() => this.tickFocus(), 10 * 1000));
     this.registerInterval(window.setInterval(() => this.checkStale().catch((e) => console.error("[螺旋日程] 检查 DOING 失败", e)), 60 * 1000));
     // 小组件上点一行：obsidian://nautilus-open?note=日记/2026_10_26.md&kind=main&text=写简历 → 打开那篇笔记，光标放到那一件上。
     // 链接里不带行号、到时候现找：上面多写一行，小组件的数据不用跟着变。参数不能叫 path：Obsidian 会把它当成绝对路径先拦下
@@ -3924,12 +3743,10 @@ module.exports = class NautilusSpiral extends Plugin {
     const openN = tasks.filter((i) => i.state === "open").length;
     lines.push(T(`✅ 做完 <b>${done.length}</b> · ⬜ 还剩 <b>${openN}</b>  ${bar(done.length / (done.length + openN || 1))}  ${pct(done.length / (done.length + openN || 1))}`, `✅ Done <b>${done.length}</b> · ⬜ Open <b>${openN}</b>  ${bar(done.length / (done.length + openN || 1))}  ${pct(done.length / (done.length + openN || 1))}`));
 
-    // ⭐ 正在做：专注、DOING
+    // ⭐ 正在做：DOING
     const doing = plan.queue.filter((t) => t.doing);
-    const s = this.session();
-    if (doing.length || s) {
+    if (doing.length) {
       lines.push("", T("⭐ <b>正在做</b>", "⭐ <b>Doing</b>"));
-      if (s) lines.push(T(`⏱ 专注中 · ${s.tasks.map((t) => `${H(t.label)} ${Date.now() < t.end ? `还剩 ${dur(Math.ceil((t.end - Date.now()) / 60e3))}` : "到点了"}`).join("；")}`, `⏱ Focusing · ${s.tasks.map((t) => `${H(t.label)} ${Date.now() < t.end ? `${dur(Math.ceil((t.end - Date.now()) / 60e3))} left` : "time's up"}`).join("; ")}`));
       for (const t of doing) {
         const p = t.progress != null ? t.progress : spent(t) / (spent(t) + t.remaining || 1);
         lines.push(`⭐ <b>${L(t)}</b>`, T(`      ${bar(p, 8)} ${spent(t) >= 1 ? `已做 ${dur(spent(t))} · ` : ""}剩 ${dur(t.remaining)}`, `      ${bar(p, 8)} ${spent(t) >= 1 ? `${dur(spent(t))} done · ` : ""}${dur(t.remaining)} left`));
@@ -4090,17 +3907,14 @@ module.exports = class NautilusSpiral extends Plugin {
   actions() {
     return [
       { id: "quick-panel", name: T("快捷面板（螺旋日程的所有操作）", "Quick panel (every Nautilus Spiral action)"), run: () => new QuickPanel(this.app, this).open(), hidden: true },
-      { id: "status", name: T("现在怎样：专注、在做的、容量、接下来", "Status now: focus, doing, capacity, up next"), run: () => this.showStatus() },
+      { id: "status", name: T("现在怎样：在做的、容量、接下来", "Status now: doing, capacity, up next"), run: () => this.showStatus() },
       { id: "doing-ai", name: T("正在做的事的 Agent 会话", "Agent sessions for what you're doing"), run: () => this.showDoingAi() },
-      { id: "start-here", name: T("开始光标所在的任务（改成 DOING + 专注）", "Start the task under the cursor (DOING + focus)"), editor: true, run: (editor, view) => this.startAtCursor(editor, view) },
-      { id: "start-next", name: T("开始下一件（改成 DOING + 专注）", "Start the next task (DOING + focus)"), run: () => this.startNext() },
       { id: "notify-test", name: T("测试带按钮的系统通知（试验）", "Test a system notification with buttons (experimental)"), run: async () => {
         this._noNotify = 0;
         new OB.Notice(T("发了一条测试通知，在通知上点「收到」（横幅样式下要悬停后点「选项」）", "Sent a test notification. Click \"Got it\" on it (with banner style, hover and click \"Options\" first)"));
         const r = await this.ask(T("螺旋日程 · 测试通知", "Nautilus Spiral · test notification"), T("看到这条就说明通了。点「收到」试试按钮", "If you can see this, notifications work. Click \"Got it\" to try the button"), [T("收到", "Got it"), T("不用了", "No thanks")], 60);
         new OB.Notice(r == null ? T("发不出去：系统没允许「螺旋日程」发通知。到「系统设置 → 通知 → 螺旋日程」打开「允许通知」，或者在通知中心里找到它的授权请求点「允许」。在那之前到点提醒照旧弹对话框", "Could not send: macOS hasn't allowed \"Nautilus Spiral\" to send notifications. Turn on Allow Notifications in System Settings → Notifications → Nautilus Spiral, or click Allow on its request in Notification Center. Until then, reminders still pop up as dialogs") : r === "" ? T("通知发出去了，但没点按钮（60 秒到了）", "The notification was sent, but no button was clicked (60 seconds passed)") : r === "__click__" ? T("收到：你点的是通知本身", "Received: you clicked the notification itself") : T(`收到：你点了「${r}」`, `Received: you clicked "${r}"`), 10000);
       } },
-      { id: "focus-end", name: T("结束这一轮专注（问做完了没有）", "End this focus round (asks whether it's done)"), when: () => !!this.session(), run: () => this.askDone(this.session()) },
       { id: "review", name: T("预估 vs 实际（复盘）", "Estimate vs actual (review)"), run: () => this.showReview() },
       { id: "open", name: T("打开螺旋日程", "Open Nautilus Spiral"), run: () => this.activate() },
       { id: "day-bounds", name: T("设置今天的起床 / 收工时间", "Set today's start / end of day"), run: () => new BoundsModal(this.app, this, this.today()).open() },
@@ -4120,7 +3934,7 @@ module.exports = class NautilusSpiral extends Plugin {
     return [...k.modifiers].sort((a, b) => order.indexOf(a) - order.indexOf(b)).map((m) => mod[m] || m).join("") + ({ Enter: "↵", " ": "Space" }[k.key] || k.key.toUpperCase());
   }
 
-  // ⌃⌥V 现在怎样：这一轮专注每条线还剩多久、在做的、容量和接下来
+  // ⌃⌥V 现在怎样：在做的、容量和接下来
   async showStatus() {
     new StatusModal(this.app, this, await this.statusData()).open();
   }
@@ -4131,9 +3945,9 @@ module.exports = class NautilusSpiral extends Plugin {
     const m = moment(), now = normalize(m.hours() * 60 + m.minutes(), cfg);
     const bounds = (cfg.dayBounds || {})[dayKey] || {};
     const S = bounds.start ?? cfg.dayStart * 60, E = bounds.end ?? cfg.dayEnd * 60;
-    const d = { date, dayKey, now, S, E, file: this.todayFile(), session: this.session(), doing: [], suspended: [], next: [], over: [], events: [], C: null, done: 0, open: 0, review: null, ai: null, gaps: null };
+    const d = { date, dayKey, now, S, E, file: this.todayFile(), doing: [], suspended: [], next: [], over: [], events: [], C: null, done: 0, open: 0, review: null, ai: null, gaps: null };
     if (!d.file) return d;
-    const items = parseJournal(await this.app.vault.cachedRead(d.file), cfg);
+    const items = parseJournal(await this.readLiveContent(d.file), cfg);
     this.withCalendar(items, date);
     applyWork(items, cfg, dayKey, now, 0, bounds);
     const plan = schedule(items, cfg, now, 0, bounds);
@@ -4160,7 +3974,7 @@ module.exports = class NautilusSpiral extends Plugin {
     return d;
   }
 
-  // ⌃⌥C 正在做的事（DOING，加上这一轮专注里的）各自期间的 Claude 会话；再加上最近 15 分钟还在动、没对上任何一件的会话
+  // ⌃⌥C 正在做的事（DOING）各自期间的 Claude 会话；再加上最近 15 分钟还在动、没对上任何一件的会话
   async showDoingAi() {
     const cfg = this.settings;
     const file = this.todayFile();
@@ -4172,9 +3986,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const m = moment();
     const now = normalize(m.hours() * 60 + m.minutes(), cfg);
     applyWork(items, cfg, key, now, 0, (cfg.dayBounds || {})[key] || {});
-    const s = this.session();
-    const inFocus = new Set(s ? s.tasks.map((t) => t.key) : []);
-    const doing = items.filter((t) => t.kind === "task" && t.state === "open" && (t.doing || inFocus.has(workKey(t.label))));
+    const doing = items.filter((t) => t.kind === "task" && t.state === "open" && t.doing);
     const groups = [], matched = new Set();
     for (const t of doing) {
       const list = aiFor(t.worked, ai?.list, t.label);
@@ -4355,249 +4167,6 @@ module.exports = class NautilusSpiral extends Plugin {
     else this.openLine(file, item.line);
   }
 
-  // ---- ▶ 开始做：时间记录 + 番茄钟（+ Raycast Focus） ----
-  // 开始 = 这一行改成 DOING HH:MM，按条目上写的时长开一轮专注。专注中再开始别的 = 加入这一轮：几条线并行，
-  // 每条线各记各的时间（三件一起做了 25 分钟，每件都记 25 分钟；一天的总时长按重叠合并算一次）。
-  // 到点问做完没有：做完了 → DONE 开始-结束；再来一轮 → 同样时长再来；先停下 → PAUSED（做过的时间留在计时里）
-  // 这几处，加上下面的硬规则，是螺旋日程会写日记的地方，都只改那几行
-
-  // 进行中的这一轮专注。每条线 { key, label, path, start, minutes, end, round }：各自倒计时，哪条先到点就先单独问哪条，别的线照常走。
-  // Raycast 专注同一时间只能开一段，所以只开一段，覆盖到最晚那条线到点（rcEnd）
-  session() {
-    const s = this.settings.focusSession;
-    if (!s) return s;
-    if (!s.tasks) { s.tasks = [{ key: s.key, label: s.label, path: s.path, start: s.start }]; delete s.key; delete s.label; delete s.path; }   // 旧格式
-    s.tasks = s.tasks.filter((t) => !t.dir);   // 移除旧版独立方向轮次，保留任务计时
-    if (!s.tasks.length) { this.settings.focusSession = null; return null; }
-    for (const t of s.tasks) { t.minutes ??= s.minutes; t.end ??= s.end; t.round ??= s.round || 1; }
-    s.rcEnd ??= s.end;
-    s.end = Math.max(...s.tasks.map((t) => t.end));
-    return s;
-  }
-
-  // 一条线
-  line(path, label, minutes) {
-    const now = Date.now();
-    return { key: workKey(label), label, path, start: now, minutes, end: now + minutes * 60e3, round: 1 };
-  }
-
-  // 螺旋上点 ▶
-  async startTask(file, item) {
-    if (!item.doing) {
-      const ok = await this.editTask(file.path, workKey(item.label), toDoing, item.line);
-      if (!ok) { new OB.Notice(T(`日记里找不到「${item.label}」这一行（刚改过？），没有开始`, `Can't find the line "${item.label}" in the daily note (just edited?); not started`)); return; }
-    }
-    this.begin(file.path, item.label, focusMinutes(item, this.settings));
-  }
-
-  // 快捷键：开始光标所在的那一行（任何笔记里的列表项都行，没有关键词的当 TODO）
-  startAtCursor(editor, view) {
-    const n = editor.getCursor().line;
-    const raw = editor.getLine(n);
-    const it = parseJournal(raw, this.settings)[0];
-    if (it && it.kind === "task" && it.state === "done") { new OB.Notice(T("这一条已经做完了", "This one is already done")); return; }
-    const doing = it && it.kind === "task" && it.state === "open" && it.doing;
-    const next = doing ? raw : toDoing(raw);
-    const t = parseJournal(next, this.settings)[0];
-    if (!t || t.kind !== "task") { new OB.Notice(T("光标所在的这一行不是列表项", "The line under the cursor is not a list item")); return; }
-    if (!doing) editor.setLine(n, next);   // 编辑器里直接改：⌘Z 一步撤销
-    this.begin(view.file.path, t.label, focusMinutes(t, this.settings));
-  }
-
-  // 命令：开始螺旋上排在最前面、还没开始的那件
-  async startNext() {
-    const cfg = this.settings;
-    const date = this.today();
-    const dayKey = date.format(cfg.format);
-    const file = this.app.vault.getAbstractFileByPath(this.journalPath(date));
-    if (!(file instanceof TFile)) { new OB.Notice(T("今天还没有日记", "No daily note for today yet")); return; }
-    const items = parseJournal(await this.app.vault.read(file), cfg);
-    this.withCalendar(items, date);
-    const nowM = moment();
-    const now = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
-    const bounds = (cfg.dayBounds || {})[dayKey] || {};
-    applyWork(items, cfg, dayKey, now, 0, bounds);
-    const plan = schedule(items, cfg, now, 0, bounds);
-    const next = plan.queue.filter((t) => !t.doing && t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0])[0];
-    if (!next) { new OB.Notice(T("没有排着的待办了", "No to-dos left in the schedule")); return; }
-    await this.startTask(file, next);
-  }
-
-  // 没在专注：开一轮；正在专注：加入这一轮，并行，按它自己的时长倒计时
-  begin(path, label, minutes) {
-    const cfg = this.settings;
-    const key = workKey(label);
-    this.touch(key);
-    const s = this.session();
-    if (s && !s.asked) {
-      if (!s.tasks.some((t) => t.key === key)) { s.tasks.push(this.line(path, label, minutes)); this.extendRaycast(s); }
-      this.saveData(cfg);
-      new OB.Notice(T(`➕ ${label} 加入这一轮 · ${s.tasks.length} 条线并行 · 这一条 ${dur(minutes)}`, `➕ ${label} joins this round · ${s.tasks.length} threads in parallel · this one ${dur(minutes)}`));
-      this.refresh();
-      return;
-    }
-    this.startSession([this.line(path, label, minutes)]);
-  }
-
-  // 开一轮专注：每条线自己计时（到点问做完没有），设置里开着就同时开一段 Raycast Focus
-  startSession(tasks) {
-    const cfg = this.settings;
-    const s = (cfg.focusSession = { tasks, start: Date.now(), rcEnd: 0, asked: false });
-    this.extendRaycast(s, true);
-    this.saveData(cfg);
-    new OB.Notice(`▶ ${tasks.map((t) => `${t.label} ${dur(t.minutes)}${t.round > 1 ? T(`（第 ${t.round} 轮）`, ` (round ${t.round})`) : ""}`).join(" + ")}`);
-    this.refresh();
-  }
-
-  // Raycast 专注覆盖到最晚那条线到点：开一段；后来加进来的线超出了现在这段，就结束重开一段
-  extendRaycast(s, fresh = false) {
-    const cfg = this.settings;
-    s.end = Math.max(...s.tasks.map((t) => t.end));
-    if (!cfg.focus || (!fresh && s.end <= s.rcEnd + 30e3)) return;
-    // raycast://focus/start?goal=…&duration=秒&categories=…&mode=block|allow（Raycast 文档里的 Focus Deeplink）
-    const q = [`goal=${encodeURIComponent(s.tasks.map((t) => t.label).join(" + "))}`, `duration=${Math.max(60, Math.round((s.end - Date.now()) / 1000))}`];
-    const cats = splitList(cfg.focusCategories).map((c) => c.replace(/\s+/g, "")).join(",");
-    if (cats) q.push(`categories=${cats}`, `mode=${cfg.focusMode === "allow" ? "allow" : "block"}`);
-    const url = "raycast://focus/start?" + q.join("&");
-    if (!fresh && s.rcEnd > Date.now()) { this.openUrl("raycast://focus/complete"); window.setTimeout(() => this.openUrl(url), 1500); }
-    else this.openUrl(url);
-    Object.assign(s, { rcEnd: s.end, rcStart: Date.now(), panelSeen: false, miss: 0, noPanel: false });
-  }
-
-  // 每 10 秒：哪条线到点了；开着 Raycast 专注的话，看看是不是在 Raycast 里提前点了完成
-  async tickFocus() {
-    const s = this.session();
-    if (s && !s.asked && !this._asking) {
-      const due = s.tasks.find((t) => !t.asked && Date.now() >= t.end);
-      if (due) { this.askLine(s, due); return; }
-      // 只在 Raycast 专注这一段进行中时看悬浮窗；开始 1 分钟还没见过悬浮窗（Raycast 没开起来 / 关了悬浮窗）就不再看
-      if (this.settings.focus && !s.noPanel && Date.now() < s.rcEnd) {
-        if (!s.panelSeen && Date.now() - (s.rcStart || s.start) > 60e3) s.noPanel = true;
-        else await this.watchRaycast(s);
-      }
-    }
-    // 螺旋上「还剩几分钟」变了才重画
-    const left = s ? s.tasks.map((t) => Math.ceil((t.end - Date.now()) / 60e3)).join() : null;
-    if (left !== this._focusLeft) { this._focusLeft = left; this.refresh(); }
-  }
-
-  // Raycast 的专注小窗比它该结束的时刻早消失（连着两次、离结束还有半分钟以上、人在电脑前）= 你在 Raycast 里点了完成：这一轮的几条线都记成 DONE
-  async watchRaycast(s) {
-    if (this._probing) return;
-    this._probing = true;
-    try {
-      const p = await this.probe();
-      if (!p || this.settings.focusSession !== s || s.asked) return;
-      if (p.panel) { s.panelSeen = true; s.miss = 0; return; }
-      if (!s.panelSeen || Date.now() > s.rcEnd - 30e3 || p.idle > 300) return;
-      if ((s.miss = (s.miss || 0) + 1) < 2) return;
-      s.asked = true;
-      const tasks = s.tasks;
-      this.endSession(s);
-      await this.finish(tasks, Date.now());
-      this.notify(T("✅ 在 Raycast 里完成了", "✅ Completed in Raycast"), tasks.map((t) => t.label).join(T("、", ", ")));
-    } finally { this._probing = false; }
-  }
-
-  async probe() {
-    try { return JSON.parse((await run(await swiftTool("probe", PROBE_SWIFT), [])).stdout); }
-    catch (e) { console.error("[螺旋日程] 读取状态失败", e); return null; }
-  }
-
-  // 一条线到点：弹系统对话框单独问这一条（Obsidian 在后台也看得到），别的线照常走
-  async askLine(s, t) {
-    const cfg = this.settings;
-    this._asking = true;
-    t.asked = true;
-    this.saveData(cfg);
-    try {
-      if (cfg.focusAsk === false) { this.dropFromSession([t.key]); return; }
-      run("/usr/bin/afplay", ["/System/Library/Sounds/Glass.aiff"]);
-      this.toDiscord(T(`⏱ **专注到点** · ${t.label}（${dur(t.minutes)}${t.round > 1 ? ` · 第 ${t.round} 轮` : ""}）`, `⏱ **Focus time's up** · ${t.label} (${dur(t.minutes)}${t.round > 1 ? ` · round ${t.round}` : ""})`));
-      const others = s.tasks.filter((x) => x !== t && !x.asked);
-      const msg = T(`这一条 ${dur(t.minutes)}${t.round > 1 ? `（第 ${t.round} 轮）` : ""}`, `This one ${dur(t.minutes)}${t.round > 1 ? ` (round ${t.round})` : ""}`) +
-        (others.length ? T(`\n另外 ${others.length} 条线还在走：${others.map((x) => `${x.label}（还剩 ${dur(Math.max(1, Math.ceil((x.end - Date.now()) / 60e3)))}）`).join("、")}`, `\n${others.length} other thread(s) still running: ${others.map((x) => `${x.label} (${dur(Math.max(1, Math.ceil((x.end - Date.now()) / 60e3)))} left)`).join(", ")}`) : "") + T("\n做完了吗？", "\nIs it done?");
-      const btn = await this.choose(T(`专注到点 · ${t.label}`, `Focus time's up · ${t.label}`), msg, [T("先停下", "Pause it"), T("再来一轮", "Another round"), T("做完了", "Done")], T("做完了", "Done"), 1800);
-      if (this.settings.focusSession !== s || !s.tasks.includes(t)) return;   // 等回答的时候已经手动改了状态 / 这一轮结束了
-      const at = Date.now();
-      // 结束时刻：到点后 10 分钟内回答按回答的时刻，再晚多半是人走开了，按到点的时刻
-      const end = at - t.end <= 10 * 60e3 ? at : t.end;
-      if (btn === T("做完了", "Done")) { this.dropFromSession([t.key]); await this.finish([t], end); }
-      else if (btn === T("再来一轮", "Another round")) {
-        Object.assign(t, { asked: false, round: t.round + 1, end: at + t.minutes * 60e3 });
-        this.extendRaycast(s);
-        this.saveData(cfg);
-        new OB.Notice(T(`▶ ${t.label} · 第 ${t.round} 轮 · ${dur(t.minutes)}`, `▶ ${t.label} · round ${t.round} · ${dur(t.minutes)}`));
-        this.refresh();
-      } else if (btn === T("先停下", "Pause it")) { this.dropFromSession([t.key]); await this.editTasks(t.path, [t.key], toPaused); }
-      else { this.dropFromSession([t.key]); new OB.Notice(T(`⏱ 「${t.label}」到点了，没有回答，还是 DOING`, `⏱ "${t.label}" is over, no answer, still DOING`)); }
-    } finally { this._asking = false; }
-  }
-
-  // 提前点「结束」：整轮一起问。几条线时先勾做完的，再问剩下的
-  async askDone(s) {
-    const cfg = this.settings;
-    if (s.asked) return;
-    s.asked = true;
-    this.saveData(cfg);
-    if (cfg.focus) this.openUrl("raycast://focus/complete");
-    if (cfg.focusAsk === false) { this.endSession(s); return; }
-    run("/usr/bin/afplay", ["/System/Library/Sounds/Glass.aiff"]);
-    const lines = s.tasks.filter((t) => !t.asked);
-    const head = T(`提前结束 · 这一轮 ${dur(Math.max(1, Math.round((Date.now() - s.start) / 60e3)))}`, `Ended early · this round ${dur(Math.max(1, Math.round((Date.now() - s.start) / 60e3)))}`);
-    let done = [], next = "";
-    if (lines.length === 1) {
-      next = await dialog(T(`${head}\n\n${lines[0].label}\n\n做完了吗？`, `${head}\n\n${lines[0].label}\n\nIs it done?`), [T("先停下", "Pause it"), T("再来一轮", "Another round"), T("做完了", "Done")], T("做完了", "Done"), 1800);
-      if (next === T("做完了", "Done")) done = lines;
-    } else {
-      const picked = await pickList(T(`${head}\n\n${lines.length} 条线并行，勾上做完了的：`, `${head}\n\n${lines.length} threads in parallel; check the ones that are done:`), lines.map((t) => t.label), T("就这些做完了", "These are done"), T("都没做完", "None are done"));
-      done = lines.filter((t) => (picked || []).includes(t.label));
-      const rest = lines.filter((t) => !done.includes(t));
-      if (picked != null && rest.length) next = await dialog(T(`还有 ${rest.length} 件没做完：\n${rest.map((t) => "· " + t.label).join("\n")}`, `${rest.length} still unfinished:\n${rest.map((t) => "· " + t.label).join("\n")}`), [T("先停下", "Pause it"), T("再来一轮", "Another round")], T("再来一轮", "Another round"), 1800);
-    }
-    if (cfg.focusSession !== s) return;   // 等回答的时候已经手动改了状态 / 开了别的
-    const at = Date.now();
-    const rest = lines.filter((t) => !done.includes(t));
-    this.endSession(s);
-    if (done.length) await this.finish(done, at);
-    if (!rest.length) return;
-    if (next === T("再来一轮", "Another round")) this.startSession(rest.map((t) => ({ ...t, asked: false, round: t.round + 1, end: at + t.minutes * 60e3 })));
-    else if (next === T("先停下", "Pause it")) { for (const [path, ts] of groupBy(rest)) await this.editTasks(path, ts.map((t) => t.key), toPaused); }
-    else if (!done.length) new OB.Notice(T(`⏱ 专注结束了，没有回答，还是 DOING：${rest.map((t) => t.label).join("、")}`, `⏱ Focus ended, no answer, still DOING: ${rest.map((t) => t.label).join(", ")}`));
-  }
-
-  // 记成 DONE 开始-结束：开始用 DOING 后面写的时刻，没写用开始这条线的时刻
-  async finish(tasks, endMs) {
-    tasks = tasks.filter((t) => t.path);
-    if (!tasks.length) return;
-    const end = moment(endMs).format("HH:mm");
-    for (const [path, ts] of groupBy(tasks)) {
-      for (const t of ts) await this.editTask(path, t.key, (raw) => toDone(raw, moment(t.start).format("HH:mm"), end));
-    }
-    new OB.Notice(`✅ ${tasks.map((t) => t.label).join(T("、", ", "))}`);
-  }
-
-  endSession(s) {
-    if (this.settings.focusSession === s) this.settings.focusSession = null;
-    this.saveData(this.settings);
-    this.refresh();
-  }
-
-  // 这几条线不在专注里了（做完了 / 被规则暂停 / 手动改了状态）：从这一轮拿掉；拿空了这一轮就结束，Raycast 专注还没到点的一起结束
-  dropFromSession(keys) {
-    const s = this.session();
-    if (!s) return;
-    const left = s.tasks.filter((t) => !keys.includes(t.key));
-    if (left.length === s.tasks.length) return;
-    s.tasks = left;
-    if (!left.length) {
-      if (this.settings.focus && this.settings.focusAutoComplete !== false && Date.now() < s.rcEnd - 30e3) this.openUrl("raycast://focus/complete");
-      this.settings.focusSession = null;
-    } else s.end = Math.max(...left.map((t) => t.end));
-    this.saveData(this.settings);
-    this.refresh();
-  }
-
   // ---- 硬规则：同时最多 3 件 DOING、3 小时没动就暂停 ----
 
   touch(key) {
@@ -4629,10 +4198,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!(cfg.doingLimit > 0) || mine.length <= cfg.doingLimit) return;
     const work = (cfg.workLog || {})[file.basename] || {};
     const since = (t) => (work[workKey(t.label)] || []).find((x) => x[1] == null)?.[0] ?? t.startedAt ?? 1e6 + t.line;
-    // 正在专注的几件排到最后才动：先暂停不在这一轮里、最早开始的
-    const fs = this.session();
-    const inFocus = (t) => !!fs && !fs.asked && fs.tasks.some((x) => x.key === workKey(t.label));
-    const victims = mine.filter((t) => !born.includes(t)).sort((a, b) => inFocus(a) - inFocus(b) || since(a) - since(b)).slice(0, mine.length - cfg.doingLimit);
+    const victims = mine.filter((t) => !born.includes(t)).sort((a, b) => since(a) - since(b)).slice(0, mine.length - cfg.doingLimit);
     if (!victims.length) return;
     await this.pause(file, victims);
     this.notify(T(`⏸ 同时在做超过 ${cfg.doingLimit} 件`, `⏸ More than ${cfg.doingLimit} tasks in progress`), T(`已暂停最早开始的：${victims.map((t) => t.label).join("、")}`, `Paused the earliest started: ${victims.map((t) => t.label).join(", ")}`), file, victims[0].line,
@@ -4650,11 +4216,10 @@ module.exports = class NautilusSpiral extends Plugin {
 
   async pause(file, tasks) {
     const keys = tasks.map((t) => workKey(t.label));
-    this.dropFromSession(keys);
     await this.editTasks(file.path, keys, toPaused);
   }
 
-  // 每分钟：DOING 超过 staleHours 小时没动过（这一行和子项都没改、也不在专注里）→ PAUSED
+  // 每分钟：DOING 超过 staleHours 小时没动过（这一行和子项都没改）→ PAUSED
   async checkStale() {
     const cfg = this.settings;
     const file = this.todayFile();
@@ -4662,7 +4227,6 @@ module.exports = class NautilusSpiral extends Plugin {
     const text = await this.app.vault.cachedRead(file);
     const lines = text.split("\n");
     const touch = (cfg.doingTouch ||= {});
-    const s = this.session();
     const now = Date.now(), seen = new Set(), stale = [];
     let changed = false;
     const auto = this.autoKeys(file.basename);
@@ -4671,8 +4235,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const k = workKey(t.label), sig = subtree(lines, t.line);
       seen.add(k);
       if (!touch[k] || touch[k].sig !== sig) { touch[k] = { sig, at: touch[k] && touch[k].sig == null ? touch[k].at : now }; changed = true; }
-      const focused = s && !s.asked && s.tasks.some((x) => x.key === k);
-      if (cfg.staleHours > 0 && !focused && now - touch[k].at > cfg.staleHours * 3600e3) stale.push(t);
+      if (cfg.staleHours > 0 && now - touch[k].at > cfg.staleHours * 3600e3) stale.push(t);
     }
     for (const k of Object.keys(touch)) if (!seen.has(k)) { delete touch[k]; changed = true; }
     if (changed) this.saveSoon();
@@ -4742,17 +4305,25 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 改一篇笔记的几行：开在编辑器里就在编辑器里改（光标不跳，⌘Z 能撤销），没开就改文件。fn(lines) 直接改数组，返回改了几行
+  async readLiveContent(file) {
+    const view = this.journalView(file);
+    return view ? view.editor.getValue() : this.app.vault.cachedRead(file);
+  }
   async editFile(file, fn) {
-    let view = null;
-    this.app.workspace.iterateAllLeaves((l) => { if (!view && l.view instanceof OB.MarkdownView && l.view.file?.path === file.path && l.view.getMode() === "source") view = l.view; });
+    const view = this.journalView(file);
     if (view) {
       const ed = view.editor;
-      const before = ed.getValue().split("\n"), lines = [...before];
+      const beforeText = ed.getValue(), before = beforeText.split("\n"), lines = [...before];
       const n = fn(lines);
       if (!n) return 0;
-      const changes = [];
-      lines.forEach((l, i) => { if (l !== before[i]) changes.push({ from: { line: i, ch: 0 }, to: { line: i, ch: before[i].length }, text: l }); });
-      ed.transaction({ changes });
+      if (lines.length === before.length) {
+        const changes = [];
+        lines.forEach((l, i) => { if (l !== before[i]) changes.push({ from: { line: i, ch: 0 }, to: { line: i, ch: before[i].length }, text: l }); });
+        if (changes.length) ed.transaction({ changes });
+      } else {
+        const ch = diffLines(beforeText, lines.join("\n"));
+        if (ch) ed.transaction({ changes: [ch] });
+      }
       return n;
     }
     let n = 0;
@@ -4780,12 +4351,6 @@ module.exports = class NautilusSpiral extends Plugin {
       }
       return n;
     });
-  }
-  async editTask(path, key, fn, hint) { return (await this.editTasks(path, [key], fn, hint)) > 0; }
-
-  // 后台打开链接，不把焦点抢走
-  openUrl(url, background = true) {
-    require("child_process").execFile("/usr/bin/open", background ? ["-g", url] : [url], (e) => { if (e) new OB.Notice(T(`打不开 ${url.split("?")[0]}：${e.message}`, `Can't open ${url.split("?")[0]}: ${e.message}`)); });
   }
 
   async setBounds(dayKey, kind, t) {
@@ -5019,7 +4584,6 @@ module.exports = class NautilusSpiral extends Plugin {
     const cut = (s) => ([...s].length > 16 ? [...s].slice(0, 16).join("") + "…" : s);
     // 开着的计时：最近开始的那件排最前
     const open = Object.entries((cfg.workLog || {})[dayKey] || {}).map(([k, segs]) => [k, (segs.find((s) => s[1] == null) || [])[0]]).filter(([, a]) => a != null).sort((x, y) => y[1] - x[1]);
-    const fs = this.session();
     let text, overdue = false, forgotten = false, warning = false;
     this._statusKey = open.length ? open[0][0] : null;
     if (open.length) {
@@ -5028,11 +4592,6 @@ module.exports = class NautilusSpiral extends Plugin {
       forgotten = over(ms, cfg.forgottenMinutes ?? 120);
       const name = open[0][0].replace(/\[\[(?:[^\]|]*\|)?([^\]]+)\]\]/g, "$1");
       text = `${forgotten ? T("⚠ 检查计时 · ", "⚠ Check the timer · ") : "▶ "}${elapsedText(ms)} · ${cut(name)}${open.length > 1 ? T(` · ${open.length} 件`, ` · ${open.length} tasks`) : ""}`;
-    } else if (fs) {
-      // 只选了方向的一轮专注：正计时
-      const ms = Date.now() - Math.min(...fs.tasks.map((t) => t.start || fs.start || Date.now()));
-      overdue = over(ms, cfg.pomoMinutes ?? 45);
-      text = T(`⏱ ${elapsedText(ms)} · 专注`, `⏱ ${elapsedText(ms)} · focus`);
     } else {
       text = this._capText ? `🌀 ${this._capText}` : "🌀";
       warning = !!this._capWarn;
@@ -5042,7 +4601,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const M = cfg.showMain !== false ? this._main : null;
     if (M && M.total) {
       const nx = mainNext(M);
-      if (!open.length && !fs && nx) { text = `🎯 ${M.done}/${M.total} · ${nx.state === "doing" ? T("在做", "Doing") : T("下一件", "Next")} ${cut(nx.label)}`; warning = false; }
+      if (!open.length && nx) { text = `🎯 ${M.done}/${M.total} · ${nx.state === "doing" ? T("在做", "Doing") : T("下一件", "Next")} ${cut(nx.label)}`; warning = false; }
       else text += ` · 🎯${M.done}/${M.total}`;
     }
     if (this._statusText !== text) { this._statusText = text; el.setText(text); }   // 和上次写的比：emoji 换成图标以后 DOM 里的字对不上
@@ -5062,7 +4621,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const file = this.todayFile();
       if (!file || cfg.statusBar === false) { this._capText = ""; this._capWarn = false; return; }
       const dayKey = file.basename;
-      const items = parseJournal(await this.app.vault.cachedRead(file), cfg);
+      const items = parseJournal(await this.readLiveContent(file), cfg);
       this.withCalendar(items, this.today());
       const m = moment(), now = normalize(m.hours() * 60 + m.minutes(), cfg), bounds = (cfg.dayBounds || {})[dayKey] || {};
       applyWork(items, cfg, dayKey, now, 0, bounds);
@@ -5421,15 +4980,6 @@ module.exports = class NautilusSpiral extends Plugin {
     }
   }
 
-  // 问一个要你选的问题：先发带按钮的通知（不抢焦点）；点了通知本身、或者这台机器发不了通知，再弹系统对话框。没理返回 ""
-  async choose(title, body, buttons, def, wait) {
-    if (this.settings.askVia !== "dialog") {
-      const r = await this.ask(title, body, [def, ...buttons.filter((b) => b !== def).reverse()], wait);
-      if (r != null && r !== "__click__") return r;
-    }
-    return dialog(`${title}\n${body}`, buttons, def, wait);
-  }
-
   // ---------------- 自动记进日记的行（现在由 Agent Deck 写） ----------------
   // 这一天由自动记日记管着的那些行：用时按会话在动的时段另记，不走「改成 DOING 就开始计时」那一套，也不受 DOING 上限和超时暂停管。
   // 写日记的是 Agent Deck，它的记录在自己的 settings.autoLogState 里，格式和螺旋原来的一样：{ 日记日: { 会话号: { key, label, status, … } } }
@@ -5608,13 +5158,6 @@ module.exports = class NautilusSpiral extends Plugin {
         if (!renamed) for (const l of gone) {
           const k = workKey(l), seg = openSeg(k);
           if (seg) stop(k, now - seg[0] > 360 ? seg[0] + prev.get(l).dur : now);
-        }
-        // 正在专注的那件：改了名字跟着走；还没到点就手动改成 DONE / TODO（或挪走）：这一轮提前结束，不再弹窗问
-        const fs = this.session();
-        if (fs && !fs.asked) {
-          for (const t of fs.tasks) if (renamed && t.path === file.path && t.key === renamed[0]) { t.key = renamed[1]; t.label = born[0]; changed = true; }
-          const off = fs.tasks.filter((t) => t.path === file.path && [...prev].some(([l, p]) => p.doing && workKey(l) === t.key) && ![...cur].some(([l, c]) => c.doing && workKey(l) === t.key));
-          if (off.length) window.setTimeout(() => this.dropFromSession(off.map((t) => t.key)), 0);
         }
       }
       if (closed.size && record && this.settings.clockToNote) this.queueClock(file, [...closed]);
@@ -5802,6 +5345,9 @@ module.exports = class NautilusSpiral extends Plugin {
   onunload() {
     window.clearTimeout(this._reloadT);
     window.clearTimeout(this._widgetBootT);
+    window.clearTimeout(this._nqTimer);
+    window.clearTimeout(this._clockTimer);
+    document.querySelectorAll(".naut-dot-tip").forEach((el) => el.remove());
     if (this._ai) this.saveAiCacheSync(this._ai);
     for (const k in COLORS) document.body.style.removeProperty(`--naut-c-${k}`);
   }
@@ -5895,23 +5441,11 @@ class SpiralSettings extends PluginSettingTab {
       }
     }
 
-    containerEl.createEl("h3", { text: T("▶ 开始做 · 番茄钟 · Raycast Focus", "▶ Start · Pomodoro · Raycast Focus") });
-    containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋上点 ▶，或从命令面板运行“开始光标所在的任务”：这一行改成 DOING HH:MM，按条目上写的时长（10min、15分钟）专注一轮；到点问你做完没有，做完了就改成 DONE 开始-结束。", "Click ▶ on the spiral, or run “Start the task under the cursor” from the command palette: the line becomes DOING HH:MM and you focus for one round of the duration written on it (10min, 15m); when time's up you're asked whether it's done, and if it is, it becomes DONE start-end.") });
-    num(T("专注多久（分钟）", "Focus length (minutes)"), T("0 = 按条目上写的时长（没写按「默认任务时长」，写了进度按还剩的）；填 25 = 每轮固定 25 分钟", "0 = the duration written on the task (the default task length if none; what's left if progress is written); 25 = always 25 minutes a round"), "focusMinutes", 0, 600);
-    new Setting(containerEl).setName(T("到点问做完没有", "Ask whether it's done when time's up")).setDesc(T("弹系统对话框：做完了（改成 DONE 开始-结束）/ 再来一轮 / 先停下（改回 TODO）。关掉就只计时，不问", "Shows a system dialog: Done (becomes DONE start-end) / Another round / Pause it (back to TODO). Turn off to just time it without asking"))
-      .addToggle((t) => t.setValue(s.focusAsk !== false).onChange(async (v) => { s.focusAsk = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName(T("同时开 Raycast 专注", "Start Raycast Focus too")).setDesc(T("用 raycast://focus/start 开一段同样时长的 Raycast Focus，屏蔽分心的 App 和网站", "Starts a Raycast Focus session of the same length via raycast://focus/start, blocking distracting apps and websites"))
-      .addToggle((t) => t.setValue(s.focus !== false).onChange(async (v) => { s.focus = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    text(T("屏蔽类别", "Categories"), T("Raycast Focus 的类别，逗号分隔（比如 social, gaming）；留空 = 不带类别，用 Raycast 自己的设置", "Raycast Focus categories, comma-separated (e.g. social, gaming); empty = no categories, use Raycast's own settings"), "focusCategories");
-    new Setting(containerEl).setName(T("类别的用法", "Category mode")).setDesc(T("屏蔽 = 只挡上面这些类别；只允许 = 除了这些类别都挡", "Block = block only these categories; Allow only = block everything except these"))
-      .addDropdown((d) => d.addOption("block", T("屏蔽", "Block")).addOption("allow", T("只允许", "Allow only")).setValue(s.focusMode || "block")
-        .onChange(async (v) => { s.focusMode = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName(T("提前做完时结束 Raycast 专注", "End Raycast Focus when finished early")).setDesc(T("还没到点就把那件任务改成 DONE / TODO（或挪去明天）时，用 raycast://focus/complete 结束这段专注", "When the task becomes DONE / TODO (or is moved to tomorrow) before time's up, end the focus session via raycast://focus/complete"))
-      .addToggle((t) => t.setValue(s.focusAutoComplete !== false).onChange(async (v) => { s.focusAutoComplete = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName(T("到点怎么问", "How to ask when time's up")).setDesc(T("带按钮的系统通知：不抢焦点，在通知上点「做完了 / 再来一轮 / 先停下」（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）。对话框：弹到最前面，不回答不走", "System notification with buttons: doesn't take focus; click Done / Another round / Pause it on the notification (the first time, allow \"Nautilus Spiral\" to send notifications; to keep it on screen, set its style to Alerts in System Settings → Notifications → Nautilus Spiral). Dialog: pops to the front and stays until you answer"))
-      .addDropdown((d) => d.addOption("dialog", T("系统对话框", "System dialog")).addOption("notification", T("带按钮的系统通知（试验）", "System notification with buttons (experimental)")).setValue(s.askVia || "dialog")
+    containerEl.createEl("h3", { text: T("🔔 提醒与通知", "🔔 Reminders & notifications") });
+    new Setting(containerEl).setName(T("带按钮提醒的方式", "Interactive reminder style")).setDesc(T("默认通知：普通系统通知（点一下跳到日记那一行）；带按钮的系统通知：不抢焦点（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）", "Default notification: standard system notification (click to jump to the line). System notification with buttons: doesn't take focus (allow \"Nautilus Spiral\" to send notifications; to keep it on screen, set its style to Alerts in System Settings → Notifications → Nautilus Spiral)."))
+      .addDropdown((d) => d.addOption("dialog", T("默认通知", "Default notification")).addOption("notification", T("带按钮的系统通知（试验）", "System notification with buttons (experimental)")).setValue(s.askVia || "dialog")
         .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
-    text(T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停、自动记成做完 / 暂停、专注到点）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, auto-marked done / paused, focus time's up) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
+    text(T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停等）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, etc.) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
     text(T("本机提醒的提示音", "Reminder sound on this Mac"), T("系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "A system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file; empty = silent"), "notifySound");
     containerEl.createEl("h3", { text: T("🎨 颜色", "🎨 Colors") });
     containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 黑……），不在这里改", "Colors of each kind of item on the spiral, the list and the progress bars. Agent sessions use each tool's own colors (Claude orange, Codex black…) and can't be changed here") });
@@ -5937,7 +5471,7 @@ class SpiralSettings extends PluginSettingTab {
     text(T("计划笔记", "Plan note"), T("甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "Which note the Gantt chart draws (vault path). Each list item with 🛫 start, ⏳ scheduled or 📅 due dates becomes a bar (the Tasks plugin's syntax); one with a single date becomes a dot on that day. The nearest heading above, or a top-level list item without dates, is a group; finished ones (DONE, [x], ✅ date) are drawn faded"), "widgetPlan");
     containerEl.createEl("h3", { text: T("硬规则（只管今天的日记）", "Hard rules (today's note only)") });
     num(T("同时最多几件 DOING", "Max DOING at once"), T("再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。交给 Agent 在做的不算：Agent Deck 记下的、下面挂着 🔗 的、自动对上了会话的任务，连同它所在的整块。0 = 不限", "When one more starts, the earliest started becomes PAUSED and you get a system notification. Work handed to agents doesn't count: tasks logged by Agent Deck, with a 🔗 under them, or auto-matched to a session, together with their whole block. 0 = no limit"), "doingLimit", 0, 20);
-    num(T("DOING 多久没动就暂停（小时）", "Pause DOING after idle (hours)"), T("这一行和它下面的子项都没改过、也不在专注里，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "If neither the line nor its children have changed and it's not in a focus round for this long, it becomes PAUSED and you get a system notification. 0 = never"), "staleHours", 0, 48);
+    num(T("DOING 多久没动就暂停（小时）", "Pause DOING after idle (hours)"), T("这一行和它下面的子项都没改过，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "If neither the line nor its children have changed for this long, it becomes PAUSED and you get a system notification. 0 = never"), "staleHours", 0, 48);
     containerEl.createEl("h3", { text: T("其它", "Other") });
     new Setting(containerEl).setName(T("预估 vs 实际", "Estimate vs actual")).setDesc(T("列表底部显示近一段时间预估准不准（按标签 / 链接分），容量条上按这个比例给一个「按以往约多久」", "At the bottom of the list, shows how accurate your recent estimates were (by tag / link); the capacity bar adds an \"about … going by your history\" based on that ratio"))
       .addToggle((t) => t.setValue(s.showReview !== false).onChange(async (v) => { s.showReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
@@ -6628,4 +6162,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };
+module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };

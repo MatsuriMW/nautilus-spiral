@@ -24,7 +24,7 @@ const ctx = {
 };
 vm.runInNewContext(fs.readFileSync(source, 'utf8'), ctx, { filename: source });
 const Plugin = ctx.module.exports;
-const { DEFAULTS, parseJournal, taskStatus, statusCls, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS } = Plugin.core;
+const { DEFAULTS, parseJournal, mainOf, schedule, taskStatus, statusCls, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS } = Plugin.core;
 
 // 1. parseJournal 提取各任务状态关键词与复选框状态
 const items = parseJournal([
@@ -156,11 +156,87 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   assert.equal(toKeyword('- TODO 买牛奶 10m', 'WAITING', '22:10'), '- WAITING 买牛奶 10m');
   assert.equal(toKeyword('- TODO 买牛奶 10m', 'TOREVIEW', '22:10'), '- TOREVIEW 买牛奶 10m');
   assert.equal(toKeyword('- TODO 买牛奶 10m', 'DOING', '22:10'), '- DOING 22:10 买牛奶 10m');
+  assert.equal(toKeyword('- todo a 写稿 30m', 'DONE', '22:10'), '- DONE 22:10 [#A] 写稿 30m', '简写 todo a 切状态应展开为 [#A] 不残留原词');
+  assert.equal(toKeyword('- DONE [#A] 21:30-22:10 写代码 30m', 'SUSPENDED', '22:15'), '- SUSPENDED [#A] 写代码 30m', 'DONE 优先级在前的时间段应干净剥离');
+  assert.equal(toKeyword('- DONE 22:10 买牛奶 10m', 'DONE', '22:15'), '- DONE 22:10 买牛奶 10m', '同状态切换应幂等不改时间戳');
+  assert.equal(toKeyword('- PAUSED 🤖 19:17-19:23 写稿 30m', 'TODO', '22:15'), '- TODO 🤖 写稿 30m', 'PAUSED 记录时段切回 TODO 时必须剥离，保留 🤖');
+  assert.equal(toKeyword('- DOING 🤖 14:05 写稿 30m', 'DONE', '15:00'), '- DONE 14:05-15:00 🤖 写稿 30m', 'DOING 🤖 后的开始时间应识别并保留 🤖');
+  assert.equal(toKeyword('- TODO 14:00-15:00 开会', 'DOING', '13:55'), '- DOING 13:55 14:00-15:00 开会', 'TODO 固定事件预约时段不可误剥');
+  assert.equal(toKeyword('- LATER 买牛奶 10m', 'TODO', '22:15'), '- LATER 买牛奶 10m', '等价别名切换应幂等');
+  const yesStep = cycleUpNextStatus('- YES 写稿 10m', null, '22:15');
+  assert.equal(yesStep.nextKw, 'SUSPENDED', 'YES 归为 DONE，点击应直接切去 SUSPENDED');
+  assert.equal(yesStep.nextRaw, '- SUSPENDED 写稿 10m');
   const menuKws = UP_NEXT_MENU_GROUPS.flat().map(([k]) => k);
   for (const k of ['TODO', 'DOING', 'DONE', 'PAUSED', 'WAITING', 'SUSPENDED', 'CANCELLED', 'TOREVIEW', 'NEEDOK', 'DELEGATED', 'QUEUED', 'HITLIMIT', 'ERRORED']) {
     assert.ok(menuKws.includes(k), `右键菜单应包含 ${k}`);
   }
   console.log('PASS 「接下来」点击三段循环与右键菜单状态切换');
+
+  // 6. 母块/子块状态继承：母块无状态或 TODO 保留子块各自状态；母块为其他状态时覆盖带状态的子块
+  const nested = parseJournal([
+    '- 普通母块',
+    '  - TODO 自由待办 10m',
+    '  - DONE 自由完成 10m',
+    '- TODO 容器任务',
+    '  - DONE 已完成子步 10m',
+    '  - DOING 进行中子步 15m',
+    '- DOING 正在做的母块',
+    '  - TODO 继承进行中 20m',
+    '- SUSPENDED 搁置的母块',
+    '  - DOING 继承搁置 20m',
+    '  - 普通备注无状态',
+    '- DONE 做完的母块',
+    '  - TODO 继承完成 15m',
+    '- CANCELLED 取消的母块',
+    '  - TODO 跟着取消 15m',
+    '- PAUSED 暂停的母块',
+    '^parent-block-id',
+    '  - 普通中间层',
+    '    - TODO 孙块也继承暂停 10m',
+  ].join('\n'), DEFAULTS);
+  const byLabel = Object.fromEntries(nested.map((it) => [it.label, it]));
+  assert.equal(byLabel['自由待办'].kw, 'TODO');
+  assert.equal(byLabel['自由待办'].inheritedFrom, undefined);
+  assert.equal(byLabel['自由完成'].kw, 'DONE');
+  assert.equal(byLabel['已完成子步'].kw, 'DONE');
+  assert.equal(byLabel['已完成子步'].state, 'done');
+  assert.equal(byLabel['进行中子步'].kw, 'DOING');
+  assert.equal(byLabel['进行中子步'].doing, true);
+  assert.equal(byLabel['继承进行中'].kw, 'DOING');
+  assert.equal(byLabel['继承进行中'].doing, true);
+  assert.equal(byLabel['继承进行中'].inheritedFrom, byLabel['正在做的母块'].line);
+  assert.equal(byLabel['继承搁置'].kw, 'SUSPENDED');
+  assert.equal(byLabel['继承搁置'].suspended, true);
+  assert.equal(byLabel['继承搁置'].doing, false);
+  assert.equal(byLabel['普通备注无状态'], undefined, '无状态子块不会被强行变成任务');
+  assert.equal(byLabel['继承完成'].kw, 'DONE');
+  assert.equal(byLabel['继承完成'].state, 'done');
+  assert.equal(byLabel['跟着取消'], undefined, 'CANCELLED 母块下的子任务一起丢弃');
+  assert.equal(byLabel['孙块也继承暂停'].kw, 'PAUSED');
+  assert.equal(byLabel['孙块也继承暂停'].paused, true);
+  assert.equal(byLabel['孙块也继承暂停'].inheritedFrom, byLabel['暂停的母块'].line);
+
+  // schedule() 搁置列表不重复列 container 母块
+  const plan = schedule(nested, DEFAULTS, 10 * 60, 0);
+  assert.deepEqual(Array.from(plan.suspended, (t) => t.label), ['继承搁置'], '搁置列表应排除 container 母块避免重复');
+
+  // mainOf() 与 parseJournal 遵守同一条母块/子块状态继承规则（含 [x] **01:44** 顺序与 ^block-id）
+  const mainDoc = mainOf([
+    '- [x] **01:44** 已完成的母块',
+    '^done-block-id',
+    '  - TODO [#A] 继承完成主线',
+    '- CANCELLED 取消的母块',
+    '  - TODO [#A] 继承取消主线',
+    '- TODO 容器主线',
+    '  - DONE [#A] 保留完成子步',
+    '  - DOING [#A] 保留进行子步',
+  ].join('\n'));
+  assert.equal(mainDoc.tasks.length, 3);
+  assert.deepEqual(
+    Array.from(mainDoc.tasks, (t) => [t.label, t.state]),
+    [['继承完成主线', 'done'], ['保留完成子步', 'done'], ['保留进行子步', 'doing']]
+  );
+  console.log('PASS 母块/子块状态继承（含 schedule 去重与 mainOf 一致性）验证通过');
 })().catch((err) => {
   console.error(err);
   process.exitCode = 1;

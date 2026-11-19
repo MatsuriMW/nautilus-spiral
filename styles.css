@@ -57,21 +57,14 @@
 .naut-bar-task { background: var(--naut-task); }
 .naut-bar-free { background: var(--background-modifier-border); }
 .naut-bar-over { background: var(--naut-prio); }
-.naut-cap-text { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 5px; font-variant-numeric: tabular-nums; }
 .naut-over-text { color: var(--naut-prio); font-weight: 600; }
-/* 第一行：已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几；第二行：可安排和事件两笔预算，正在流逝的那一笔前面有一朵小火苗 */
-.naut-cap-text > span { transition: color .3s ease; }
 .naut-left.is-positive { color: var(--color-green); }
 .naut-left.is-warning { color: var(--naut-prio); font-weight: 600; }
-.naut-cap-budget { margin-top: 1px; color: var(--text-faint); }
 .naut-burn { display: inline-block; margin-right: 2px; font-size: .9em; transform-origin: 50% 90%; animation: naut-flicker 1.9s ease-in-out infinite; cursor: help; }
-/* 📝 已过去多久、有记录多少、没记录多少 */
-.naut-rec-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; font-variant-numeric: tabular-nums; }
 .naut-muted { color: var(--text-faint); }
 
-/* 容量条下面的几行汇总：字用正文的灰，前面的小色块对应螺旋上的颜色（细线 = 内圈的线，方块 = 主带上的段） */
-.naut-ai-line, .naut-game-line, .naut-review-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; font-variant-numeric: tabular-nums; }
-.naut-game-line::before, .naut-review-line::before, .naut-sw { content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+/* 容量条上的 Agent 色块与按 Agent 上色 */
+.naut-sw { content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 .naut-sw + .naut-sw { margin-left: -3px; }
 /* 按 Agent 上色：带 naut-by-xxx 的元素自己和里面用到 --naut-ai 的地方都换成那个 Agent 的颜色 */
 .naut-by-claude { --naut-ai: var(--naut-ai-claude); }
@@ -84,8 +77,6 @@
 .naut-bg-workbuddy { background: var(--naut-ai-workbuddy); }
 .naut-bg-dsh { background: var(--naut-ai-dsh); }
 .naut-bg-antigravity { background: var(--naut-ai-antigravity-grad); }
-.naut-game-line::before { background: var(--naut-game); }
-.naut-review-line::before { background: var(--naut-review); width: 8px; height: 8px; }
 
 /* 螺旋上方固定的一行：鼠标划到哪一段，立刻显示那一段的时间和做的事。高度定死，有字没字下面都不跳 */
 .naut-hover { display: flex; justify-content: center; align-items: baseline; gap: 8px; height: 1.6em; line-height: 1.6em; margin: 6px 0 -4px; padding: 0 4px; white-space: nowrap; overflow: hidden; font-size: var(--font-ui-small); }
@@ -165,8 +156,11 @@
 .naut-list { margin-top: 8px; font-size: var(--font-ui-small); }
 .naut-sec { margin: 10px 0 4px; font-size: var(--font-ui-smaller); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
 .naut-row { display: flex; gap: 8px; padding: 3px 6px; border-radius: 4px; border-left: 3px solid transparent; cursor: pointer; transition: background-color .12s ease-out; }
+.naut-row.is-upnext { cursor: default; }
 .naut-row:hover { background: var(--background-modifier-hover); }
-.naut-st-dot { flex: none; width: 1.1em; text-align: center; font-size: .85em; line-height: 1.4; color: var(--naut-task); opacity: .85; user-select: none; }
+.naut-st-dot { flex: none; width: 1.1em; text-align: center; font-size: .85em; line-height: 1.4; color: var(--naut-task); opacity: .85; user-select: none; cursor: pointer; transition: transform .12s ease-out, opacity .12s ease-out; }
+.naut-st-dot:hover { opacity: 1; transform: scale(1.18); }
+.naut-dot-tip { position: fixed; z-index: 9999; pointer-events: none; max-width: 240px; padding: 5px 9px; border-radius: 7px; font-size: 12px; line-height: 1.45; color: var(--text-normal); background: var(--background-secondary); border: 1px solid var(--background-modifier-border); box-shadow: 0 3px 10px rgba(0, 0, 0, .14); white-space: pre-line; }
 .naut-row.is-main .naut-st-dot { color: var(--naut-main); }
 .naut-row.is-prio .naut-st-dot { color: var(--naut-prio); }
 .naut-row.is-kw-todo .naut-st-dot { color: var(--naut-kw-todo); }
@@ -205,7 +199,7 @@
 .naut-row.is-kw-delegated { border-left-color: var(--naut-kw-delegated); }
 .naut-row.is-main.is-done { border-left-color: color-mix(in srgb, var(--naut-main) 45%, var(--naut-kw-done)); }
 .naut-row.is-review { border-left-color: var(--naut-review); }
-.naut-row.naut-ai-row { border-left-color: var(--naut-ai); cursor: default; }
+.naut-row.naut-ai-row { border-left-color: var(--naut-ai); cursor: pointer; }
 .naut-row.naut-ai-row .naut-dur { color: color-mix(in srgb, var(--naut-ai) 78%, var(--text-normal)); font-weight: 600; }
 /* 进行中的那一行：时间前面一个跟着呼吸的小圆点 */
 .naut-row.is-doing .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
@@ -224,20 +218,6 @@
 .naut-ai-part { flex: 1 0 0; min-height: 1px; }
 .naut-ai-col.is-cur .naut-ai-bar, .naut-ai-col:hover .naut-ai-bar { opacity: 1; }
 .naut-ai-day { font-size: 9px; text-align: center; color: var(--text-faint); margin-top: 2px; }
-
-/* ▶ 开始做（改 DOING + Raycast 专注） */
-.naut-play { flex: none; font-size: .75em; padding: 0 6px; height: 20px; margin-left: 4px; opacity: 0; transition: opacity .15s; }
-.naut-row:hover .naut-play, .naut-play:focus-visible { opacity: 1; }
-@media (hover: none) { .naut-play { opacity: 1; } }
-
-/* 📅 macOS 日历 */
-.naut-cal-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.naut-cal-line.is-error { color: var(--text-error); white-space: normal; }
-
-/* ⏱ 正在专注的这一轮 / 🍚 吃饭锻炼中：一条淡蓝底的小条 */
-.naut-focus-line { display: flex; align-items: center; gap: 6px; font-size: var(--font-ui-smaller); color: var(--text-normal); font-weight: 600; margin-top: 6px; padding: 3px 4px 3px 8px; border-radius: 6px; background: color-mix(in srgb, var(--naut-task) 9%, transparent); }
-.naut-focus-line span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.naut-focus-stop { flex: none; font-size: .9em; padding: 0 8px; height: 20px; }
 
 /* 🤖 这件任务期间的 Claude 会话 */
 .naut-ai-badge { flex: none; font-size: .8em; color: color-mix(in srgb, var(--naut-ai) 70%, var(--text-normal)); margin-left: 4px; cursor: pointer; }
@@ -263,11 +243,9 @@
 .naut-dayrev.is-paused { border-left-color: color-mix(in srgb, var(--naut-task) 45%, transparent); }
 .naut-dayrev.is-no-estimate { border-left-color: var(--naut-ai); }
 .naut-dayrev.is-not-started .naut-label, .naut-dayrev.is-not-tracked .naut-label { color: var(--text-muted); }
-.naut-calib { cursor: help; }
 
 /* 快捷操作 */
 .naut-ai-group { font-weight: 600; margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--background-modifier-border); }
-.naut-status-text { white-space: pre-wrap; font-size: var(--font-ui-small); line-height: 1.6; }
 .naut-quick-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .naut-kbd { flex: none; font-size: var(--font-ui-smaller); color: var(--text-muted); }
 .naut-ai-more { margin-top: 8px; }
@@ -323,11 +301,8 @@
   .naut-root *, .naut-root *::before { animation: none !important; transition: none !important; }
 }
 
-/* 🧭 各个大方向今天花了多久 */
-.naut-dir-line { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-
 /* ---------------- 主线目标弹窗 ---------------- */
-.naut-focus-modal { --c: var(--naut-task); --naut-task: #5c86b4; --naut-ai-claude: #d97757; --naut-ai-workbuddy: #17a57f; --naut-ai-dsh: #4d6bfe; --naut-ai-antigravity: #558ce6; --naut-game: #9c6496; --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
+.naut-focus-modal { --naut-ease: cubic-bezier(.2, .7, .2, 1); width: min(460px, 92vw); }
 .naut-fm-title { font-size: 1.25em; font-weight: 700; }
 .naut-fm-sub { color: var(--text-muted); font-size: var(--font-ui-small); margin: 4px 0 14px; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) {
@@ -374,8 +349,7 @@
 .naut-st-sec { display: flex; align-items: center; gap: 10px; margin: 16px 0 6px; font-size: var(--font-ui-smaller); font-weight: 600; color: var(--text-muted); letter-spacing: .04em; }
 .naut-st-sec::after { content: ""; flex: 1; height: 1px; background: var(--background-modifier-border); }
 /* 一行一件事：左边是时刻 / 状态，右边是时长 / 计时；左边的色条和螺旋上同一种颜色 */
-.naut-st-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 8px 5px 10px; margin: 2px 0; border-radius: 8px; border-left: 3px solid var(--background-modifier-border); transition: background-color .12s ease, transform .12s var(--naut-ease); }
-.naut-st-row[class] { cursor: default; }
+.naut-st-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 8px 5px 10px; margin: 2px 0; border-radius: 8px; border-left: 3px solid var(--background-modifier-border); cursor: default; transition: background-color .12s ease, transform .12s var(--naut-ease); }
 .naut-st-row.is-doing, .naut-st-row.is-task, .naut-st-row.is-prio, .naut-st-row.is-event, .naut-st-row.is-paused, .naut-st-row.is-over { cursor: pointer; }
 .naut-st-row:hover { background: var(--background-modifier-hover); }
 .naut-st-row:active { transform: scale(.985); }
@@ -390,8 +364,7 @@
 .naut-st-row.is-doing.is-auto { border-left-color: var(--naut-ai); background: color-mix(in srgb, var(--naut-ai) 7%, transparent); }
 .naut-st-row.is-doing.is-auto .naut-st-left::before { background: var(--naut-ai); }
 .naut-st-row.is-doing.is-auto .naut-st-right { color: color-mix(in srgb, var(--naut-ai) 80%, var(--text-normal)); }
-.naut-st-row.is-focus { border-left-color: var(--naut-task); }
-.naut-st-row.is-focus .naut-st-left, .naut-st-row.is-paused .naut-st-left { min-width: 0; }
+.naut-st-row.is-paused .naut-st-left { min-width: 0; }
 .naut-st-row.is-task { border-left-color: var(--naut-task); }
 .naut-st-row.is-prio { border-left-color: var(--naut-prio); }
 .naut-st-row.is-event { border-left-color: var(--naut-event); }
@@ -412,8 +385,6 @@
 }
 
 .naut-sec-ai { display: flex; align-items: center; justify-content: space-between; }
-/* 人机协作里的项目行能点开看会话 */
-.naut-row.naut-ai-row { cursor: pointer; }
 
 @keyframes naut-prog-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 /* 设置里填得不对的输入框（比如日期分界写成了 25:00）：边框换成低饱和的砖红 */
