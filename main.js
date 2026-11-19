@@ -276,6 +276,45 @@ const RESULT_LINE_RE = /^\s*[-*+]\s+💬/;
 //   计时和 PAUSED 一样停着，进度条照画
 //   DELEGATED = 块去向委派给 Agent 的（⌥⌘D）：会话在跑时保持 DELEGATED，停下来照上面切，再动起来回 DOING
 const AGENT_KW_RE = /^(TOREVIEW|HITLIMIT|NEEDOK|QUEUED|ERRORED|DELEGATED)$/;
+// 任务状态关键词 → 统一状态名（颜色与 Agent Deck / Logseq Style Tasks 的 keyword.css 一致）
+const KW_STATUS = {
+  TODO: "todo", LATER: "todo",
+  DOING: "doing", NOW: "doing", "IN-PROGRESS": "doing",
+  DONE: "done", YES: "done",
+  PAUSED: "paused",
+  WAITING: "waiting", WAIT: "waiting", MAYBE: "waiting",
+  SUSPENDED: "suspended",
+  TOREVIEW: "toreview",
+  NEEDOK: "needok",
+  ERRORED: "errored",
+  HITLIMIT: "hitlimit",
+  QUEUED: "queued",
+  DELEGATED: "delegated",
+};
+// Agent Deck 实时会话状态 → 任务状态名
+const DECK_STATE_STATUS = {
+  run: "doing",
+  wait: "toreview",
+  "needs-approval": "needok",
+  error: "errored",
+  limit: "hitlimit",
+  queued: "queued",
+};
+function taskStatus(item, deckState = null) {
+  if (!item) return null;
+  if (item.cal && item.cal.color) return null;
+  if (item.kind === "task" && item.state === "done" && isReview(item)) return null;
+  const kw = item.kw ? KW_STATUS[String(item.kw).toUpperCase()] || null : null;
+  const live = deckState ? DECK_STATE_STATUS[deckState] || null : null;
+  if (live && item.state === "open" && (!kw || kw === "doing" || kw === "delegated" || kw === "todo")) return live;
+  return kw;
+}
+function statusCls(item, prefix, deckState = null) {
+  const st = taskStatus(item, deckState);
+  if (!st) return "";
+  if (st === "todo" && (item.main || item.mainA || item.prio || item.kind === "event")) return "";
+  return ` ${prefix}${st}`;
+}
 const indentWidthOf = (t) => { let w = 0; for (const c of /^[ \t]*/.exec(t)[0]) w += c === "\t" ? 4 : 1; return w; };
 // 1.6.0 写过的「🤖 子代理 3：… ✓ 16k」汇总行：现在不写了（subagent 由 Agent Deck 写成子块），日记里留下的照旧当记号行认
 const SUB_LINE_RE = /^\s*[-*+]\s+🤖\s*(?:子代理|side chat)/;
@@ -359,12 +398,13 @@ function parseJournal(content, cfg) {
     const suspended = !!kw && /^(WAIT|SUSPENDED|MAYBE)/.test(kw[1]);   // WAITING / SUSPENDED / MAYBE = 搁置：短期不推，今天不排、不占容量，做过的时间和进度留着
     const paused = !!kw && (kw[1] === "PAUSED" || AGENT_KW_RE.test(kw[1]));   // PAUSED = 暂停：只是停一下，照常排，接着做时剩余时间扣掉做过的；TOREVIEW / NEEDOK / ERRORED / HITLIMIT / QUEUED 同
     const agentKw = kw && AGENT_KW_RE.test(kw[1]) ? kw[1] : null;
+    const kwName = kw ? kw[1].toUpperCase() : (cb ? (cb[1] === "/" ? "DOING" : cb[1] === " " ? "TODO" : "DONE") : null);
     const progress = state === "none" ? null : parseProgress(s);
     let label = state === "none" ? s : stripProgress(s);
     for (const p of prio) label = label.split(p).join("");
     label = cleanLabel(label) || s.trim();
     const indent = lm[1].replace(/\t/g, "    ").length;
-    const base = { line, indent, label, state, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp };
+    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
@@ -3195,6 +3235,38 @@ class SpiralView extends ItemView {
       }
       return aiMemo.get(item);
     };
+    const deck = dayRel === 0 && !playing ? this.app.plugins?.plugins?.["agent-deck"] : null;
+    const deckLines = deck ? content.split("\n") : null;
+    const deckByBlock = new Map(), deckByKey = new Map();
+    if (deck) {
+      const meta = deck.usage?.meta;
+      const stateOf = (sid) => sid && meta?.get(sid)?.state || null;
+      for (const [sid, rec] of Object.entries(this.plugin.deckState(dayKey))) {
+        if (!rec || rec.skip || rec.gone) continue;
+        const st = stateOf(sid);
+        if (!st) continue;
+        if (rec.blockId && (!rec.path || rec.path === file.path)) deckByBlock.set(rec.blockId, st);
+        if (rec.key) deckByKey.set(rec.key, st);
+      }
+      for (const [bindKey, rec] of Object.entries(deck.settings?.taskBindings || {})) {
+        if (!rec?.blockId || (rec.path && rec.path !== file.path)) continue;
+        const sid = rec.sid || String(bindKey).split(":")[1];
+        const st = stateOf(sid) || (sid && meta ? [...meta.entries()].find(([k]) => k.startsWith(sid))?.[1]?.state : null);
+        if (st && !deckByBlock.has(rec.blockId)) deckByBlock.set(rec.blockId, st);
+      }
+    }
+    const deckStateOf = (item) => {
+      if (!deck || !item || item.line == null) return null;
+      const raw = deckLines[item.line] || "";
+      const bm = /\^([a-z0-9-]+)\s*$/i.exec(raw.trimEnd());
+      if (bm && deckByBlock.has(bm[1])) return deckByBlock.get(bm[1]);
+      const lnk = linkUnder(deckLines, item.line);
+      if (lnk?.sid) {
+        const st = deck.usage?.meta?.get(lnk.sid)?.state;
+        if (st) return st;
+      }
+      return item.label ? deckByKey.get(workKey(item.label)) || null : null;
+    };
     const LANE = [0, 5, -5, 9, -9, 13];   // 并行的几件 DOING 各画一条线，沿螺旋错开一点
     const perMin = (t) => 2 * Math.PI * rad(t) / 720;   // 这一圈上一分钟有几个像素
     const drawSeg = (a, b, cls, item) => {
@@ -3202,7 +3274,7 @@ class SpiralView extends ItemView {
       const k = perMin((a + b) / 2), gap = (b - a) * k > 6 ? 0.8 / k : 0;
       const d = arc(a + gap, b - gap, LANE[item.lane || 0] ?? 0);
       if (!d) return;
-      const p = late(svgEl("path", { d, class: `naut-seg ${cls}`, pathLength: 1 }, svg), a);
+      const p = late(svgEl("path", { d, class: `naut-seg ${cls}${statusCls(item, "naut-kw-", deckStateOf(item))}`, pathLength: 1 }, svg), a);
       link(item, p);
       if (item.cal && item.cal.color) p.style.stroke = item.cal.color;   // 日历事件用日历自己的颜色
       const rel = aiOf(item).filter((x) => x.related);
@@ -3278,7 +3350,7 @@ class SpiralView extends ItemView {
       if (!rows.length) return;
       list.createDiv({ cls: "naut-sec", text: title });
       for (const r of rows) {
-        const row = list.createDiv({ cls: `naut-row ${r.cls}` });
+        const row = list.createDiv({ cls: `naut-row ${r.cls}${statusCls(r.item, "is-kw-", deckStateOf(r.item))}` });
         link(r.item, row);
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
         row.createSpan({ cls: "naut-time", text: r.time });
@@ -3613,16 +3685,17 @@ module.exports = class NautilusSpiral extends Plugin {
     this.app.workspace.onLayoutReady(async () => {
       const f = this.app.vault.getAbstractFileByPath(this.journalPath(this.today()));
       if (f instanceof TFile) this.observe(f, await this.app.vault.read(f), false);
-      if (!this.settings.autoOpened) {
+      const firstOpen = !this.settings.autoOpened;
+      if (firstOpen) {
         this.settings.autoOpened = true;
         this.saveSoon();
-        this.activate();
+        await this.activate(true, true);
       }
       // 启动页：今天的日记 + 左侧栏显示螺旋日程（其它插件恢复布局也在这时候，稍等一下再切，免得被盖掉）
       window.setTimeout(async () => {
         try {
           if (this.settings.openTodayOnStartup) await this.openToday(true);
-          if (this.settings.revealOnStartup) await this.activate(false);
+          if (firstOpen || this.settings.revealOnStartup) await this.activate(false, true);
         } catch (e) { console.error("[螺旋日程] 启动页失败", e); }
       }, 600);
     });
@@ -5275,20 +5348,28 @@ module.exports = class NautilusSpiral extends Plugin {
     return `${this.settings.folder}/${m.format(this.settings.format)}.md`;
   }
 
-  async activate(focus = true) {
-    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+  async activate(focus = true, forceLeft = false) {
+    const leftSplit = this.app.workspace.leftSplit;
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+    let leaf = leaves.find((l) => !leftSplit || l.getRoot?.() === leftSplit) || leaves[0];
+    if (forceLeft && leaf && leftSplit && leaf.getRoot?.() !== leftSplit) {
+      leaf.detach();
+      leaf = null;
+    }
     if (!leaf) {
-      leaf = this.app.workspace.getLeftLeaf(false);
+      leaf = this.app.workspace.getLeftLeaf(false) || this.app.workspace.getLeftLeaf(true);
+      if (!leaf) return null;
       await leaf.setViewState({ type: VIEW_TYPE, active: focus });
     }
+    if (leftSplit?.collapsed) leftSplit.expand();
     if (focus) this.app.workspace.revealLeaf(leaf);
     else {
       // 只把左侧栏展开、切到螺旋日程这个标签，焦点留在日记上
-      if (this.app.workspace.leftSplit.collapsed) this.app.workspace.leftSplit.expand();
       const group = leaf.parent;
       if (group && typeof group.selectTab === "function") group.selectTab(leaf);
       else this.app.workspace.revealLeaf(leaf);
     }
+    return leaf;
   }
 
   // 打开「今天」的日记：在当前页打开（替换当前页，不新开标签）；当前页是钉住的才开新标签；没有就建一篇。
@@ -6394,4 +6475,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions, aiSegmentSessions, aiHoverSession };
+module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };

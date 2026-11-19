@@ -16,6 +16,18 @@
   --naut-ai: var(--naut-ai-claude);
   --naut-game: var(--naut-c-game, #9c6496);
   --naut-done: #9ed6b4;
+  --naut-kw-todo: var(--naut-task);
+  --naut-kw-doing: #c8635f;
+  --naut-kw-done: #629c7f;
+  --naut-kw-paused: #b39a3e;
+  --naut-kw-waiting: #8f7fb6;
+  --naut-kw-suspended: #a17f66;
+  --naut-kw-toreview: #b39a3e;
+  --naut-kw-needok: #bf7a45;
+  --naut-kw-errored: #93606b;
+  --naut-kw-hitlimit: #8a5a8c;
+  --naut-kw-queued: #6f86a8;
+  --naut-kw-delegated: #5b9690;
   --naut-now: #5c6370;
   --naut-ease: cubic-bezier(.2, .7, .2, 1);
 }
@@ -98,8 +110,21 @@
 .naut-task { stroke: var(--naut-task); }
 .naut-prio { stroke: var(--naut-prio); }
 .naut-main { stroke: var(--naut-main); }
-.naut-seg.naut-main-done { stroke: color-mix(in srgb, var(--naut-main) 45%, var(--naut-done)); }
 .naut-done { stroke: var(--naut-done); }
+/* 螺旋块跟随任务状态色（与 Agent Deck / Logseq Style Tasks keyword.css 一致） */
+.naut-seg.naut-kw-todo { stroke: var(--naut-kw-todo); }
+.naut-seg.naut-kw-doing { stroke: var(--naut-kw-doing); }
+.naut-seg.naut-kw-done { stroke: var(--naut-kw-done); }
+.naut-seg.naut-kw-paused { stroke: var(--naut-kw-paused); }
+.naut-seg.naut-kw-waiting { stroke: var(--naut-kw-waiting); }
+.naut-seg.naut-kw-suspended { stroke: var(--naut-kw-suspended); }
+.naut-seg.naut-kw-toreview { stroke: var(--naut-kw-toreview); }
+.naut-seg.naut-kw-needok { stroke: var(--naut-kw-needok); }
+.naut-seg.naut-kw-errored { stroke: var(--naut-kw-errored); }
+.naut-seg.naut-kw-hitlimit { stroke: var(--naut-kw-hitlimit); }
+.naut-seg.naut-kw-queued { stroke: var(--naut-kw-queued); }
+.naut-seg.naut-kw-delegated { stroke: var(--naut-kw-delegated); }
+.naut-seg.naut-main-done { stroke: color-mix(in srgb, var(--naut-main) 45%, var(--naut-kw-done)); }
 .naut-seg.naut-review { stroke: var(--naut-review); }
 .naut-done-event { opacity: 0.45; }
 /* 做到一半：已经做过的几段画淡，后面排的画实 */
@@ -148,17 +173,30 @@
 .naut-row.is-task { border-left-color: var(--naut-task); }
 .naut-row.is-prio { border-left-color: var(--naut-prio); }
 .naut-row.is-main { border-left-color: var(--naut-main); }
-.naut-row.is-main.is-done { border-left-color: color-mix(in srgb, var(--naut-main) 45%, var(--naut-done)); }
 .naut-row.is-over { border-left-color: var(--naut-prio); color: var(--naut-prio); }
 .naut-row.is-done { border-left-color: var(--naut-done); color: var(--text-muted); }
-.naut-row.is-review { border-left-color: var(--naut-review); }
 .naut-row.is-susp { border-left-color: var(--text-faint); color: var(--text-muted); }
+.naut-row.is-kw-todo { border-left-color: var(--naut-kw-todo); }
+.naut-row.is-kw-doing { border-left-color: var(--naut-kw-doing); }
+.naut-row.is-kw-done { border-left-color: var(--naut-kw-done); }
+.naut-row.is-kw-paused { border-left-color: var(--naut-kw-paused); }
+.naut-row.is-kw-waiting { border-left-color: var(--naut-kw-waiting); }
+.naut-row.is-kw-suspended { border-left-color: var(--naut-kw-suspended); }
+.naut-row.is-kw-toreview { border-left-color: var(--naut-kw-toreview); }
+.naut-row.is-kw-needok { border-left-color: var(--naut-kw-needok); }
+.naut-row.is-kw-errored { border-left-color: var(--naut-kw-errored); }
+.naut-row.is-kw-hitlimit { border-left-color: var(--naut-kw-hitlimit); }
+.naut-row.is-kw-queued { border-left-color: var(--naut-kw-queued); }
+.naut-row.is-kw-delegated { border-left-color: var(--naut-kw-delegated); }
+.naut-row.is-main.is-done { border-left-color: color-mix(in srgb, var(--naut-main) 45%, var(--naut-kw-done)); }
+.naut-row.is-review { border-left-color: var(--naut-review); }
 .naut-row.naut-ai-row { border-left-color: var(--naut-ai); cursor: default; }
 .naut-row.naut-ai-row .naut-dur { color: color-mix(in srgb, var(--naut-ai) 78%, var(--text-normal)); font-weight: 600; }
 /* 进行中的那一行：时间前面一个跟着呼吸的小圆点 */
 .naut-row.is-doing .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
 .naut-row.is-doing.is-prio .naut-time::before { background: var(--naut-prio); }
 .naut-row.is-doing.is-main .naut-time::before { background: var(--naut-main); }
+.naut-row.is-doing.is-kw-doing .naut-time::before { background: var(--naut-kw-doing); }
 
 /* 列表里能折叠的小节标题、小字说明 */
 .naut-proj-head { cursor: pointer; user-select: none; }
