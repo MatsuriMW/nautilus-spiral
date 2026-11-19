@@ -156,21 +156,21 @@ extension WidgetData {
         let d = { (n: Int) in Dates.string(cal.date(byAdding: .day, value: n, to: today)!) }
         let row = { (g: String, l: String, a: Int, b: Int, done: Bool) in Row(group: g, label: l, start: d(a), end: d(b), done: done, link: "obsidian://open?\(l)") }
         let task = { (l: String, s: String, g: String?) in Task(label: l, state: s, goal: g, link: "obsidian://open?\(l)") }
-        let tasks = [task("简历改成作品集版", "done", nil), task("写第一个案例", "doing", "按「需求 → 拆解 → 交付 → 效果」写完螺旋日程这一篇"), task("录 30 秒演示", "open", nil)]
+        let tasks = [task(Lang.t("简历改成作品集版", "Turn the CV into a portfolio"), "done", nil), task(Lang.t("写第一个案例", "Write the first case study"), "doing", Lang.t("按「需求 → 拆解 → 交付 → 效果」写完螺旋日程这一篇", "Write up Nautilus Spiral as need → breakdown → delivery → result")), task(Lang.t("录 30 秒演示", "Record a 30-second demo"), "open", nil)]
         let ago = { (m: Double) in (Date.now.timeIntervalSince1970 - m * 60) * 1000 }
         return WidgetData(
             today: d(0),
             journal: "obsidian://open",
             main: Main(done: 1, total: 3, link: "obsidian://open", tasks: tasks, next: tasks[1],
                        history: (1...6).map { Day(date: d(-$0), done: $0 % 3, total: 3) }),
-            doing: [Doing(label: "写第一个案例", main: true, start: ago(42), link: "obsidian://open?a"),
-                    Doing(label: "🤖 整理无锡英语试卷", main: false, start: ago(95), link: "obsidian://open?b")],
-            todo: Todo(total: 23, rows: [("回复面试邀约", "2026_10_27"), ("改简历第二版", "2026_10_27"), ("买打印纸", "2026_10_26"), ("读《注意力》第三章", "读书清单"), ("整理 Eagle 素材", "AIGC 工作区"), ("约牙医", "生活杂务")]
+            doing: [Doing(label: Lang.t("写第一个案例", "Write the first case study"), main: true, start: ago(42), link: "obsidian://open?a"),
+                    Doing(label: Lang.t("🤖 整理无锡英语试卷", "🤖 Summarise the meeting notes"), main: false, start: ago(95), link: "obsidian://open?b")],
+            todo: Todo(total: 23, rows: [(Lang.t("回复面试邀约", "Reply to the interview invite"), "2026_10_27"), (Lang.t("改简历第二版", "Revise the CV"), "2026_10_27"), (Lang.t("买打印纸", "Buy printer paper"), "2026_10_26"), (Lang.t("读《注意力》第三章", "Read chapter 3 of Attention"), Lang.t("读书清单", "Reading list")), (Lang.t("整理 Eagle 素材", "Tidy up the Eagle library"), Lang.t("AIGC 工作区", "AIGC notes")), (Lang.t("约牙医", "Book a dentist appointment"), Lang.t("生活杂务", "Errands"))]
                 .enumerated().map { TodoRow(label: $1.0, note: $1.1, ref: "\($0):x", link: "obsidian://open?\($0)") }),
-            planPath: "上班计划.md",
-            plan: Plan(title: "上班计划", link: "obsidian://open",
-                       rows: [row("材料", "简历和项目页", -2, 4, false), row("材料", "作品集三个案例", 3, 18, false),
-                              row("投递", "投递第一批", 6, 20, false), row("投递", "面试", 10, 26, false),
-                              row("入职", "谈 offer", 27, 27, false), row("材料", "定方向", -8, -3, true)]))
+            planPath: Lang.t("上班计划.md", "Plan.md"),
+            plan: Plan(title: Lang.t("上班计划", "Plan"), link: "obsidian://open",
+                       rows: [row(Lang.t("材料", "Material"), Lang.t("简历和项目页", "CV and project page"), -2, 4, false), row(Lang.t("材料", "Material"), Lang.t("作品集三个案例", "Three portfolio cases"), 3, 18, false),
+                              row(Lang.t("投递", "Apply"), Lang.t("投递第一批", "First batch of applications"), 6, 20, false), row(Lang.t("投递", "Apply"), Lang.t("面试", "Interviews"), 10, 26, false),
+                              row(Lang.t("入职", "Onboard"), Lang.t("谈 offer", "Negotiate the offer"), 27, 27, false), row(Lang.t("材料", "Material"), Lang.t("定方向", "Decide the direction"), -8, -3, true)]))
     }
 }

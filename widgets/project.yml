@@ -2,6 +2,7 @@
 name: NautilusWidgets
 options:
   bundleIdPrefix: site.matsuri
+  developmentLanguage: en
   deploymentTarget:
     macOS: "14.0"
 settings:
@@ -22,7 +23,7 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: 螺旋日程小组件
+        CFBundleDisplayName: Nautilus Spiral Widgets
         LSUIElement: true
         CFBundleURLTypes:
           - CFBundleURLName: nautilus-widgets
@@ -44,7 +45,7 @@ targets:
     info:
       path: Widget/Info.plist
       properties:
-        CFBundleDisplayName: 螺旋日程
+        CFBundleDisplayName: Nautilus Spiral
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

@@ -11,11 +11,13 @@ Commands no longer install default global hotkeys. Use the command palette or as
 
 A spiral day planner for Obsidian that reads your daily note.
 
-**English** · [简体中文](./README.zh-CN.md) · [使用指南](./docs/guide.zh-CN.md)
+**English** · [简体中文](./README.zh-CN.md) · [User guide](./docs/guide.md)
 
 <p align="center">
   <img src="assets/demo.gif" width="380" alt="Hovering over the spiral: the line above it instantly shows what each segment was, while the matching segments and list row light up">
 </p>
+
+*The recording shows the plugin with a Chinese interface; the labels switch to English when Obsidian's language is set to English.*
 
 Events stay pinned to their time. To-dos flow from "now" into the free gaps, in list order and by estimated duration. As time moves on, unfinished tasks are pushed forward, and a capacity bar tells you whether today still fits. What you actually did is drawn on the same spiral, so plan and reality sit side by side.
 
@@ -23,7 +25,7 @@ Events stay pinned to their time. To-dos flow from "now" into the free gaps, in 
 
 https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
-**The interface follows Obsidian's language**: English, or Chinese when Obsidian is set to Chinese. The full [guide](./docs/guide.zh-CN.md) is in Chinese for now. This page covers what the plugin does, how to install it and what it touches outside your vault.
+**The interface follows Obsidian's language**: English, or Chinese when Obsidian is set to Chinese. The full [guide](./docs/guide.md) is in English, with a [简体中文版](./docs/guide.zh-CN.md). This page covers what the plugin does, how to install it and what it touches outside your vault.
 
 ## Contents
 
@@ -65,7 +67,7 @@ Nautilus Spiral never writes agent sessions into your note; that half belongs to
 - **A progress line under what you are doing.** In the editor, a `DOING` line gets one row of monospace text under it, filled with `#` like a terminal: `[#########-----------] 45%`. The number is the progress you wrote on the line (`60%`, `2/3`); failing that, the agent session that belongs to the line, if it keeps a to-do list of its own; failing that, time spent against your estimate. When a session is matched, the row also says whether it is running or waiting for you, what its last step was, and how many tokens it has used. You can bind a line to a session by hand, and archiving the session fills the row to 100%.
 - **Active and passive recording, together.** You record on purpose: the plan, the estimates, the states you set by hand. The machine records in the background as your assistant: when each agent session was really moving, and for how long. Both end up in the same daily note and on the same spiral.
 - **Writing back to the note is Agent Deck's job.** Turning a line `DOING` while its session runs, `TOREVIEW` / `PAUSED` when it stops, writing its last words as `💬` and marking it `DONE` when archived are all done by [Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) (see "Two ways to use it" above); Nautilus reads the logs and draws them.
-- **Main quests, and four desktop widgets.** Mark the one to three things that matter most today with `[#A]`: they are planned first, drawn in their own colour (red by default), and the status bar keeps the next one in view. The colours for main quests, fixed events, to-dos, important items, card reviews and game time can be changed under Settings → 🎨 Colors; agent colours follow each agent's own app and stay fixed. Before a main quest starts you are asked for its goal (what "done" looks like), written under the task as a `🎯 Goal:` line; no goal, no start. A slider under each main-quest block sets its progress, written into the line when you let go. Companion macOS widgets (source in `widgets/`, built and installed by you; their labels are in Chinese for now) show today's main quests with the next one's goal and the last seven days' completion; what is `DOING` in today's note and for how long; every open `TODO`, `LATER` and `- [ ]` in the vault, most recently edited notes first; and a Gantt chart of the plan note (`Plan.md` by default, created if missing), five weeks from this Monday, drawn from list items with `🛫` start and `📅` due dates. They work on the desktop and in the Notification Center sidebar: the circle in front of a row marks it done in the note (tap again to undo), the row's name jumps back to that line in Obsidian, and a button in the corner refreshes on demand.
+- **Main quests, and four desktop widgets.** Mark the one to three things that matter most today with `[#A]`: they are planned first, drawn in their own colour (red by default), and the status bar keeps the next one in view. The colours for main quests, fixed events, to-dos, important items, card reviews and game time can be changed under Settings → 🎨 Colors; agent colours follow each agent's own app and stay fixed. Before a main quest starts you are asked for its goal (what "done" looks like), written under the task as a `🎯 Goal:` line; no goal, no start. A slider under each main-quest block sets its progress, written into the line when you let go. Companion macOS widgets (source in `widgets/`, built and installed by you; their labels follow the macOS language) show today's main quests with the next one's goal and the last seven days' completion; what is `DOING` in today's note and for how long; every open `TODO`, `LATER` and `- [ ]` in the vault, most recently edited notes first; and a Gantt chart of the plan note (`Plan.md` by default, created if missing), five weeks from this Monday, drawn from list items with `🛫` start and `📅` due dates. They work on the desktop and in the Notification Center sidebar: the circle in front of a row marks it done in the note (tap again to undo), the row's name jumps back to that line in Obsidian, and a button in the corner refreshes on demand.
 
 Antigravity transcripts and DSH zstd session logs are supported. Agent Deck entries can be matched by block ID. Claude shows task-list steps when available; other agents show conversation turns. Configure automatic journal timing, thresholds and the Claude / Codex CLI model in Agent Deck.
 
@@ -110,7 +112,7 @@ Until it is listed in the community directory: download `main.js`, `manifest.jso
 
 ## Usage
 
-The core needs three things; everything else is optional and listed in the [guide](./docs/guide.zh-CN.md) under 「用到哪个开哪个」.
+The core needs three things; everything else is optional and listed in the [guide](./docs/guide.md) under "Turn on what you use".
 
 1. In the plugin settings, set your daily-note **folder** and **file name format** (a moment.js format such as `YYYY-MM-DD`), the hours your day starts and ends, and the date boundary: the time before which you are still writing in yesterday's note. The boundary is a 24-hour clock time such as `08:00` or `4:30`.
 2. In today's note, write a couple of list items: `- 14:00-15:00 meeting` and `- TODO reply to mail 20m`.
@@ -120,7 +122,7 @@ Two rules that edit your note are on by default: at most 3 tasks may be `DOING` 
 
 ## Works with Telegram Companion
 
-Install [Telegram Companion](https://github.com/MatsuriMW/telegram-companion) next to it and your phone becomes the remote: send `?` to get today's spiral as an image, say when you got up or went to bed to set the day's bounds, pause the clock when you leave for a meal, tick tasks off, and receive the weekly direction review. Nothing to configure here: both plugins enabled is enough. Details in the [guide](./docs/guide.zh-CN.md) under 「和 Telegram Companion 联动」.
+Install [Telegram Companion](https://github.com/MatsuriMW/telegram-companion) next to it and your phone becomes the remote: send `?` to get today's spiral as an image, say when you got up or went to bed to set the day's bounds, pause the clock when you leave for a meal, tick tasks off, and receive the weekly direction review. Nothing to configure here: both plugins enabled is enough. Details in the [guide](./docs/guide.md) under "Works with Telegram Companion".
 
 ## Network, accounts and files outside your vault
 

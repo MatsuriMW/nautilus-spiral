@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showWindow() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        w.title = "螺旋日程 · 小组件"
+        w.title = Lang.t("螺旋日程 · 小组件", "Nautilus Spiral · Widgets")
         w.contentView = NSHostingView(rootView: Gallery(data: WidgetData.load()))
         w.center()
         w.makeKeyAndOrderFront(nil)
@@ -101,7 +101,7 @@ struct Gallery: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("加到桌面：右键桌面 →「编辑小组件」→ 搜「螺旋日程」，把「今天的主线」「在做」「待办」「计划甘特图」拖出来。\n加到侧栏：点屏幕右上角的时间打开通知中心 → 最下面「编辑小组件」。\n数据来自 Obsidian 的螺旋日程（设置里打开「给小组件导出数据」），有变化时会自动刷新。")
+                Text(Lang.t("加到桌面：右键桌面 →「编辑小组件」→ 搜「螺旋日程」，把「今天的主线」「在做」「待办」「计划甘特图」拖出来。\n加到侧栏：点屏幕右上角的时间打开通知中心 → 最下面「编辑小组件」。\n数据来自 Obsidian 的螺旋日程（设置里打开「给小组件导出数据」），有变化时会自动刷新。", "Add to the desktop: right-click the desktop → Edit Widgets → search \"Nautilus Spiral\", then drag out Today's mainline, Doing, To-dos and Plan Gantt.\nAdd to the sidebar: click the time in the top right to open Notification Center → Edit Widgets at the bottom.\nThe data comes from Nautilus Spiral in Obsidian (turn on \"Export data for widgets\" in its settings) and refreshes when it changes."))
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 let p = Self.previews(data)
                 HStack(alignment: .top, spacing: 16) { p[0].1; p[1].1 }

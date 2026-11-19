@@ -20,7 +20,7 @@ struct PlanView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Label(data?.plan?.title ?? "计划", systemImage: "calendar").font(.system(size: 13, weight: .semibold))
+                Label(data?.plan?.title ?? Lang.t("计划", "Plan"), systemImage: "calendar").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Text("\(short(first)) – \(short(date(days - 1)))").font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
             }
@@ -29,10 +29,10 @@ struct PlanView: View {
                     guard let a = Dates.parse(r.start), let b = Dates.parse(r.end) else { return false }
                     return b >= first && a <= date(days - 1)
                 }
-                if rows.isEmpty { Hint(title: "这 5 周没有排上日期的事", detail: "在「\(plan.title)」的列表项里写上 🛫 开始、📅 截止日期") }
+                if rows.isEmpty { Hint(title: Lang.t("这 5 周没有排上日期的事", "Nothing dated in these 5 weeks"), detail: Lang.t("在「\(plan.title)」的列表项里写上 🛫 开始、📅 截止日期", "Add 🛫 start or 📅 due dates to list items in \(plan.title)")) }
                 else { chart(rows) }
             } else if let data {
-                Hint(title: "没找到计划笔记", detail: "螺旋日程设置里的「计划笔记」是 \(data.planPath)")
+                Hint(title: Lang.t("没找到计划笔记", "Plan note not found"), detail: Lang.t("螺旋日程设置里的「计划笔记」是 \(data.planPath)", "The plan note in Nautilus Spiral settings is \(data.planPath)"))
             } else {
                 Hint.noData
             }
@@ -64,7 +64,7 @@ struct PlanView: View {
 
     private func chart(_ rows: [WidgetData.Row]) -> some View {
         GeometryReader { geo in
-            let labelW: CGFloat = wide ? 150 : 86, axisH: CGFloat = wide ? 25 : 15
+            let labelW: CGFloat = wide ? 172 : 104, axisH: CGFloat = wide ? 25 : 15
             let dayW = (geo.size.width - labelW) / CGFloat(days)
             let all = lines(rows)
             let fit = fitting(all, height: geo.size.height - axisH)
@@ -91,7 +91,7 @@ struct PlanView: View {
                         }
                     }
                     if fit < all.count {
-                        Text("还有 \(all[fit...].filter(\.isRow).count) 条…")
+                        Text(Lang.t("还有 \(all[fit...].filter(\.isRow).count) 条…", "\(all[fit...].filter(\.isRow).count) more…"))
                             .font(.system(size: 9)).foregroundStyle(.secondary).padding(.leading, 9)
                     }
                 }
@@ -122,6 +122,7 @@ struct PlanView: View {
                 .foregroundStyle(r.done ? .secondary : .primary)
                 .strikethrough(r.done)
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)   // 英文标签比中文长：先缩小一点，缩不下再截
                 .frame(width: labelW - 4, alignment: .leading)
                 .padding(.leading, 4)
             ZStack(alignment: .leading) {
@@ -233,7 +234,7 @@ struct RowLink<Content: View>: View {
 struct Hint: View {
     let title: String
     let detail: String
-    static let noData = Hint(title: "还没有数据", detail: "Obsidian 设置 → 第三方插件 → 螺旋日程 →「🗓 macOS 小组件」，打开「给小组件导出数据」")
+    static let noData = Hint(title: Lang.t("还没有数据", "No data yet"), detail: Lang.t("Obsidian 设置 → 第三方插件 → 螺旋日程 →「🗓 macOS 小组件」，打开「给小组件导出数据」", "Obsidian settings → Community plugins → Nautilus Spiral → \"🗓 macOS widgets\", turn on \"Export data for widgets\""))
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Spacer(minLength: 0)

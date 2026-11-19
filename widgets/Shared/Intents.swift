@@ -3,6 +3,7 @@ import SwiftUI
 
 // 小组件上点一行前面的圆圈：做完 ↔ 撤回。交给 WidgetData.send 写进收件箱，螺旋日程收到后改日记（或者计划笔记）
 struct ToggleIntent: AppIntent {
+    // App Intents 的元数据在编译期静态扫，标题和参数名只能用字面量；这几个意图 isDiscoverable = false，界面里看不到，也就没跟着 Lang 走
     static var title: LocalizedStringResource = "做完 / 撤回"
     static var isDiscoverable: Bool = false
 

@@ -29,8 +29,8 @@ struct MainWidget: Widget {
         StaticConfiguration(kind: "main", provider: Provider()) { entry in
             MainEntryView(entry: entry)
         }
-        .configurationDisplayName("今天的主线")
-        .description("螺旋日程：日记里带 [#A] 的主线，做到第几件、下一件和它的目标；点圆圈记成做完")
+        .configurationDisplayName(Lang.t("今天的主线", "Today's mainline"))
+        .description(Lang.t("螺旋日程：日记里带 [#A] 的主线，做到第几件、下一件和它的目标；点圆圈记成做完", "Nautilus Spiral: today's mainline blocks (marked [#A]), how many are done, the next one and its goal; tap the circle to mark one done"))
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -40,8 +40,8 @@ struct DoingWidget: Widget {
         StaticConfiguration(kind: "doing", provider: Provider()) { entry in
             DoingEntryView(entry: entry)
         }
-        .configurationDisplayName("在做")
-        .description("螺旋日程：今天日记里 DOING 的几件，各做了多久；点圆圈记成做完")
+        .configurationDisplayName(Lang.t("在做", "Doing"))
+        .description(Lang.t("螺旋日程：今天日记里 DOING 的几件，各做了多久；点圆圈记成做完", "Nautilus Spiral: the tasks in DOING in today's journal and how long each has been running; tap the circle to mark one done"))
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -51,8 +51,8 @@ struct TodoWidget: Widget {
         StaticConfiguration(kind: "todo", provider: Provider()) { entry in
             TodoEntryView(entry: entry)
         }
-        .configurationDisplayName("待办")
-        .description("螺旋日程：全库没做完的 TODO、LATER 和「- [ ]」，最近改过的笔记排前面；点圆圈勾掉")
+        .configurationDisplayName(Lang.t("待办", "To-dos"))
+        .description(Lang.t("螺旋日程：全库没做完的 TODO、LATER 和「- [ ]」，最近改过的笔记排前面；点圆圈勾掉", "Nautilus Spiral: every open TODO, LATER and - [ ] in the vault, most recently edited notes first; tap the circle to tick one off"))
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
@@ -62,8 +62,8 @@ struct PlanWidget: Widget {
         StaticConfiguration(kind: "plan", provider: Provider()) { entry in
             PlanEntryView(entry: entry)
         }
-        .configurationDisplayName("计划甘特图")
-        .description("螺旋日程：「上班计划」里写了日期的事，从这周一起画 5 周；点圆圈勾掉")
+        .configurationDisplayName(Lang.t("计划甘特图", "Plan Gantt"))
+        .description(Lang.t("螺旋日程：「上班计划」里写了日期的事，从这周一起画 5 周；点圆圈勾掉", "Nautilus Spiral: dated items in the plan note, drawn as five weeks from this Monday; tap the circle to tick one off"))
         .supportedFamilies([.systemLarge, .systemExtraLarge])
     }
 }

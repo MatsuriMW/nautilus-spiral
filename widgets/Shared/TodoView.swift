@@ -12,21 +12,21 @@ struct TodoView: View {
         let limit = family == .systemLarge ? 12 : 4
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Label("待办", systemImage: "checklist").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.color(0))
+                Label(Lang.t("待办", "To-dos"), systemImage: "checklist").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.color(0))
                 Spacer()
                 RefreshButton()
                 if let t = data?.todo, t.total > 0 { Text("\(t.total)").font(.system(size: 18, weight: .bold, design: .rounded)).monospacedDigit() }
             }
             if let data, data.isStale(now) {
-                Hint(title: "停在 \(data.today)", detail: "打开 Obsidian 就会更新")
+                Hint(title: Lang.t("停在 \(data.today)", "Stuck on \(data.today)"), detail: Lang.t("打开 Obsidian 就会更新", "Open Obsidian to update"))
             } else if let data, let t = data.todo, !t.rows.isEmpty {
                 ForEach(t.rows.prefix(limit)) { row($0, day: data.today) }
-                if t.total > limit { Text("还有 \(t.total - limit) 条").font(.system(size: 10)).foregroundStyle(.secondary) }
+                if t.total > limit { Text(Lang.t("还有 \(t.total - limit) 条", "\(t.total - limit) more")).font(.system(size: 10)).foregroundStyle(.secondary) }
                 Spacer(minLength: 0)
             } else if data == nil || data?.todo == nil {
                 Hint.noData
             } else {
-                Hint(title: "没有待办", detail: "笔记里写 TODO、LATER 或者「- [ ]」的条目会出现在这里")
+                Hint(title: Lang.t("没有待办", "No to-dos"), detail: Lang.t("笔记里写 TODO、LATER 或者「- [ ]」的条目会出现在这里", "Items marked TODO, LATER or - [ ] in your notes show up here"))
             }
         }
         .widgetURL(Go.url(data?.journal))

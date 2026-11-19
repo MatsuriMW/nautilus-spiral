@@ -11,13 +11,13 @@ struct MainView: View {
     var body: some View {
         Group {
             if let data, data.isStale(now) {
-                Hint(title: "主线停在 \(data.today)", detail: "打开 Obsidian 就会更新")
+                Hint(title: Lang.t("主线停在 \(data.today)", "Mainline stuck on \(data.today)"), detail: Lang.t("打开 Obsidian 就会更新", "Open Obsidian to update"))
             } else if let data, let m = data.main, m.total > 0 {
                 if medium { mediumView(m, data) } else { smallView(m, data) }
             } else if data == nil {
                 Hint.noData
             } else {
-                Hint(title: data?.main == nil ? "今天还没有日记" : "今天还没定主线", detail: "给最要紧的一到三件写上 [#A]（todo a）")
+                Hint(title: data?.main == nil ? Lang.t("今天还没有日记", "No journal for today yet") : Lang.t("今天还没定主线", "No mainline set for today"), detail: Lang.t("给最要紧的一到三件写上 [#A]（todo a）", "Mark the one to three that matter most with [#A] (todo a)"))
             }
         }
         .widgetURL(Go.url(data?.main?.next?.link ?? data?.journal))
@@ -25,7 +25,7 @@ struct MainView: View {
 
     private func header(_ m: WidgetData.Main) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Label("主线", systemImage: "target").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.main)
+            Label(Lang.t("主线", "Mainline"), systemImage: "target").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.main)
             Spacer()
             RefreshButton()
             Text("\(m.done)/\(m.total)").font(.system(size: 18, weight: .bold, design: .rounded)).monospacedDigit()
@@ -37,7 +37,7 @@ struct MainView: View {
             if let g = t?.goal, !g.isEmpty {
                 Label(g, systemImage: "flag").font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
             } else if t != nil {
-                Label("还没写目标", systemImage: "flag").font(.system(size: 10)).foregroundStyle(.orange).lineLimit(1)
+                Label(Lang.t("还没写目标", "No goal yet"), systemImage: "flag").font(.system(size: 10)).foregroundStyle(.orange).lineLimit(1)
             }
         }
     }
@@ -48,11 +48,11 @@ struct MainView: View {
             HStack(spacing: 4) { ForEach(m.tasks) { CheckButton(kind: "main", text: $0.label, state: $0.state, day: data.today, size: 13) } }
             Spacer(minLength: 0)
             if let nx = m.next {
-                Text(nx.state == "doing" ? "在做" : "下一件").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(nx.state == "doing" ? Lang.t("在做", "Doing") : Lang.t("下一件", "Next")).font(.system(size: 10)).foregroundStyle(.secondary)
                 Text(nx.label).font(.system(size: 13, weight: .semibold)).lineLimit(2)
                 goal(nx)
             } else {
-                Text("今天的主线做完了 🎉").font(.system(size: 13, weight: .semibold))
+                Text(Lang.t("今天的主线做完了 🎉", "Mainline done for today 🎉")).font(.system(size: 13, weight: .semibold))
             }
         }
     }
@@ -66,7 +66,7 @@ struct MainView: View {
                         .stroke(Palette.main, style: StrokeStyle(lineWidth: 7, lineCap: .round)).rotationEffect(.degrees(-90))
                     VStack(spacing: 0) {
                         Text("\(m.done)/\(m.total)").font(.system(size: 17, weight: .bold, design: .rounded)).monospacedDigit()
-                        Text("主线").font(.system(size: 9)).foregroundStyle(.secondary)
+                        Text(Lang.t("主线", "Mainline")).font(.system(size: 9)).foregroundStyle(.secondary)
                     }
                 }
                 .frame(width: 70, height: 70)
@@ -86,7 +86,7 @@ struct MainView: View {
                     }
                     if t.id == m.next?.id { goal(t).padding(.leading, 18) }
                 }
-                if tasks.count > 4 { Text("还有 \(tasks.count - 4) 件").font(.system(size: 10)).foregroundStyle(.secondary) }
+                if tasks.count > 4 { Text(Lang.t("还有 \(tasks.count - 4) 件", "\(tasks.count - 4) more")).font(.system(size: 10)).foregroundStyle(.secondary) }
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -124,21 +124,21 @@ struct DoingView: View {
         let limit = medium ? 4 : 3
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Label("在做", systemImage: "play.circle").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.doing)
+                Label(Lang.t("在做", "Doing"), systemImage: "play.circle").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.doing)
                 Spacer()
                 RefreshButton()
                 if let list = data?.doing, !list.isEmpty { Text("\(list.count)").font(.system(size: 18, weight: .bold, design: .rounded)).monospacedDigit() }
             }
             if let data, data.isStale(now) {
-                Hint(title: "停在 \(data.today)", detail: "打开 Obsidian 就会更新")
+                Hint(title: Lang.t("停在 \(data.today)", "Stuck on \(data.today)"), detail: Lang.t("打开 Obsidian 就会更新", "Open Obsidian to update"))
             } else if let data, let list = data.doing, !list.isEmpty {
                 ForEach(list.prefix(limit)) { row($0, day: data.today) }
-                if list.count > limit { Text("还有 \(list.count - limit) 件").font(.system(size: 10)).foregroundStyle(.secondary) }
+                if list.count > limit { Text(Lang.t("还有 \(list.count - limit) 件", "\(list.count - limit) more")).font(.system(size: 10)).foregroundStyle(.secondary) }
                 Spacer(minLength: 0)
             } else if data == nil {
                 Hint.noData
             } else {
-                Hint(title: data?.doing == nil ? "今天还没有日记" : "现在没有在做的事", detail: "在日记里把一件事改成 DOING，这里就会出现")
+                Hint(title: data?.doing == nil ? Lang.t("今天还没有日记", "No journal for today yet") : Lang.t("现在没有在做的事", "Nothing in progress"), detail: Lang.t("在日记里把一件事改成 DOING，这里就会出现", "Switch a task to DOING in your journal and it shows up here"))
             }
         }
         .widgetURL(Go.url(data?.journal))
