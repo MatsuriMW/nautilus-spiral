@@ -24,7 +24,7 @@ const ctx = {
 };
 vm.runInNewContext(fs.readFileSync(source, 'utf8'), ctx, { filename: source });
 const Plugin = ctx.module.exports;
-const { DEFAULTS, parseJournal, taskStatus, statusCls } = Plugin.core;
+const { DEFAULTS, parseJournal, taskStatus, statusCls, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS } = Plugin.core;
 
 // 1. parseJournal 提取各任务状态关键词与复选框状态
 const items = parseJournal([
@@ -83,7 +83,7 @@ const expectedColors = {
   paused: '#b39a3e',
   waiting: '#8f7fb6',
   suspended: '#a17f66',
-  toreview: '#b39a3e',
+  toreview: '#6fa9b8',
   needok: '#bf7a45',
   errored: '#93606b',
   hitlimit: '#8a5a8c',
@@ -135,6 +135,32 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   assert.equal(leftSplit.collapsed, false);
   assert.equal(newLeftLeaf.parent.selected, newLeftLeaf);
   console.log('PASS activate(focus, forceLeft) 强制在左侧打开并展开左侧栏');
+
+  // 5. 「接下来」三段循环：原状态 → DONE → SUSPENDED → 原状态；以及右键菜单状态切换
+  const orig = '- DOING 21:30 [#A] 写代码 30m';
+  const step1 = cycleUpNextStatus(orig, null, '22:10');
+  assert.equal(step1.nextKw, 'DONE');
+  assert.equal(step1.nextRaw, '- DONE 21:30-22:10 [#A] 写代码 30m');
+  assert.equal(step1.origRaw, orig);
+
+  const step2 = cycleUpNextStatus(step1.nextRaw, step1.origRaw, '22:10');
+  assert.equal(step2.nextKw, 'SUSPENDED');
+  assert.equal(step2.nextRaw, '- SUSPENDED [#A] 写代码 30m');
+  assert.equal(step2.origRaw, orig);
+
+  const step3 = cycleUpNextStatus(step2.nextRaw, step2.origRaw, '22:10');
+  assert.equal(step3.nextKw, 'DOING');
+  assert.equal(step3.nextRaw, orig, '第三下应无损恢复原状态');
+  assert.equal(step3.origRaw, null);
+
+  assert.equal(toKeyword('- TODO 买牛奶 10m', 'WAITING', '22:10'), '- WAITING 买牛奶 10m');
+  assert.equal(toKeyword('- TODO 买牛奶 10m', 'TOREVIEW', '22:10'), '- TOREVIEW 买牛奶 10m');
+  assert.equal(toKeyword('- TODO 买牛奶 10m', 'DOING', '22:10'), '- DOING 22:10 买牛奶 10m');
+  const menuKws = UP_NEXT_MENU_GROUPS.flat().map(([k]) => k);
+  for (const k of ['TODO', 'DOING', 'DONE', 'PAUSED', 'WAITING', 'SUSPENDED', 'CANCELLED', 'TOREVIEW', 'NEEDOK', 'DELEGATED', 'QUEUED', 'HITLIMIT', 'ERRORED']) {
+    assert.ok(menuKws.includes(k), `右键菜单应包含 ${k}`);
+  }
+  console.log('PASS 「接下来」点击三段循环与右键菜单状态切换');
 })().catch((err) => {
   console.error(err);
   process.exitCode = 1;

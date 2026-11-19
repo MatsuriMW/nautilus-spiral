@@ -1027,6 +1027,55 @@ function toDoing(raw) { const p = splitTask(raw); return p ? `${p.prefix}DOING $
 function toDone(raw, since, end) { const p = splitTask(raw); return p ? `${p.prefix}DONE ${p.since ?? since}-${end} ${p.rest}` : raw; }
 function toTodo(raw) { const p = splitTask(raw); return p ? `${p.prefix}TODO ${p.rest}` : raw; }
 function toPaused(raw) { const p = splitTask(raw); return p ? `${p.prefix}PAUSED ${p.rest}` : raw; }
+function toKeyword(raw, kw, nowStr = moment().format("HH:mm")) {
+  const p = splitTask(raw);
+  if (!p) return raw;
+  const target = String(kw || "TODO").toUpperCase();
+  let rest = p.rest;
+  if (p.kw === "DONE" && target !== "DONE") {
+    rest = rest.replace(/^\d{1,2}[:：]\d{2}\s*[-–~～到至]\s*\d{1,2}[:：]\d{2}\s+/, "");
+  }
+  if (target === "DOING") return `${p.prefix}DOING ${nowStr} ${rest}`;
+  if (target === "DONE") return `${p.prefix}DONE ${p.since ? `${p.since}-${nowStr}` : nowStr} ${rest}`;
+  return `${p.prefix}${target} ${rest}`;
+}
+// 「接下来」面板点击循环：原状态 → DONE → SUSPENDED → 原状态
+function cycleUpNextStatus(raw, origRaw = null, nowStr = moment().format("HH:mm")) {
+  const p = splitTask(raw);
+  if (!p) return { nextRaw: raw, nextKw: null, origRaw };
+  const cur = (p.kw || (p.cb === "x" || p.cb === "X" ? "DONE" : p.cb === "/" ? "DOING" : "TODO")).toUpperCase();
+  if (cur === "DONE") {
+    return { nextRaw: toKeyword(raw, "SUSPENDED", nowStr), nextKw: "SUSPENDED", origRaw: origRaw ?? raw };
+  }
+  if (cur === "SUSPENDED") {
+    if (origRaw != null) {
+      const op = splitTask(origRaw);
+      const okw = (op?.kw || (op?.cb === "/" ? "DOING" : op?.cb === "x" || op?.cb === "X" ? "DONE" : "TODO")).toUpperCase();
+      return { nextRaw: origRaw, nextKw: okw, origRaw: null };
+    }
+    return { nextRaw: toKeyword(raw, "TODO", nowStr), nextKw: "TODO", origRaw: null };
+  }
+  return { nextRaw: toKeyword(raw, "DONE", nowStr), nextKw: "DONE", origRaw: raw };
+}
+const UP_NEXT_MENU_GROUPS = [
+  [
+    ["TODO", T("TODO · 待办", "TODO · To-do")],
+    ["DOING", T("DOING · 进行中", "DOING · Doing")],
+    ["DONE", T("DONE · 已完成", "DONE · Done")],
+    ["PAUSED", T("PAUSED · 暂停", "PAUSED · Paused")],
+    ["WAITING", T("WAITING · 等待", "WAITING · Waiting")],
+    ["SUSPENDED", T("SUSPENDED · 搁置", "SUSPENDED · Suspended")],
+    ["CANCELLED", T("CANCELLED · 取消", "CANCELLED · Cancelled")],
+  ],
+  [
+    ["TOREVIEW", T("TOREVIEW · 待检视", "TOREVIEW · To review")],
+    ["NEEDOK", T("NEEDOK · 等你允许", "NEEDOK · Needs approval")],
+    ["DELEGATED", T("DELEGATED · 已委派", "DELEGATED · Delegated")],
+    ["QUEUED", T("QUEUED · 排队中", "QUEUED · Queued")],
+    ["HITLIMIT", T("HITLIMIT · 达到限额", "HITLIMIT · Hit limit")],
+    ["ERRORED", T("ERRORED · 出错", "ERRORED · Errored")],
+  ],
+];
 
 // 一件任务「动过没有」看这一行加上它下面所有子项
 function subtree(lines, n) {
@@ -3350,9 +3399,18 @@ class SpiralView extends ItemView {
       if (!rows.length) return;
       list.createDiv({ cls: "naut-sec", text: title });
       for (const r of rows) {
-        const row = list.createDiv({ cls: `naut-row ${r.cls}${statusCls(r.item, "is-kw-", deckStateOf(r.item))}` });
+        const kwCls = statusCls(r.item, "is-kw-", deckStateOf(r.item));
+        const row = list.createDiv({ cls: `naut-row ${r.cls}${kwCls}${r.upNext ? " is-upnext" : ""}` });
         link(r.item, row);
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
+        if (r.upNext) {
+          const curKw = (r.item.kw || "").toUpperCase();
+          row.createSpan({
+            cls: "naut-st-dot",
+            text: curKw === "DONE" ? "✓" : curKw === "SUSPENDED" ? "⏸" : "●",
+            attr: { title: T("左键：DONE → SUSPENDED → 原状态 · 右键：更多状态", "Click: DONE → SUSPENDED → original · Right-click: more states") },
+          });
+        }
         row.createSpan({ cls: "naut-time", text: r.time });
         row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.mainA && !r.inMain ? "🎯 " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
           attr: r.item.cal ? { title: T(`日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`, `Calendar: ${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`) } : {} });
@@ -3370,7 +3428,13 @@ class SpiralView extends ItemView {
           const b = row.createEl("button", { cls: "naut-play", text: "▶", attr: { title: tip } });
           b.onclick = (e) => { e.stopPropagation(); this.plugin.startTask(file, t); };
         }
-        row.onclick = () => this.plugin.openItem(file, r.item);
+        if (r.upNext) {
+          row.setAttr("title", T("左键：DONE → SUSPENDED → 原状态 · 右键：更多状态", "Click: DONE → SUSPENDED → original · Right-click: more states"));
+          row.onclick = () => this.cycleUpNext(file, dayKey, r.item);
+          row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item);
+        } else {
+          row.onclick = () => this.plugin.openItem(file, r.item);
+        }
       }
     };
     // 进度：写了 40% / 1/3 按写的；没写但做过，按 已做 / 预估 估一个
@@ -3403,11 +3467,36 @@ class SpiralView extends ItemView {
     section(T("固定事件", "Fixed events"), events.map((e) => ({ item: e, cls: e.state === "done" ? "is-done" : "is-event", time: `${clock(e.start)}–${clock(e.end)}`, dur: dur(e.end - e.start) })));
     // 按排到的时间先后列（小任务补位到前面的空档，会排在列表里靠后的大任务前面）
     const placed = plan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]);
-    section(T("接下来", "Up next"), placed.map((t) => ({
+    const upNextRows = placed.map((t) => ({
       item: t, cls: (t.mainA ? "is-main" : t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
       time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clock(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
-      dur: durText(t), tip: tipOf(t), play: realRel === 0 && !playing,
-    })));
+      dur: durText(t), tip: tipOf(t), play: realRel === 0 && !playing, upNext: !playing,
+    }));
+    // 刚在「接下来」里点成 DONE / SUSPENDED 的项暂时留在原地，方便再点一下继续循环回原状态
+    const hold = this._upNextHold?.get(dayKey);
+    if (hold && hold.size && !playing) {
+      const seen = new Set(placed.map((t) => t.line));
+      const extras = [];
+      for (const [ln, rec] of [...hold.entries()]) {
+        if (seen.has(ln)) { hold.delete(ln); continue; }
+        const it = items.find((i) => i.line === ln && i.kind === "task");
+        const curKw = (it?.kw || "").toUpperCase();
+        if (!it || (curKw !== "DONE" && curKw !== "SUSPENDED")) { hold.delete(ln); continue; }
+        extras.push({
+          idx: rec.idx ?? upNextRows.length,
+          row: {
+            item: it,
+            cls: curKw === "DONE" ? "is-done" : "is-susp",
+            time: curKw === "DONE" ? (it.doneAt != null ? `✓ ${clock(it.doneAt)}` : "✓") : "💤",
+            dur: dur(it.dur),
+            upNext: true,
+          },
+        });
+      }
+      extras.sort((a, b) => a.idx - b.idx);
+      for (const ex of extras) upNextRows.splice(Math.min(ex.idx, upNextRows.length), 0, ex.row);
+    }
+    section(T("接下来", "Up next"), upNextRows);
     const over = plan.queue.filter((t) => t.overflow);
     section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
     section(T("💤 搁置", "💤 Parked"), plan.suspended.map((t) => ({ item: t, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
@@ -3426,6 +3515,70 @@ class SpiralView extends ItemView {
     // 入场时列表一行行浮上来（--naut-i = 第几行，最多错开到第 18 行）
     const stagger = () => { if (enter) Array.from(list.children).forEach((el, i) => { if (!el.style.getPropertyValue("--naut-i")) el.style.setProperty("--naut-i", String(Math.min(i, 18))); }); };
     stagger();
+  }
+
+  // 「接下来」面板左键循环状态：原状态 → DONE → SUSPENDED → 原状态
+  async cycleUpNext(file, dayKey, item) {
+    if (!file || item?.line == null) return;
+    if (!this._upNextHold) this._upNextHold = new Map();
+    let hold = this._upNextHold.get(dayKey);
+    if (!hold) { hold = new Map(); this._upNextHold.set(dayKey, hold); }
+    const prev = hold.get(item.line);
+    let result = null;
+    const changed = await this.plugin.editFile(file, (lines) => {
+      if (item.line < 0 || item.line >= lines.length) return 0;
+      const cur = lines[item.line];
+      result = cycleUpNextStatus(cur, prev?.origRaw ?? null);
+      if (result.nextRaw === cur) return 0;
+      lines[item.line] = result.nextRaw;
+      return 1;
+    });
+    if (!changed || !result) return;
+    if (result.origRaw != null) hold.set(item.line, { origRaw: result.origRaw, idx: prev?.idx ?? 0 });
+    else hold.delete(item.line);
+    if (result.nextKw) this.plugin.kwSound(KW_SOUND[result.nextKw] || "TODO");
+    this.render();
+  }
+
+  // 「接下来」面板右键切到指定状态
+  async setUpNextKeyword(file, dayKey, item, kw) {
+    if (!file || item?.line == null) return;
+    const target = String(kw || "TODO").toUpperCase();
+    const changed = await this.plugin.editFile(file, (lines) => {
+      if (item.line < 0 || item.line >= lines.length) return 0;
+      const cur = lines[item.line];
+      const next = toKeyword(cur, target);
+      if (next === cur) return 0;
+      lines[item.line] = next;
+      return 1;
+    });
+    if (!changed) return;
+    this._upNextHold?.get(dayKey)?.delete(item.line);
+    this.plugin.kwSound(KW_SOUND[target] || "TODO");
+    this.render();
+  }
+
+  openUpNextMenu(e, file, dayKey, item) {
+    e.preventDefault();
+    e.stopPropagation();
+    const menu = new OB.Menu();
+    const curKw = (item.kw || "").toUpperCase();
+    UP_NEXT_MENU_GROUPS.forEach((group, gi) => {
+      if (gi > 0) menu.addSeparator();
+      for (const [kw, title] of group) {
+        menu.addItem((mi) => {
+          mi.setTitle(title);
+          if (curKw === kw && typeof mi.setChecked === "function") mi.setChecked(true);
+          mi.onClick(() => this.setUpNextKeyword(file, dayKey, item, kw));
+        });
+      }
+    });
+    menu.addSeparator();
+    menu.addItem((mi) => {
+      mi.setTitle(T("定位到日记", "Show in journal"));
+      mi.onClick(() => this.plugin.openItem(file, item));
+    });
+    menu.showAtMouseEvent(e);
   }
 
   // 🤖 人机协作：按项目分 + 近 7 天
@@ -6475,4 +6628,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };
+module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, RESULT_LINE_RE, SUB_LINE_RE, parseKid, kidUnder, sideChats, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, subtree, focusMinutes, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, dshArchivedSessions, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };

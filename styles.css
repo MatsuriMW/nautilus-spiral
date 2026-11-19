@@ -22,7 +22,7 @@
   --naut-kw-paused: #b39a3e;
   --naut-kw-waiting: #8f7fb6;
   --naut-kw-suspended: #a17f66;
-  --naut-kw-toreview: #b39a3e;
+  --naut-kw-toreview: #6fa9b8;
   --naut-kw-needok: #bf7a45;
   --naut-kw-errored: #93606b;
   --naut-kw-hitlimit: #8a5a8c;
@@ -166,6 +166,21 @@
 .naut-sec { margin: 10px 0 4px; font-size: var(--font-ui-smaller); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
 .naut-row { display: flex; gap: 8px; padding: 3px 6px; border-radius: 4px; border-left: 3px solid transparent; cursor: pointer; transition: background-color .12s ease-out; }
 .naut-row:hover { background: var(--background-modifier-hover); }
+.naut-st-dot { flex: none; width: 1.1em; text-align: center; font-size: .85em; line-height: 1.4; color: var(--naut-task); opacity: .85; user-select: none; }
+.naut-row.is-main .naut-st-dot { color: var(--naut-main); }
+.naut-row.is-prio .naut-st-dot { color: var(--naut-prio); }
+.naut-row.is-kw-todo .naut-st-dot { color: var(--naut-kw-todo); }
+.naut-row.is-kw-doing .naut-st-dot { color: var(--naut-kw-doing); }
+.naut-row.is-kw-done .naut-st-dot { color: var(--naut-kw-done); }
+.naut-row.is-kw-paused .naut-st-dot { color: var(--naut-kw-paused); }
+.naut-row.is-kw-waiting .naut-st-dot { color: var(--naut-kw-waiting); }
+.naut-row.is-kw-suspended .naut-st-dot { color: var(--naut-kw-suspended); }
+.naut-row.is-kw-toreview .naut-st-dot { color: var(--naut-kw-toreview); }
+.naut-row.is-kw-needok .naut-st-dot { color: var(--naut-kw-needok); }
+.naut-row.is-kw-errored .naut-st-dot { color: var(--naut-kw-errored); }
+.naut-row.is-kw-hitlimit .naut-st-dot { color: var(--naut-kw-hitlimit); }
+.naut-row.is-kw-queued .naut-st-dot { color: var(--naut-kw-queued); }
+.naut-row.is-kw-delegated .naut-st-dot { color: var(--naut-kw-delegated); }
 .naut-time { min-width: 3.6em; flex: none; white-space: nowrap; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .naut-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .naut-dur { flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums; }
