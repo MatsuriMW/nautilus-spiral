@@ -4202,7 +4202,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!victims.length) return;
     await this.pause(file, victims);
     this.notify(T(`⏸ 同时在做超过 ${cfg.doingLimit} 件`, `⏸ More than ${cfg.doingLimit} tasks in progress`), T(`已暂停最早开始的：${victims.map((t) => t.label).join("、")}`, `Paused the earliest started: ${victims.map((t) => t.label).join(", ")}`), file, victims[0].line,
-      victims.length === 1 ? { "换成暂停别的": () => this.openLine(file, victims[0].line) } : {});
+      victims.length === 1 ? { [T("换成暂停别的", "Pause a different one")]: () => this.openLine(file, victims[0].line) } : {});
   }
 
   // 交给 Agent 在做的活：自动记日记记下的、下面挂着「🔗」的、自动对上了某个会话的任务，连同它所在的整块（顶格那一项和它的子项）。
@@ -4243,7 +4243,7 @@ module.exports = class NautilusSpiral extends Plugin {
     await this.pause(file, stale);
     const keys = stale.map((t) => workKey(t.label));
     this.notify(T(`⏸ 超过 ${cfg.staleHours} 小时没动`, `⏸ Untouched for over ${cfg.staleHours} hours`), T(`已暂停：${stale.map((t) => t.label).join("、")}`, `Paused: ${stale.map((t) => t.label).join(", ")}`), file, stale[0].line,
-      { "还在做，切回 DOING": async () => { for (const k of keys) this.touch(k); await this.editTasks(file.path, keys, toDoing); } });
+      { [T("还在做，切回 DOING", "Still working — back to DOING")]: async () => { for (const k of keys) this.touch(k); await this.editTasks(file.path, keys, toDoing); } });
   }
 
   // 系统通知；点一下跳到那一行
