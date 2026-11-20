@@ -449,7 +449,7 @@ These modules can all be turned off in settings:
 | Day ends at | 32 | Where the spiral and the schedule stop; over 24 means after midnight (32 = 8 AM the next day) |
 | Daily note cutoff | 08:00 | Before this time it still counts as the previous day's note. 24-hour time (`08:00`, `4:30`); a single number works too |
 | Default task length | 15 minutes | Tasks without a duration use this |
-| Daily note folder / file name format | `Journal` / `YYYY_MM_DD` | The name format uses moment.js syntax |
+| Find the daily note automatically | On | Follows your Obsidian *Daily notes* (or *Periodic Notes*) folder and format; with neither installed it scans the vault for the commonest date-named pattern that is still being written. Turn it off, or fill in *Daily note folder* / *file name format*, to set it yourself (moment.js syntax) |
 | Important markers | `[[important]], [[重要]], ⭐, ‼️` | Comma-separated |
 | Shortest chunk | 25 minutes | The minimum length of each piece when a task is split by events; 0 = split and fill |
 | Read macOS Calendar / Skip these calendars | Off / empty | See "📅 macOS Calendar" |

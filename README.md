@@ -103,7 +103,7 @@ The difference from Nautilus Log: there is no single master switch and no popove
 ## Requirements
 
 - **Desktop only.** Developed and used on macOS. The spiral, planning and time tracking are plain Obsidian; calendar, dialogs, sounds, focus prompts and game tracking are macOS-only. Windows and Linux are untested.
-- **Daily notes written as lists**, one file per day. Folder and file name format are settings (defaults: `Journal/`, or `日记/` with a Chinese interface, and `YYYY_MM_DD`).
+- **Daily notes written as lists**, one file per day. The plugin finds them itself: it follows your Obsidian *Daily notes* (or *Periodic Notes*) settings, and with neither installed it scans the vault for the commonest date-named pattern that is still being written. Set the folder or the name format by hand and it stops guessing.
 - Optional: Xcode Command Line Tools (for the macOS calendar helper), Raycast (Focus), a Google account and your own Google Cloud OAuth client (Google Calendar).
 
 ## Installation

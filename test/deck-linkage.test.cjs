@@ -12,6 +12,10 @@ const OB = {
   Modal: class {},
   FuzzySuggestModal: class {},
   getLanguage: () => 'zh',
+  moment: (key, format) => ({
+    isValid: () => format === 'YYYY-MM-DD' && /^\d{4}-\d{2}-\d{2}$/.test(key),
+    format: () => key.replaceAll('-', '_'),
+  }),
 };
 const ctx = {
   require: (id) => (id === 'obsidian' ? OB : require(id)),
@@ -22,9 +26,54 @@ const ctx = {
   setTimeout,
   clearTimeout,
 };
-vm.runInNewContext(fs.readFileSync(source, 'utf8'), ctx, { filename: source });
+vm.runInNewContext(fs.readFileSync(source, 'utf8') + '\nmodule.exports.TestSessionsModal = AiSessionsModal; module.exports.testProjectAiDay = projectAiDay;', ctx, { filename: source });
 const Plugin = ctx.module.exports;
 const { DEFAULTS, parseJournal, mainOf, schedule, taskStatus, statusCls, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS } = Plugin.core;
+
+{
+  const p = Object.create(Plugin.prototype);
+  const opens = [];
+  p.app = { plugins: { plugins: { 'agent-deck': {
+    settings: { autoLogState: { '2026_11_20': { session: { key: '对话标题' } } } },
+    openSessionBySid: (sid, agent) => opens.push([sid, agent]),
+  } } } };
+  p.settings = { format: 'YYYY-MM-DD' };
+  assert.ok(p.autoKeys('2026-11-20').has('对话标题'), 'daily note filename format must not affect Agent Deck ownership');
+  p.app.plugins.plugins['agent-deck'].settings.taskBindings = {
+    'other-session': { sid: 'other-session', path: '日记/2026-11-21.md', blockId: 'ad-other' },
+    [ 'manual-session' ]: { path: '日记/2026-11-20.md', blockId: 'ad-manual' },
+  };
+  const bindings = p.deckJournalBindings('2026-11-20', '日记/2026-11-20.md');
+  assert.equal(bindings.get('manual-session')?.blockId, 'ad-manual');
+  assert.ok(!bindings.has('other-session'));
+
+  const buttons = [];
+  const node = { createDiv: () => node, createEl: (_tag, options) => {
+    const button = { text: options.text };
+    buttons.push(button);
+    return button;
+  } };
+  const modal = new Plugin.TestSessionsModal(p, '验收', []);
+  modal.close = () => {};
+  modal.session(node, { sid: '11111111-2222-4333-8444-555555555555', agent: 'codex', app: 'Codex Desktop' });
+  const primary = buttons.find(button => button.text === '打开会话');
+  assert.ok(primary, 'the session list uses Agent Deck instead of defaulting desktop Codex to Terminal');
+  primary.onclick();
+  assert.deepEqual(opens, [['11111111-2222-4333-8444-555555555555', 'codex']]);
+
+  p.settings = { dayCutoff: 0, dayStart: 8, dayEnd: 32, folder: '日记', format: 'YYYY/MM/DD' };
+  assert.equal(p.journalDayCutoff(), 0, 'midnight is a valid option');
+  p.settings.dayCutoff = 4.5;
+  assert.equal(p.journalDayCutoff(), 4.5, 'the cutoff remains editable');
+  assert.equal(p.journalKey({path:'日记/2026/11/20.md'}), '2026/11/20');
+  const row = { segs:[[120,135]], wall:15, out:20 };
+  const day = { ...row, by:{codex:row}, list:[row] };
+  const projected = Plugin.testProjectAiDay(day, {...p.settings, dayCutoff:0});
+  assert.equal(JSON.stringify(projected.by.codex.segs), JSON.stringify([[1560,1575]]));
+  assert.equal(JSON.stringify(projected.list[0].segs), JSON.stringify([[1560,1575]]));
+  assert.equal(JSON.stringify(day.segs), JSON.stringify([[120,135]]), 'visual wrapping leaves measured data intact');
+  assert.equal(projected.wall, 15);
+}
 
 // 1. parseJournal 提取各任务状态关键词与复选框状态
 const items = parseJournal([

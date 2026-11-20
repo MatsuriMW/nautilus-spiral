@@ -94,7 +94,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 1. **装上并启用。** 从 [Release](https://github.com/MatsuriMW/nautilus-spiral/releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`，放进 `<库>/.obsidian/plugins/nautilus-spiral/`，在「第三方插件」里启用。用 BRAT 的话直接填这个仓库的地址。
 2. **告诉它日记在哪。** 设置 → Nautilus Spiral：
-   - 「日记文件夹」和「日记文件名格式」改成你自己的。格式是 moment.js 的写法，比如 `YYYY-MM-DD`；默认值 `日记/` 和 `YYYY_MM_DD` 是作者的习惯。
+   - 日记在哪不用填：插件会跟着你 Obsidian 的「日记」插件（或 Periodic Notes）的设置走，两个都没装就翻一遍库，认出日期命名的文件最多、最近还在写的那一处。要自己指定的话，在「日记文件夹」「日记文件名格式」里填，填了就不再自动认（格式是 moment.js 的写法，比如 `YYYY-MM-DD`）。
    - 「一天从几点开始 / 到几点结束 / 日记日期分界」按你的作息改。默认是早 8 点到次日早 8 点、08:00 前算前一天，这是给熬夜的人用的；正常作息可以改成 7、24、04:00 之类。日期分界按 24 小时制的时刻填，可以带分钟（`4:30`）。
 3. **在今天的日记里写两行试试。** 每件事一个列表项，比如 `- 14:00-15:00 开会` 和 `- TODO 回邮件 20m`。写法见[使用指南](./docs/guide.zh-CN.md)的「日记里的写法」。
 4. **打开螺旋。** 点左侧功能区的螺旋图标（orbit），或运行命令「打开螺旋日程」。

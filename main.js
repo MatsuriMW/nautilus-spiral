@@ -10,6 +10,7 @@ const DEFAULTS = {
   dayEnd: 32,           // 螺旋和排程到几点结束，超过 24 表示次日凌晨（32 = 次日早上 8 点；个人作息夜里会一直干活，早上七八点才睡）
   dayCutoff: 8,         // 日记的日期分界：这个时刻之前还算前一天。存的是小时数，可以带小数（4.5 = 04:30）；设置里按 24 小时制的时刻填
   defaultDur: 15,       // 没写时长的任务按多少分钟算
+  journalAuto: true,    // 日记目录 / 文件名格式自动检测（和 Agent Deck 同一套规则）；设置里手填过就关掉
   folder: T("日记", "Journal"),
   format: "YYYY_MM_DD",
   priorityMarkers: "[[important]], [[重要]], ⭐, ‼️",
@@ -127,9 +128,11 @@ function tokenMinutes(h, mm, half, cnMin) {
   return +h * 60 + m;
 }
 
-// 凌晨的时间（比如 01:44、04:30）属于前一天的日记，算到当天夜里
+const journalDayCutoff = (cfg) => cfg.dayCutoff ?? Math.max(0, cfg.dayEnd - 24);
+
+// 显示时把落在过午夜那一圈的时刻挪到对应的视觉位置。
 function normalize(t, cfg) {
-  const cutoff = Math.min(cfg.dayCutoff ?? Math.max(0, cfg.dayEnd - 24), cfg.dayStart) * 60;
+  const cutoff = Math.min(journalDayCutoff(cfg), cfg.dayStart) * 60;
   if (t < cutoff) return t + 1440;
   if (t < cfg.dayStart * 60 && t + 1440 <= cfg.dayEnd * 60) return t + 1440;
   return t;
@@ -348,6 +351,86 @@ function stepAnc(anc, indent, selfOverride) {
   return inherited;
 }
 
+// ---------------- 日记在哪：目录 / 文件名格式的自动检测 ----------------
+// 规则和 Agent Deck 的 detectJournalFormat 一样，两个插件算出来的「今天是哪一篇」不会打架：
+//   设置里手填的优先（journalAuto 关掉）；没手填就按 Obsidian 核心「日记」插件 → Periodic Notes → 翻一遍库猜。
+// 翻库猜：日期命名的文件最多的那一处；一样多的，优先今天/昨天还在写的那处。
+const GUESS_FORMATS = ["YYYY_MM_DD", "YYYY-MM-DD", "YYYYMMDD", "YYYY.MM.DD", "YYYY年MM月DD日", "YYYY年M月D日", "YYYY/MM/YYYY-MM-DD", "YYYY/YYYY-MM-DD", "YYYY-MM/YYYY-MM-DD", "YYYY/MM/DD"];
+const FMT_TOKEN_RE = /\[[^\]]*\]|YYYY|YY|MM|M|DD|D/g;
+function formatRegex(fmt) {
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let out = "", last = 0;
+  for (const mt of fmt.matchAll(FMT_TOKEN_RE)) {
+    out += esc(fmt.slice(last, mt.index));
+    const tk = mt[0];
+    out += tk[0] === "[" ? esc(tk.slice(1, -1)) : tk === "YYYY" ? "\\d{4}" : tk === "M" || tk === "D" ? "\\d{1,2}" : "\\d{2}";
+    last = mt.index + tk.length;
+  }
+  return new RegExp("^" + out + esc(fmt.slice(last)) + "$");
+}
+// 没有 obsidian 的 moment 时（单元测试）也能算出日期名
+function fmtDate(d, fmt) {
+  if (moment) return moment(d).format(fmt);
+  const p2 = (n) => String(n).padStart(2, "0");
+  const map = { YYYY: d.getFullYear(), YY: p2(d.getFullYear() % 100), MM: p2(d.getMonth() + 1), M: d.getMonth() + 1, DD: p2(d.getDate()), D: d.getDate() };
+  return fmt.replace(FMT_TOKEN_RE, (tk) => (tk[0] === "[" ? tk.slice(1, -1) : map[tk]));
+}
+const trimSlash = (s) => String(s || "").trim().replace(/^\/+|\/+$/g, "");
+// 目录为空 = 库根目录：那时候「在日记目录里」就是路径里没有斜杠
+const inJournalDir = (path, folder) => (folder ? path.startsWith(folder + "/") : !path.includes("/"));
+const joinFolder = (folder, name) => (folder ? `${folder}/${name}` : name);
+
+let _jdet = null;   // 60 秒缓存：翻一遍库不便宜，设置没变就复用
+function detectJournal(app, cfg) {
+  const auto = cfg.journalAuto !== false;
+  const key = `${auto}|${cfg.folder}|${cfg.format}`;
+  if (_jdet && _jdet.app === app && _jdet.key === key && Date.now() - _jdet.at < 60e3) return _jdet;
+  let hit = null;
+  if (auto) {
+    try {
+      const dn = app?.internalPlugins?.getPluginById?.("daily-notes");
+      if (dn?.enabled) hit = { folder: trimSlash(dn.instance?.options?.folder), format: String(dn.instance?.options?.format || "YYYY-MM-DD"), from: T("Obsidian 的「日记」插件", "Obsidian Daily notes") };
+    } catch (e) { /* 没装也没有 */ }
+    if (!hit) {
+      try {
+        const pn = app?.plugins?.plugins?.["periodic-notes"]?.settings?.daily;
+        if (pn?.enabled) hit = { folder: trimSlash(pn.folder), format: String(pn.format || "YYYY-MM-DD"), from: "Periodic Notes" };
+      } catch (e) { /* 没装也没有 */ }
+    }
+    if (!hit) {
+      let files = [];
+      try { files = (app?.vault?.getFiles?.() || []).map((f) => f.path.replace(/\.md$/, "")); } catch (e) { files = []; }
+      if (files.length) {
+        const set = new Set(files), cands = [];
+        for (const fmt of GUESS_FORMATS) {
+          const re = formatRegex(fmt), byDir = new Map();
+          for (const p of files) {
+            const cut = p.lastIndexOf("/");
+            const name = cut < 0 ? p : p.slice(cut + 1);
+            if (!re.test(name)) continue;
+            const dir = cut < 0 ? "" : p.slice(0, cut);
+            byDir.set(dir, (byDir.get(dir) || 0) + 1);
+          }
+          for (const [dir, n] of byDir) cands.push({ fmt, dir, n });
+        }
+        const now = new Date();
+        for (const c of cands) c.recent = [0, 1, 2].filter((i) => set.has(joinFolder(c.dir, fmtDate(new Date(now.getTime() - i * 864e5), c.fmt)))).length;
+        cands.sort((a, b) => b.recent - a.recent || b.n - a.n);
+        const best = cands[0];
+        if (best && (best.recent > 0 || best.n >= 3)) hit = { folder: best.dir, format: best.fmt, from: T(`「${best.dir || "库根目录"}」里 ${best.n} 篇按日期命名的日记`, `${best.n} date-named notes in ${best.dir || "the vault root"}`) };
+      }
+    }
+  }
+  const fallbackFolder = trimSlash(cfg.folder);
+  const out = {
+    folder: hit ? hit.folder : fallbackFolder,
+    format: hit ? hit.format : String(cfg.format || "").trim() || "YYYY_MM_DD",
+    from: hit ? hit.from : auto ? T("默认", "Default") : T("手动设置", "Set manually"),
+  };
+  _jdet = { ...out, key, app, at: Date.now() };
+  return _jdet;
+}
+
 function parseJournal(content, cfg) {
   const prio = cfg.priorityMarkers.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
   const items = [];
@@ -405,12 +488,13 @@ function parseJournal(content, cfg) {
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
       const ts = s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/, "");   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
+      const auto = /^(?:\[#[ABC]\]\s*)*🤖/.test(s);   // 这一行是自动记的（Agent 回写的）
       const lr = new RegExp("^" + RANGE_RE.source).exec(ts);
       const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
       if (state === "done" && lr) {
         const start = normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
         let end = normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
-        if (end <= start) end += 720;
+        if (end <= start) end += 1440;   // 06:42-08:19 这种：分界前的开始时刻归到了前一天，结束时刻要跟着跨过来
         // est = 写着的预估（DONE 14:05-14:20 写周报 15分钟 里的 15 分钟），复盘「预估 vs 实际」用
         items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(lr[0].length)) });
         return;
@@ -434,7 +518,16 @@ function parseJournal(content, cfg) {
       if (state === "open" && !doing && (suspended || paused) && (lr || ls)) {
         const m = lr || ls;
         const d = parseDuration(ts.slice(m[0].length));
-        items.push({ ...base, kind: "task", dur: d ?? cfg.defaultDur, explicitDur: d != null });
+        // 自动记的行「TOREVIEW 🤖 21:59-00:06」：这一段就是这回事真实占用的时间（AI 回传的那个时间），
+        // 整段算一块、没写时长时也当时长；几件同时在跑就叠着画
+        let span = null;
+        if (lr && auto) {
+          const a = normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
+          let b = normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
+          if (b < a) b += 1440;   // 06:42-08:19 这种：分界前的时刻归到了前一天，结束时刻要跟着跨过来
+          span = b > a ? [a, b] : null;
+        }
+        items.push({ ...base, kind: "task", dur: d ?? (span ? span[1] - span[0] : cfg.defaultDur), explicitDur: d != null, ...(span ? { aiSpan: span } : {}) });
         return;
       }
       if (state === "open" && doing && (lr || ls)) {
@@ -685,9 +778,12 @@ function applyWork(items, cfg, dayKey, now, dayRel, bounds = {}) {
     // 带「← 日期」的（从别的日子挪过来的，它带着的 ⏱ 说的是原来那天）
     const noted = t.clock && !(t.doing && t.state === "open") && !(t.clock.partial && segs.length) && !/←\s*\S+\s*$/.test(t.label) ? t.clock : null;
     if (noted) segs = noted.segs.map(([a, b]) => [a, b]);
+    // 自动记的行上那段「🤖 21:59-00:06」是 AI 回传的真实占用：整段算一块（几件同时跑就叠着），
+    // ⏱ 行只当明细，不再把它拆成一小块一小块
+    if (t.aiSpan) segs = [t.aiSpan];
     t.worked = segs;
     // 合计按那一行写的「共 …」：写的时候挨得近的几段并成了一段，照段落加会多出中间的空隙
-    t.spentToday = noted && noted.total != null ? noted.total : sum(segs);
+    t.spentToday = t.aiSpan ? sum(segs) : noted && noted.total != null ? noted.total : sum(segs);
     t.spentBefore = 0;
     for (const d in log) if (d < dayKey && log[d][k]) t.spentBefore += sum(log[d][k].filter(([, b]) => b != null));
   }
@@ -1474,7 +1570,7 @@ const AI_STORE_V = 5;       // ai-usage.json 的格式版本；升级时用现�
 const fmtKey = (d, cfg) => cfg.format.replace("YYYY", d.getFullYear()).replace("MM", pad(d.getMonth() + 1)).replace("DD", pad(d.getDate()));
 
 function aiDay(ms, cfg) {
-  const cutoff = cfg.dayCutoff ?? Math.max(0, cfg.dayEnd - 24);
+  const cutoff = journalDayCutoff(cfg);
   const d = new Date(ms - cutoff * 3600e3);
   const mid = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   return { key: fmtKey(d, cfg), t: (ms - mid) / 60000 };   // t 和螺旋同一个坐标：当天 0 点起的分钟数，凌晨会超过 1440
@@ -1521,6 +1617,25 @@ function aiPick(day, cfg) {
   return { ...day, by: Object.fromEntries(keep.map((k) => [k, by[k]])), list, segs, proj, sessions: list.length,
     wall: Math.round(segs.reduce((n, [a, b]) => n + b - a, 0)), agent: sum("agent"), out: sum("out"), calls: sum("calls"), fresh: sum("fresh"), cached: sum("cached"), prompts: sum("prompts"),
     models: keep.every((k) => by[k].models) ? models : day.models };
+}
+
+// Session totals stay on the recorded date. Only the spiral's display coordinates wrap.
+function projectAiDay(raw, cfg) {
+  const day = aiPick(raw, cfg);
+  if (!day) return null;
+  const start = cfg.dayStart * 60;
+  const project = (segs) => (segs || []).flatMap(([a, b]) => {
+    const shifted = normalize(a, cfg);
+    if (shifted === a) return [[a, b]];
+    const split = Math.min(b, start);
+    return [...(split < b ? [[split, b]] : []), [shifted, split + shifted - a]];
+  });
+  const entry = (row) => ({ ...row, segs: project(row.segs) });
+  return {
+    ...entry(day),
+    by: day.by && Object.fromEntries(Object.entries(day.by).map(([agent, row]) => [agent, entry(row)])),
+    list: (day.list || []).map(entry),
+  };
 }
 
 // 同一天的两份汇总拼成一份（两份里的 Agent 不重叠）：主力重算的那份 + 库里留着的非主力那份
@@ -2352,12 +2467,14 @@ const shq = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
 
 // Claude 会话列表：看看那会儿 Claude 在做什么，一键回到那个会话。groups = [{ name, sub, list }]，一组一件任务
 class AiSessionsModal extends OB.Modal {
-  constructor(app, title, groups) { super(app); this.title = title; this.groups = groups; }
+  constructor(plugin, title, groups) { super(plugin.app); this.plugin = plugin; this.title = title; this.groups = groups; }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("naut-ai-modal");
     contentEl.createEl("h3", { text: this.title });
-    contentEl.createDiv({ cls: "naut-proj-note", text: T("「在 Claude 里打开」用 claude://resume 在 Claude 桌面版里打开那个会话；「在终端里继续」在会话的工作目录里运行 claude --resume（Codex 的会话是 codex resume）。WorkBuddy 的会话要回它自己的窗口里找。", "\"Open in Claude\" opens the session in the Claude desktop app via claude://resume; \"Continue in terminal\" runs claude --resume in the session's working directory (codex resume for Codex sessions). WorkBuddy sessions have to be found in WorkBuddy's own window.") });
+    if (typeof this.plugin.agentDeck()?.openSessionBySid !== "function") {
+      contentEl.createDiv({ cls: "naut-proj-note", text: T("可用客户端、终端和复制选项由会话来源决定。", "Client, terminal, and copy options depend on the session source.") });
+    }
     for (const g of this.groups) {
       if (g.name) {
         const h = contentEl.createDiv({ cls: "naut-ai-group" });
@@ -2381,28 +2498,33 @@ class AiSessionsModal extends OB.Modal {
     const first = (x.text || "").split(" / ")[0];
     box.createDiv({ cls: "naut-ai-sess-title", text: x.title || first.slice(0, 120) || T("（没有标题）", "(untitled)") });
     if (x.title && first) box.createDiv({ cls: "naut-ai-sess-text", text: first.slice(0, 200) });
-    const cli = agent === "codex" || x.app === "cli";   // 默认按钮给哪个：Codex 和终端里的 Claude Code 回终端，其余回 Claude 桌面版
+    const viaDeck = typeof this.plugin.agentDeck()?.openSessionBySid === "function";
+    const cli = agent === "codex" || x.app === "cli";
     const when = x.overlap != null ? T(`和这件重叠 ${dur(x.overlap)}`, `Overlaps this task by ${dur(x.overlap)}`) : x.stopped ? T(`最后在 ${clock(x.lastAt)}`, `Last active ${clock(x.lastAt)}`) : T(`${clock(x.lastAt)} 还在动`, `Still active at ${clock(x.lastAt)}`);
     box.createDiv({ cls: "naut-ai-sess-meta", text: T(`${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 🗄 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）`, `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · ${dur(x.min)} in this session that day · used 🗄 ${fmtTok(tokUsed(x))} tok (output ${fmtTok(x.out)}${x.fresh != null ? ` · input ${fmtTok(x.fresh)}` : ""})`) });
+    const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
+    if (viaDeck) {
+      bar.createEl("button", { cls: "mod-cta", text: T("打开会话", "Open session") }).onclick = () => {
+        this.plugin.openAgentSession(x.sid, agent);
+        this.close();
+      };
+    }
     if (agent === "dsh") {
       // DSH 目前只有 dsh://open（打开客户端），不能定位到某个会话，所以另给一个复制会话号
-      const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
-      bar.createEl("button", { cls: "mod-cta", text: T("打开 DeepSeek Harness", "Open DeepSeek Harness") }).onclick = () => { require("child_process").execFile("/usr/bin/open", ["dsh://open"], () => {}); this.close(); };
+      if (!viaDeck) bar.createEl("button", { cls: "mod-cta", text: T("打开 DeepSeek Harness", "Open DeepSeek Harness") }).onclick = () => { require("child_process").execFile("/usr/bin/open", ["dsh://open"], () => {}); this.close(); };
       bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
       return;
     }
     if (agent === "workbuddy" || agent === "antigravity") {
-      const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
       bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
       return;
     }
     const cmd = (x.cwd ? `cd ${shq(x.cwd)} && ` : "") + (agent === "codex" ? `codex resume ${x.sid}` : `claude --resume ${x.sid}`);
-    const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
     if (agent === "claude") {
-      const desk = bar.createEl("button", { cls: cli ? "" : "mod-cta", text: T("在 Claude 里打开", "Open in Claude") });
+      const desk = bar.createEl("button", { cls: cli || viaDeck ? "" : "mod-cta", text: T("在 Claude 里打开", "Open in Claude") });
       desk.onclick = () => { require("child_process").execFile("/usr/bin/open", [`claude://resume?session=${x.sid}`], () => {}); this.close(); };
     }
-    const term = bar.createEl("button", { cls: cli ? "mod-cta" : "", text: T("在终端里继续", "Continue in terminal") });
+    const term = bar.createEl("button", { cls: cli && !viaDeck ? "mod-cta" : "", text: T("在终端里继续", "Continue in terminal") });
     term.onclick = () => { run("/usr/bin/osascript", ["-e", `tell application "Terminal"\nactivate\ndo script ${asStr(cmd)}\nend tell`]); this.close(); };
     bar.createEl("button", { text: T("复制命令", "Copy command") }).onclick = async () => { await navigator.clipboard.writeText(cmd); new OB.Notice(T("已复制：", "Copied: ") + cmd); };
   }
@@ -2793,7 +2915,10 @@ class SpiralView extends ItemView {
       r.createSpan({ cls: "naut-cap-ico" + (iconCls ? " " + iconCls : ""), text: icon });
       return r.createSpan({ cls: "naut-cap-val" });
     };
-    const ai = aiStore && aiPick(aiStore.days[dayKey], cfg);
+    const ai = projectAiDay(aiStore?.days?.[dayKey], cfg);
+    const agentDeck = this.plugin.agentDeck();
+    const deckBindings = this.plugin.deckJournalBindings(dayKey, file.path);
+    const journalLines = content.split("\n");
     // 这天用了哪几个 Agent（按 Claude / Codex / WorkBuddy 的固定顺序）；旧记录没分 Agent 的都算 Claude
     const agents = !ai ? [] : ai.by ? Object.keys(AI_AGENTS).filter((k) => ai.by[k] && ai.by[k].segs.length).map((k) => [k, ai.by[k]]) : [["claude", { segs: ai.segs, wall: ai.wall, out: ai.out }]];
     const games = (gameLog && gameLog.days[dayKey]) || [];
@@ -3019,13 +3144,13 @@ class SpiralView extends ItemView {
           const card = hover.createDiv({ cls: "naut-ai-hover-card" });
           const current = dayRel === 0 && !playing;
           card.createDiv({ cls: "naut-ai-hover-caption", text: current ? T("实时会话状态 · token 为本日会话合计", "Live session state · tokens are daily session totals") : T("历史时段 · 不显示今天的实时状态", "Historical period · current live state is not shown") });
-          const deck = this.app.plugins.plugins["agent-deck"];
-          const lines = content.split("\n");
+          const deck = agentDeck;
+          const lines = journalLines;
           const cleanLabel = (v) => String(v || "").replace(/\s*\^[a-z0-9-]+\s*$/i, "").replace(/^🤖\s*/, "").trim();
           for (const x of sessions.slice(0, 3)) {
             const meta = deck?.usage?.meta?.get(x.sid) || this.plugin._ai?.live?.get(x.sid) || {};
             const info = aiHoverSession(x, meta, current);
-            const rec = this.plugin.deckState(dayKey)[x.sid] || deck?.settings?.taskBindings?.[`${k}:${x.sid.slice(0, 8)}`];
+            const rec = deckBindings.get(x.sid);
             let item = rec?.blockId && (!rec.path || rec.path === file.path) ? items.find((it) => lines[it.line]?.trimEnd().endsWith(`^${rec.blockId}`)) : null;
             if (!item) {
               const at = lines.findIndex((line) => parseLink(line)?.sid === x.sid);
@@ -3043,10 +3168,10 @@ class SpiralView extends ItemView {
             if (info.reply) box.createDiv({ cls: "naut-ai-hover-reply", text: T(`最近回复：${info.reply}`, `Latest reply: ${info.reply}`) });
             const actions = box.createDiv({ cls: "naut-ai-hover-actions" });
             if (item) actions.createEl("button", { text: T("定位日记", "Show in journal") }).onclick = () => { clearHover(true); this.plugin.openItem(file, item); };
-            if (deck || k === "claude") actions.createEl("button", { text: T("打开会话", "Open session") }).onclick = () => this.plugin.openAgentSession(x.sid, k);
+            if (typeof deck?.openSessionBySid === "function" || k === "claude") actions.createEl("button", { text: T("打开会话", "Open session") }).onclick = () => this.plugin.openAgentSession(x.sid, k);
           }
           if (!sessions.length) card.createDiv({ cls: "naut-muted", text: T("这段记录没有会话明细", "No session details were recorded for this segment") });
-          if (sessions.length > 3) card.createEl("button", { cls: "naut-ai-hover-more", text: T(`查看全部 ${sessions.length} 个会话`, `View all ${sessions.length} sessions`) }).onclick = () => new AiSessionsModal(this.app, `${AI_AGENTS[k]} ${clock(a)}–${clock(b)}`, [{ list: sessions.map((x) => ({ ...x, related: true })) }]).open();
+          if (sessions.length > 3) card.createEl("button", { cls: "naut-ai-hover-more", text: T(`查看全部 ${sessions.length} 个会话`, `View all ${sessions.length} sessions`) }).onclick = () => new AiSessionsModal(this.plugin, `${AI_AGENTS[k]} ${clock(a)}–${clock(b)}`, [{ list: sessions.map((x) => ({ ...x, related: true })) }]).open();
         };
         hit.addEventListener("mouseenter", () => show());
         hit.addEventListener("focus", () => show());
@@ -3085,34 +3210,29 @@ class SpiralView extends ItemView {
       }
       return aiMemo.get(item);
     };
-    const deck = dayRel === 0 && !playing ? this.app.plugins?.plugins?.["agent-deck"] : null;
-    const deckLines = deck ? content.split("\n") : null;
+    const deck = dayRel === 0 && !playing ? agentDeck : null;
     const deckByBlock = new Map(), deckByKey = new Map();
+    const stateOf = (sid) => {
+      const meta = sid && deck?.usage?.meta?.get(sid);
+      if (!meta) return null;
+      return (deck.applyExternalState?.(meta) || meta).state || null;
+    };
     if (deck) {
-      const meta = deck.usage?.meta;
-      const stateOf = (sid) => sid && meta?.get(sid)?.state || null;
-      for (const [sid, rec] of Object.entries(this.plugin.deckState(dayKey))) {
-        if (!rec || rec.skip || rec.gone) continue;
+      for (const [sid, rec] of deckBindings) {
         const st = stateOf(sid);
         if (!st) continue;
-        if (rec.blockId && (!rec.path || rec.path === file.path)) deckByBlock.set(rec.blockId, st);
+        if (rec.blockId && !deckByBlock.has(rec.blockId)) deckByBlock.set(rec.blockId, st);
         if (rec.key) deckByKey.set(rec.key, st);
-      }
-      for (const [bindKey, rec] of Object.entries(deck.settings?.taskBindings || {})) {
-        if (!rec?.blockId || (rec.path && rec.path !== file.path)) continue;
-        const sid = rec.sid || String(bindKey).split(":")[1];
-        const st = stateOf(sid) || (sid && meta ? [...meta.entries()].find(([k]) => k.startsWith(sid))?.[1]?.state : null);
-        if (st && !deckByBlock.has(rec.blockId)) deckByBlock.set(rec.blockId, st);
       }
     }
     const deckStateOf = (item) => {
       if (!deck || !item || item.line == null) return null;
-      const raw = deckLines[item.line] || "";
+      const raw = journalLines[item.line] || "";
       const bm = /\^([a-z0-9-]+)\s*$/i.exec(raw.trimEnd());
       if (bm && deckByBlock.has(bm[1])) return deckByBlock.get(bm[1]);
-      const lnk = linkUnder(deckLines, item.line);
+      const lnk = linkUnder(journalLines, item.line);
       if (lnk?.sid) {
-        const st = deck.usage?.meta?.get(lnk.sid)?.state;
+        const st = stateOf(lnk.sid);
         if (st) return st;
       }
       return item.label ? deckByKey.get(workKey(item.label)) || null : null;
@@ -3230,7 +3350,7 @@ class SpiralView extends ItemView {
           const rel = sess.filter((x) => x.related).length;
           const badge = row.createSpan({ cls: "naut-ai-badge" + (rel ? "" : " is-weak"), text: `🤖${rel || sess.length}`,
             attr: { title: T(`这件做的时候 Agent 在：\n${sess.map((x) => `${x.related ? "· " : "  （同时段）"}${aiName(x)}（${dur(x.overlap)}）`).join("\n")}\n点开看详情、接着那个会话做`, `Agents during this task:\n${sess.map((x) => `${x.related ? "· " : "  (same time) "}${aiName(x)} (${dur(x.overlap)})`).join("\n")}\nClick for details or to continue that session`) } });
-          badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.app, T(`「${r.item.label}」期间的 Agent 会话`, `Agent sessions during "${r.item.label}"`), [{ list: sess }]).open(); };
+          badge.onclick = (e) => { e.stopPropagation(); new AiSessionsModal(this.plugin, T(`「${r.item.label}」期间的 Agent 会话`, `Agent sessions during "${r.item.label}"`), [{ list: sess }]).open(); };
         }
         row.createSpan({ cls: "naut-dur", text: r.dur, attr: r.tip ? { title: r.tip } : {} });
         row.onclick = () => this.plugin.openItem(file, r.item);
@@ -3418,7 +3538,7 @@ class SpiralView extends ItemView {
         // 点一下：这个项目这天有哪几个会话，能直接回去
         row.onclick = () => {
           const sess = (ai.list || []).filter((x) => x.dir === name && x.segs && x.segs.length).sort((x, y) => y.min - x.min).map((x) => ({ ...x, related: true, stopped: true, lastAt: x.segs[x.segs.length - 1][1] }));
-          if (sess.length) new AiSessionsModal(this.app, T(`「${name}」这天的 Agent 会话`, `Agent sessions for "${name}" this day`), [{ list: sess }]).open();
+          if (sess.length) new AiSessionsModal(this.plugin, T(`「${name}」这天的 Agent 会话`, `Agent sessions for "${name}" this day`), [{ list: sess }]).open();
         };
       }
     }
@@ -3579,7 +3699,10 @@ const lucideWatch = (plugin, win) => {
 
 module.exports = class NautilusSpiral extends Plugin {
   async onload() {
-    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULTS, loaded);
+    // 老配置里没有 journalAuto：没动过目录/格式（还是「日记」+ YYYY_MM_DD）的当成没设过，交给自动检测；自己改过的保持手动
+    if (!loaded || !("journalAuto" in loaded)) this.settings.journalAuto = trimSlash(this.settings.folder) === "日记" && this.settings.format === "YYYY_MM_DD";
     const removedSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert", "focus", "focusMinutes", "focusCategories", "focusMode", "focusAutoComplete", "focusAsk", "focusSession"].filter(key => key in this.settings);
     for (const key of removedSettings) delete this.settings[key];
     if (removedSettings.length) await this.saveData(this.settings);
@@ -3600,6 +3723,7 @@ module.exports = class NautilusSpiral extends Plugin {
     delete this.settings.breakState;
     delete this.settings.breakWords;
     this.saveSoon = debounce(() => this.saveData(this.settings), 1000, true);
+    this.journalDetect();   // 日记目录 / 文件名格式：跟着核心「日记」插件或者库里的实际写法定
     this.refresh = debounce(() => { if (!this.dragging) this.views().forEach((v) => v.render()); }, 300, true);   // 正在拖把手时不重绘
     this.pruneLogs();
     this.aiStorePath = `${this.manifest.dir}/ai-usage.json`;
@@ -3637,8 +3761,8 @@ module.exports = class NautilusSpiral extends Plugin {
 
     // 在日历里点某一天（或打开任何一篇日记），螺旋跟着切到那一天
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
-      if (!(f instanceof TFile) || !f.path.startsWith(this.settings.folder + "/")) return;
-      const d = moment(f.basename, this.settings.format, true);
+      if (!(f instanceof TFile) || !inJournalDir(f.path, this.settings.folder)) return;
+      const d = moment(this.journalKey(f), this.settings.format, true);
       if (!d.isValid()) return;
       const offset = d.startOf("day").diff(this.today(), "days");
       for (const v of this.views()) if (v.offset !== offset) v.go(offset);
@@ -3652,9 +3776,11 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerEvent(this.app.workspace.on("file-open", (f) => this.kwBaseline(f)));
     this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
+    this.registerEvent(this.app.workspace.on("agent-deck:sessions-changed", () => this.refresh()));
     this.registerInterval(window.setInterval(() => this.refresh(), 60 * 1000));
 
     this.app.workspace.onLayoutReady(async () => {
+      this.journalDetect();   // 库这时候才完整索引好，翻库猜的结论这时候才准
       const f = this.app.vault.getAbstractFileByPath(this.journalPath(this.today()));
       if (f instanceof TFile) this.observe(f, await this.app.vault.read(f), false);
       const firstOpen = !this.settings.autoOpened;
@@ -3897,7 +4023,7 @@ module.exports = class NautilusSpiral extends Plugin {
     for (const segs of Object.values(work)) for (const seg of segs) if (seg[1] == null) seg[1] = Math.max(seg[0], Math.round(raw));
     const t = Math.min(E, Math.max(S + 30, Math.round(raw / 5) * 5));
     await this.setBounds(dayKey, "end", t);
-    const file = this.app.vault.getAbstractFileByPath(`${cfg.folder}/${dayKey}.md`);
+    const file = this.app.vault.getAbstractFileByPath(joinFolder(cfg.folder, `${dayKey}.md`));
     const items = file instanceof TFile ? parseJournal(await this.app.vault.read(file), cfg) : [];
     const b = cfg.dayBounds[dayKey] || {};
     return [T(`🌙 ${clock(t)} 收工 · 今天 ${clock(b.start ?? S)}–${clock(t)}`, `🌙 Done for the day at ${clock(t)} · today ${clock(b.start ?? S)}–${clock(t)}`), ...(await this.dayTail(dayKey, items))].join("\n");
@@ -3981,8 +4107,8 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!file) { new OB.Notice(T("今天还没有日记", "No daily note for today yet")); return; }
     if (OB.Platform?.isDesktopApp && !this._aiBusy) await this.scanAi();   // 先读一遍最新的会话日志
     const key = this.today().format(cfg.format);
-    const ai = aiPick((await this.aiUsage()).days[key], cfg);
-    const items = parseJournal(await this.app.vault.read(file), cfg);
+    const ai = projectAiDay((await this.aiUsage()).days[key], cfg);
+    const items = parseJournal(await this.readLiveContent(file), cfg);
     const m = moment();
     const now = normalize(m.hours() * 60 + m.minutes(), cfg);
     applyWork(items, cfg, key, now, 0, (cfg.dayBounds || {})[key] || {});
@@ -4001,7 +4127,7 @@ module.exports = class NautilusSpiral extends Plugin {
       groups.push({ name: T("🟢 现在还在跑、没对上哪件的会话", "🟢 Sessions running now that match no task"), list: live });
     }
     if (!doing.length && !live.length) { new OB.Notice(T("现在没有在做的事，也没有在跑的 Agent 会话", "Nothing in progress and no agent session running")); return; }
-    new AiSessionsModal(this.app, T("正在做的事 · Agent 会话", "What you're doing · agent sessions"), groups).open();
+    new AiSessionsModal(this, T("正在做的事 · Agent 会话", "What you're doing · agent sessions"), groups).open();
   }
 
   // ⌃⌥R 打开螺旋，展开并滚到「📏 预估 vs 实际」
@@ -4185,7 +4311,7 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!prev || file.path !== this.todayFile()?.path) return;
     const lines = content.split("\n");
 
-    const auto = this.autoKeys(file.basename);
+    const auto = this.autoKeys(this.journalKey(file));
     const items = parseJournal(content, cfg);
     const doing = items.filter((i) => i.kind === "task" && i.state === "open" && i.doing && !auto.has(workKey(i.label)));
     const born = doing.filter((i) => !prev.get(i.label)?.doing && !prev.get(i.label)?.agentKw);   // 从 TOREVIEW / NEEDOK / HITLIMIT 这些中间态切回来的不算新开始的
@@ -4229,7 +4355,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const touch = (cfg.doingTouch ||= {});
     const now = Date.now(), seen = new Set(), stale = [];
     let changed = false;
-    const auto = this.autoKeys(file.basename);
+    const auto = this.autoKeys(this.journalKey(file));
     for (const t of parseJournal(text, cfg)) {
       if (t.kind !== "task" || t.state !== "open" || !t.doing || auto.has(workKey(t.label))) continue;
       const k = workKey(t.label), sig = subtree(lines, t.line);
@@ -4416,6 +4542,7 @@ module.exports = class NautilusSpiral extends Plugin {
       : path.join(os.tmpdir(), "nautilus-spiral-cache");
   }
   aiCachePath() { return require("path").join(this.localCacheDir(), "ai-files-v1.json.gz"); }
+  aiCalendar(cfg = this.settings) { return `${journalDayCutoff(cfg)}|${cfg.format}`; }
   aiBytesSig(ai) {
     let n = ai.files.size;
     for (const fc of ai.files.values()) n += (fc.offset || fc.size || 0);
@@ -4433,7 +4560,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const raw = await fs.promises.readFile(this.aiCachePath());
       const buf = await new Promise((res, rej) => zlib.gunzip(raw, (e, out) => (e ? rej(e) : res(out))));
       const data = JSON.parse(buf.toString("utf8"));
-      if (!data || data.v !== 1 || !Array.isArray(data.files)) return false;
+      if (!data || data.v !== 1 || data.calendar !== this.aiCalendar(ai.cfg) || !Array.isArray(data.files)) return false;
       ai._lastScan = Number(data.lastScan) || 0;
       for (const f of data.files) {
         if (!f || !f.path) continue;
@@ -4466,7 +4593,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const liveCutoff = Date.now() - 2 * 864e5;
     const live = [...ai.live].filter(([, v]) => v && (v.at || 0) >= liveCutoff);
     const subs = [...ai.subs].map(([sid, m]) => [sid, [...m].map(([id, r]) => [id, { ...r, tok: [...(r.tok || [])] }])]);
-    return JSON.stringify({ v: 1, lastScan: ai._lastScan || 0, files, live, subs });
+    return JSON.stringify({ v: 1, calendar: this.aiCalendar(ai.cfg), lastScan: ai._lastScan || 0, files, live, subs });
   }
   prepAiCacheSave(ai) {
     const payload = this.aiCachePayload(ai);
@@ -4506,14 +4633,18 @@ module.exports = class NautilusSpiral extends Plugin {
       try { this.aiStore = JSON.parse(await this.app.vault.adapter.read(this.aiStorePath)); } catch (e) { this.aiStore = { days: {} }; }
       this._aiStoreVer = (this._aiStoreVer || 0) + 1;
     }
-    if (OB.Platform && OB.Platform.isDesktopApp && !this._aiBusy && Date.now() - (this._aiAt || 0) > 55000) this.scanAi();
+    const reindex = this._ai && this.aiCalendar(this._ai.cfg) !== this.aiCalendar();
+    if (OB.Platform && OB.Platform.isDesktopApp && !this._aiBusy && (reindex || Date.now() - (this._aiAt || 0) > 55000)) this.scanAi();
     return this.aiStore;
   }
 
   async scanAi() {
     this._aiBusy = true;
     try {
-      const ai = (this._ai ||= new AiUsage(this.settings));
+      if (!this._ai || this.aiCalendar(this._ai.cfg) !== this.aiCalendar()) this._ai = new AiUsage({ ...this.settings });
+      const ai = this._ai;
+      // Refresh mutable source selections without changing this scan's date settings.
+      Object.assign(ai.cfg, this.settings);
       await this.loadAiCache(ai);
       // 把库里已经记下的 DSH 汇总当作 API 的缓存：插件没开 / 端口暂时找不到时，不清空已有的数
       if (!ai.dshApi.size) {
@@ -4531,6 +4662,7 @@ module.exports = class NautilusSpiral extends Plugin {
         : since;
       const scanStarted = Date.now(), prevSig = this.aiBytesSig(ai);
       const touched = await ai.scan(scanSince);
+      if (this.aiCalendar(ai.cfg) !== this.aiCalendar()) return;
       ai._lastScan = scanStarted;
       if (touched.size || this.aiBytesSig(ai) !== prevSig) ai._cacheDirty = true;
       // DSH 的数不在会话日志里自己算：只向 dsh-token-usage-stats 要结果
@@ -4551,7 +4683,9 @@ module.exports = class NautilusSpiral extends Plugin {
       console.error("[螺旋日程] 人机协作统计失败", e);
     } finally {
       this._aiBusy = false;
-      this._aiAt = Date.now();
+      const reindex = this._ai && this.aiCalendar(this._ai.cfg) !== this.aiCalendar();
+      this._aiAt = reindex ? 0 : Date.now();
+      if (reindex) this.refresh();
     }
   }
 
@@ -4612,6 +4746,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // 没在做事时状态栏显示的那句容量：一分钟算一次，日记改了也算一次
   async refreshCapacity(opts = {}) {
+    try { this.journalDetect(); await this.ensureToday(); } catch (e) { console.error("[螺旋日程] 日记位置", e); }
     try { await this.mainTick(); } catch (e) { console.error("[螺旋日程] 主线", e); }
     if (!opts.deferWidget) {
       try { await this.widgetTick(); } catch (e) { console.error("[螺旋日程] 小组件", e); }
@@ -4692,7 +4827,7 @@ module.exports = class NautilusSpiral extends Plugin {
   goalCheck(file, content, M = mainOf(content)) {
     if (this.settings.showMain === false || !M.tasks.length) return;
     const lines = content.split("\n"), items = parseJournal(content, this.settings), A = new Set(M.tasks.map((x) => x.line));
-    const ai = this.aiWork(lines, items, this.autoKeys(file.basename));
+    const ai = this.aiWork(lines, items, this.autoKeys(this.journalKey(file)));
     for (const t of items) if (t.kind === "task" && t.state === "open" && t.doing && A.has(t.line) && !ai(t) && !goalUnder(lines, t.line)) this.askGoal(file, t.label);
   }
   // 主线任务在做、下面还没写目标：先问。写了就记成这件任务下面的第一行「🎯 目标：」；没写就改回 TODO
@@ -4945,7 +5080,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const keys = [...(this._clockKeys || [])];
     if (!keys.length) return;
     const work = (this.settings.workLog || {})[file.basename] || {};
-    const auto = this.autoKeys(file.basename);   // 自动记着的行由自动记日记自己写
+    const auto = this.autoKeys(this.journalKey(file));   // 自动记着的行由自动记日记自己写
     const base = await this.readJournal(file);
     let text = base;
     for (const k of keys) {
@@ -4986,7 +5121,34 @@ module.exports = class NautilusSpiral extends Plugin {
   autoKeys(dayKey) {
     return new Set(Object.values(this.deckState(dayKey)).filter((r) => r.key && !r.skip && !r.gone).map((r) => r.key));
   }
-  deckState(dayKey) { return (this.app.plugins.plugins["agent-deck"]?.settings?.autoLogState || {})[dayKey] || {}; }
+  agentDeck() { return this.app.plugins?.plugins?.["agent-deck"] || null; }
+
+  deckState(dayKey) {
+    const states = this.agentDeck()?.settings?.autoLogState;
+    if (!states || !dayKey) return {};
+    if (/^\d{4}_\d{2}_\d{2}$/.test(dayKey)) return states[dayKey] || {};
+    const day = moment(dayKey, this.settings.format, true);
+    return day.isValid() ? states[day.format("YYYY_MM_DD")] || {} : {};
+  }
+
+  deckJournalBindings(dayKey, filePath) {
+    const deck = this.agentDeck();
+    const valid = (rec) => rec && !rec.skip && !rec.gone && (!rec.path || rec.path === filePath);
+    const bindings = new Map(Object.entries(this.deckState(dayKey)).filter(([, rec]) => valid(rec)));
+    for (const [key, rec] of Object.entries(deck?.settings?.taskBindings || {})) {
+      if (!valid(rec) || !rec.blockId) continue;
+      let sid = rec.sid || key;
+      if (!rec.sid && key.includes(":")) {
+        const prefix = key.split(":")[1];
+        if (!prefix) continue;
+        const matches = [...(deck.usage?.meta?.keys() || [])].filter((id) => id.startsWith(prefix));
+        if (matches.length !== 1) continue;
+        sid = matches[0];
+      }
+      if (!bindings.has(sid)) bindings.set(sid, rec);
+    }
+    return bindings;
+  }
 
   journalView(file) {
     let view = null;
@@ -5040,15 +5202,54 @@ module.exports = class NautilusSpiral extends Plugin {
 
 
   // 「今天」的日记：凌晨 dayCutoff 点前还算前一天
+  journalDayCutoff() { return journalDayCutoff(this.settings); }
+
   today() {
     const m = moment();
-    const cutoff = this.settings.dayCutoff ?? Math.max(0, this.settings.dayEnd - 24);
+    const cutoff = this.journalDayCutoff();
     if (m.hours() * 60 + m.minutes() < cutoff * 60) m.subtract(1, "day");
     return m.startOf("day");
   }
 
   journalPath(m) {
-    return `${this.settings.folder}/${m.format(this.settings.format)}.md`;
+    return joinFolder(this.settings.folder, `${m.format(this.settings.format)}.md`);
+  }
+
+  journalKey(file) {
+    const prefix = this.settings.folder ? this.settings.folder + "/" : "";
+    return file.path?.startsWith(prefix) ? file.path.slice(prefix.length, -3) : "";
+  }
+
+  // 日记目录 / 文件名格式：没手填就自动检测（规则见文件开头的 detectJournal）。
+  // 认出来的直接写进设置，其余几百处读 settings.folder / settings.format 的地方都不用改
+  journalDetect() {
+    const cfg = this.settings;
+    if (cfg.journalAuto === false) return { folder: cfg.folder, format: cfg.format, from: T("手动设置", "Set manually") };
+    const det = detectJournal(this.app, cfg);
+    if (det.folder !== cfg.folder || det.format !== cfg.format) {
+      cfg.folder = det.folder;
+      cfg.format = det.format;
+      this.saveSoon();
+    }
+    return det;
+  }
+
+  // 新建一篇日记时的开头：两行属性，其余交给日记模板/别的插件
+  journalSeed(d) {
+    return T(`---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`, `---\njournal: Daily\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`);
+  }
+
+  // 今天的日记被删了或者还没建：面板刷着的时候顺手补一篇回来（不在后台无声建文件）
+  async ensureToday() {
+    if (this._ensuringToday || !this.views().length) return;
+    const path = this.journalPath(this.today());
+    if (this.app.vault.getAbstractFileByPath(path)) return;
+    this._ensuringToday = true;
+    try {
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+      await this.app.vault.create(path, this.journalSeed(this.today()));
+    } catch (e) { console.error("[螺旋日程] 新建今天的日记失败", e); } finally { this._ensuringToday = false; }
   }
 
   async activate(focus = true, forceLeft = false) {
@@ -5082,7 +5283,9 @@ module.exports = class NautilusSpiral extends Plugin {
     const path = this.journalPath(d);
     let file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
-      file = await this.app.vault.create(path, T(`---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`, `---\njournal: Daily\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`));
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+      file = await this.app.vault.create(path, this.journalSeed(d));
     }
     let open = null;
     if (reuse) this.app.workspace.iterateRootLeaves((l) => { if (!open && l.view?.file?.path === path) open = l; });
@@ -5093,7 +5296,7 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   async onFileChange(f) {
-    if (!(f instanceof TFile) || !f.path.startsWith(this.settings.folder + "/")) return;
+    if (!(f instanceof TFile) || !inJournalDir(f.path, this.settings.folder)) return;
     const content = await this.app.vault.read(f);
     const prev = this.states.get(f.path);
     this.observe(f, content, true);
@@ -5114,13 +5317,14 @@ module.exports = class NautilusSpiral extends Plugin {
     this.states.set(file.path, cur);
     const nowM = moment();
     const now = normalize(nowM.hours() * 60 + nowM.minutes(), this.settings);
-    const isToday = file.basename === this.today().format(this.settings.format);
+    const dayKey = this.journalKey(file);
+    const isToday = dayKey === this.today().format(this.settings.format);
     let changed = false;
 
     if (isToday) {
-      const auto = this.autoKeys(file.basename);   // 自动记录管着的行：用时按会话在动的时段另记，这里不给它开计时
+      const auto = this.autoKeys(dayKey);   // 自动记录管着的行：用时按会话在动的时段另记，这里不给它开计时
       const log = (this.settings.workLog ||= {});
-      const work = (log[file.basename] ||= {});
+      const work = (log[dayKey] ||= {});
       const openSeg = (k) => (work[k] || []).find((x) => x[1] == null);
       const closed = new Set();   // 这一回收掉了哪几件的时段
       const stop = (k, at) => {
@@ -5161,11 +5365,11 @@ module.exports = class NautilusSpiral extends Plugin {
         }
       }
       if (closed.size && record && this.settings.clockToNote) this.queueClock(file, [...closed]);
-      if (!Object.keys(work).length) delete log[file.basename];
+      if (!Object.keys(work).length) delete log[dayKey];
     }
 
     if (record && prev) {
-      const day = (this.settings.doneTimes[file.basename] ||= {});
+      const day = (this.settings.doneTimes[dayKey] ||= {});
       for (const [label, c] of cur) {
         if (c.state === "done" && prev.get(label)?.state === "open" && day[label] == null) { day[label] = c.doneAt != null ? c.doneAt : now; changed = true; }
         if (c.state === "open" && day[label] != null) { delete day[label]; changed = true; }
@@ -5234,7 +5438,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const plugin = this;
     const isJournal = (view) => {
       const info = view.state.field(OB.editorInfoField, false), f = info && info.file, cfg = plugin.settings;
-      return !!f && f.path.startsWith(cfg.folder + "/") && moment(f.basename, cfg.format, true).isValid();
+      return !!f && inJournalDir(f.path, cfg.folder) && moment(f.basename, cfg.format, true).isValid();
     };
     // 松手：按这件任务的名字重新找到它那一行（拖的时候日记可能被别处改过），把进度写进去
     const commit = (view, label, pct) => {
@@ -5297,7 +5501,7 @@ module.exports = class NautilusSpiral extends Plugin {
   }
   // 进度行上点开会话：Agent Deck 开着就交给它（命令行会话切到跑它的终端标签，桌面版的走各家深链接）；没有才自己开 Claude 桌面版
   openAgentSession(sid, agent = "claude") {
-    const deck = this.app.plugins && this.app.plugins.plugins && this.app.plugins.plugins["agent-deck"];
+    const deck = this.agentDeck();
     if (deck && typeof deck.openSessionBySid === "function") return deck.openSessionBySid(sid, agent);
     if (agent === "claude") this.openSession(sid);
   }
@@ -5382,8 +5586,10 @@ class SpiralSettings extends PluginSettingTab {
           const h = parseHourClock(v);
           t.inputEl.toggleClass("naut-bad-input", h == null);
           if (h == null) return;
+          if (s.dayCutoff === h) return;
           s.dayCutoff = h;
           await this.plugin.saveData(s);
+          this.plugin.app.workspace.trigger("nautilus-spiral:day-cutoff-changed");
           this.plugin.refresh();
         });
         // 离开输入框时写成统一的样子（8 → 08:00）；填得不对就退回现在的值
@@ -5393,8 +5599,23 @@ class SpiralSettings extends PluginSettingTab {
     const text = (name, desc, key) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
       .setValue(s[key])
       .onChange(async (v) => { s[key] = v.trim(); await this.plugin.saveData(s); this.plugin.refresh(); }));
-    text(T("日记文件夹", "Daily note folder"), "", "folder");
-    text(T("日记文件名格式", "Daily note file name format"), T("moment.js 格式", "moment.js format"), "format");
+    // 日记在哪：不手填就自动检测（核心「日记」插件 → Periodic Notes → 翻库猜）
+    const det = this.plugin.journalDetect();
+    const auto = s.journalAuto !== false;
+    new Setting(containerEl).setName(T("自动找今天的日记", "Find today's daily note automatically"))
+      .setDesc(T(`按 Obsidian 的「日记」插件（或 Periodic Notes）的设置找；都没装就翻一遍库，认出日期命名的文件最多、最近还在写的那一处。现在认到：${det.folder ? det.folder + "/" : "库根目录"}、${det.format}（${det.from}）`, `Follows Obsidian's Daily notes (or Periodic Notes) settings; if neither is installed it scans the vault for the commonest date-named pattern that is still being written. Now: ${det.folder ? det.folder + "/" : "vault root"}, ${det.format} (${det.from})`))
+      .addToggle((t) => t.setValue(auto).onChange(async (v) => {
+        s.journalAuto = v;
+        if (v) { const d2 = this.plugin.journalDetect(); s.folder = d2.folder; s.format = d2.format; }
+        await this.plugin.saveData(s);
+        this.plugin.refresh();
+        this.display();
+      }));
+    const jt = (name, desc, key) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
+      .setValue(s[key])
+      .onChange(async (v) => { s[key] = v.trim(); s.journalAuto = false; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
+    jt(T("日记文件夹", "Daily note folder"), T("填了就不再自动认；空着 = 库根目录", "Filled in = stop auto-detecting; empty = vault root"), "folder");
+    jt(T("日记文件名格式", "Daily note file name format"), T("moment.js 格式，例如 YYYY-MM-DD。填了就不再自动认", "moment.js format, e.g. YYYY-MM-DD. Filling it in turns auto-detect off"), "format");
     text(T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
     new Setting(containerEl).setName(T("DOING 并行排", "Run DOING tasks in parallel")).setDesc(T("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接", "Several DOING tasks all start now and overlap, taking only as long as the longest one; turn off to place them back to back"))
       .addToggle((t) => t.setValue(s.parallelDoing !== false).onChange(async (v) => { s.parallelDoing = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
@@ -6162,4 +6383,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };

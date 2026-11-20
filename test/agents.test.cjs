@@ -6,7 +6,7 @@ const source = process.argv[2] || path.join(__dirname, '..', 'main.js');
 const OB = {Plugin:class{},ItemView:class{},PluginSettingTab:class{},Modal:class{},FuzzySuggestModal:class{},getLanguage:()=> 'zh'};
 const ctx = {require:(id)=>id==='obsidian'?OB:require(id),module:{exports:{}},console,process,Buffer,setTimeout,clearTimeout};
 vm.runInNewContext(fs.readFileSync(source,'utf8'), ctx, {filename:source});
-const {AiUsage,parseLink,DEFAULTS,parseJournal} = ctx.module.exports.core;
+const {AiUsage,parseLink,DEFAULTS,parseJournal,applyWork,detectJournal,formatRegex} = ctx.module.exports.core;
 const ai = new AiUsage(DEFAULTS);
 const tool = (name,input) => ({type:'assistant',message:{content:[{type:'tool_use',name,input}]}});
 ai.liveClaude({type:'user',message:{content:'实现设置'}},'claude-test',1);
@@ -106,3 +106,39 @@ assert.equal(JSON.stringify(parsedAiTasks.map(it => [it.kind, it.state, it.doing
   ['task', 'open', false, true, true]
 ]));
 console.log('PASS parseJournal 正确识别带 🤖 时段的 DONE/DOING/PAUSED 任务');
+
+// 自动记的未完成行「TOREVIEW 🤖 21:59-00:06」：那段就是 AI 回传的真实占用 → 整段一块、时长也按它算
+const spanItems = parseJournal([
+  '- TOREVIEW 🤖 21:59-00:06 排查箭头',
+  '- PAUSED 🤖 06:42-08:19 折叠对齐',
+  '- TOREVIEW 🤖 手写没区间的审阅'
+].join('\n'), DEFAULTS);
+assert.equal(spanItems[0].dur, 127, '21:59-00:06 按 127 分钟算，不再回落默认时长');
+assert.equal(JSON.stringify(spanItems[0].aiSpan), JSON.stringify([1319, 1446]));
+assert.equal(spanItems[1].dur, 97, '06:42-08:19 跨 dayCutoff 分界也要算对（以前会得到负数）');
+assert.equal(spanItems[2].aiSpan, undefined, '没写区间的行没有 aiSpan');
+assert.equal(spanItems[2].dur, DEFAULTS.defaultDur);
+// applyWork：整段当 worked，不被 ⏱ 行拆成碎块，合计就是整段
+const spanCfg = {...DEFAULTS, workLog: {}};
+const spanItems2 = parseJournal(['- TOREVIEW 🤖 21:59-00:06 排查箭头', '\t- ⏱ 21:59–22:10、22:30–22:40 · 共 21m'].join('\n'), spanCfg);
+applyWork(spanItems2, spanCfg, '2026_11_20', 23 * 60 + 20, 0, {});
+assert.equal(JSON.stringify(spanItems2[0].worked), JSON.stringify([[1319, 1446]]), 'worked 是整段');
+assert.equal(spanItems2[0].spentToday, 127);
+console.log('PASS 自动记的 🤖 区间按整段算时长与块（含跨分界）');
+
+// 日记在哪：没手填就自动认出格式和目录（核心「日记」插件 → Periodic Notes → 翻库猜）
+assert.ok(formatRegex('YYYY-MM-DD').test('2026-11-20'), 'YYYY-MM-DD 认得出');
+assert.ok(!formatRegex('YYYY-MM-DD').test('2026_11_20'), 'YYYY-MM-DD 不认下划线写法');
+const p2 = (n) => String(n).padStart(2, '0');
+const dname = (ago) => { const d = new Date(Date.now() - ago * 864e5); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+const fakeVault = (paths) => ({ vault: { getFiles: () => paths.map((x) => ({ path: x })) } });
+const detScan = detectJournal(fakeVault([`日记/${dname(0)}.md`, `日记/${dname(1)}.md`, `归档/${dname(4)}.md`]), { ...DEFAULTS, journalAuto: true });
+assert.equal(detScan.folder, '日记', '日期命名的文件最多、最近还在写的那一处');
+assert.equal(detScan.format, 'YYYY-MM-DD', '认出的是横线写法，不是默认的下划线');
+const detDaily = detectJournal({ ...fakeVault([`Daily/${dname(0)}.md`]), internalPlugins: { getPluginById: (id) => (id === 'daily-notes' ? { enabled: true, instance: { options: { folder: 'Daily', format: 'YYYY/MM/DD' } } } : null) } }, { ...DEFAULTS, journalAuto: true });
+assert.equal(detDaily.folder, 'Daily', '核心「日记」插件的设置优先于翻库');
+assert.equal(detDaily.format, 'YYYY/MM/DD');
+const detManual = detectJournal(fakeVault([`日记/${dname(0)}.md`]), { ...DEFAULTS, journalAuto: false, folder: '我的日记', format: 'YYYY.MM.DD' });
+assert.equal(detManual.folder, '我的日记', '手填了就不自动改');
+assert.equal(detManual.format, 'YYYY.MM.DD');
+console.log('PASS 日记目录/格式自动检测（核心插件优先、翻库猜、手填优先）');
