@@ -202,11 +202,14 @@
 .naut-row.is-review { border-left-color: var(--naut-review); }
 .naut-row.naut-ai-row { border-left-color: var(--naut-ai); cursor: pointer; }
 .naut-row.naut-ai-row .naut-dur { color: color-mix(in srgb, var(--naut-ai) 78%, var(--text-normal)); font-weight: 600; }
-/* 进行中的那一行：时间前面一个跟着呼吸的小圆点 */
+/* 进行中的那一行：时间前面一个跟着呼吸的小圆点；「接下来」已有左侧状态圆点，不重复画左边条和第二个圆点，直接让状态圆点呼吸 */
 .naut-row.is-doing .naut-time::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; background: var(--naut-task); animation: naut-breathe 2.8s ease-in-out infinite; }
 .naut-row.is-doing.is-prio .naut-time::before { background: var(--naut-prio); }
 .naut-row.is-doing.is-main .naut-time::before { background: var(--naut-main); }
 .naut-row.is-doing.is-kw-doing .naut-time::before { background: var(--naut-kw-doing); }
+.naut-row.is-upnext { border-left: 0; padding-left: 4px; }
+.naut-row.is-upnext.is-doing .naut-time::before { display: none; }
+.naut-row.is-upnext.is-doing .naut-st-dot { animation: naut-breathe 2.8s ease-in-out infinite; }
 
 /* 列表里能折叠的小节标题、小字说明 */
 .naut-proj-head { cursor: pointer; user-select: none; }
@@ -433,7 +436,7 @@
 
 /* Obsidian 不在前台时，一直循环的动画停在当前帧，切回来接着播。只要有一个循环动画在播，整个窗口每一帧都要重新算样式、重画，
    窗口大的时候很费：实测空闲时渲染进程 CPU 约 50%、GPU 约 11%，停下来以后约 23%、2%。入场动画不停，免得卡在没画出来的第一帧 */
-body:not(.is-focused) :is(.naut-burn, .naut-now-halo, .naut-seg.naut-live, .naut-st-day-now, .status-bar-item.naut-status.is-forgotten),
+body:not(.is-focused) :is(.naut-burn, .naut-now-halo, .naut-seg.naut-live, .naut-st-day-now, .status-bar-item.naut-status.is-forgotten, .naut-row.is-upnext.is-doing .naut-st-dot),
 body:not(.is-focused) :is(.naut-row.is-doing .naut-time, .naut-dayrev.is-live .naut-time, .naut-st-row.is-doing .naut-st-left)::before { animation-play-state: paused; }
 body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: running, paused; }   /* 这条同时挂着入场描线和呼吸：只停呼吸 */
 
