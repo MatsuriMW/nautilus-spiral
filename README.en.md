@@ -1,0 +1,183 @@
+# 螺旋日程 Nautilus Spiral
+
+> **Give every minute a job.**
+
+A spiral day planner for Obsidian that reads your daily note.
+
+[简体中文](./README.md) · **English** · [User guide](./docs/guide.md)
+
+<p align="center">
+  <img src="assets/spiral-overview.png" width="380" alt="Nautilus Spiral overview: spiral day dial and Up next task list">
+</p>
+
+## 2.6.0 · Lightweight Pomodoro & Up Next Context Menu
+
+- **Lightweight Pomodoro (`15m` / `25m` / `Custom`)**: On today's view, a compact bar under capacity switches between three presets with a play icon button. Start it independently to reserve an upcoming block without touching your note, or start it on a task from the "Up next" right-click menu (switches it to `DOING` and offers "Mark DONE / Another round / Close" when time's up). On the spiral's outer rail, elapsed time renders as a solid arc and the unrealized reservation as a dashed arc with a hollow end dot, without pushing scheduled tasks back; completed rounds remain as subtle arcs.
+- **Up Next right-click menu refresh**: Removed machine-only AI statuses (`TOREVIEW` / `NEEDOK` / `DELEGATED` / `QUEUED` / `HITLIMIT` / `ERRORED`), keeping the 7 human statuses and replacing the second group with task priority (`[#A] High · Mainline`, `[#B] Medium`, `[#C] Low`, `Clear priority`) plus "🍅 Start Pomodoro".
+
+<p align="center">
+  <img src="assets/pomodoro.png" width="360" alt="Active Pomodoro bar and spiral outer rail showing elapsed solid arc and unrealized dashed reservation">
+  <img src="assets/upnext-menu.png" width="360" alt="Up Next context menu with human statuses, A/B/C priority, and Start Pomodoro">
+</p>
+
+*The recording shows the plugin with a Chinese interface; the labels switch to English when Obsidian's language is set to English.*
+
+Events stay pinned to their time. To-dos flow from "now" into the free gaps, in list order and by estimated duration. As time moves on, unfinished tasks are pushed forward, and a capacity bar tells you whether today still fits. What you actually did is drawn on the same spiral, so plan and reality sit side by side.
+
+**A 50-second tour** (Chinese captions, with sound). The panel in the film is drawn by the plugin's own code from a made-up daily note:
+
+https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
+
+**The interface follows Obsidian's language**: English, or Chinese when Obsidian is set to Chinese. The full [guide](./docs/guide.md) is in English, with a [简体中文版](./docs/guide.zh-CN.md). This page covers what the plugin does, how to install it and what it touches outside your vault.
+
+## Contents
+
+- [Two ways to use it](#two-ways-to-use-it-tasks-only-or-tasks-plus-agent-records)
+- [What it does](#what-it-does)
+- [The journal outline as a dashboard for your agents](#the-journal-outline-as-a-dashboard-for-your-agents)
+- [Optional execution layer](#optional-execution-layer)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Works with Telegram Companion](#works-with-telegram-companion)
+- [Network, accounts and files outside your vault](#network-accounts-and-files-outside-your-vault)
+- [Where the idea comes from](#where-the-idea-comes-from)
+- [Feedback and updates](#feedback-and-updates)
+- [Credits](#credits)
+
+## Two ways to use it: tasks only, or tasks plus agent records
+
+| Installed | What you get |
+|---|---|
+| Nautilus Spiral alone | Task management: the spiral schedule, timing, capacity, pause rules, mainline, review and desktop widgets. No agent needed |
+| Plus [Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) | Agent records: automatic journal logging, status write-back, `💬`, desktop child / side chat / subagent blocks, archive → `DONE`, and delegation from a task line. Nautilus draws those lines (inner rings, progress rows, `🔗` bindings, permission / error alerts) |
+
+Nautilus Spiral never writes agent sessions into your note; that half belongs to Agent Deck alone. Without Agent Deck, Nautilus is a task manager. It still reads the local agent session logs to show collaboration time and tokens under the capacity bar; turn off "Show agent collaboration" in settings if you have no use for it.
+
+## What it does
+
+- **A 12-hour dial that winds inward.** The outer end is the start of your day, the inner end is the end. Fixed events, planned to-dos, finished tasks and "now" are all on it. Hover any segment and the line above the spiral shows what it is, instantly.
+- **Plans itself from your list.** Write `14:00-15:30 meeting` for an event and `TODO reply to mail 20m` for a to-do. Chinese time and duration phrases are understood too (`3点到5点`, `半小时`). The plugin re-plans every minute; you never drag blocks around.
+- **Tracks actual time.** A task counts while it is `DOING` and stops when it becomes `DONE`, `PAUSED` or `TODO` again. Interrupted work becomes several spans. A daily review compares planned and actual task by task, and a 30-day review shows how far off your estimates usually are.
+- **The time record lives in the note.** Actual spans are written under the task as one line, `⏱ 14:05–14:40, 15:10–15:32 · total 57m`, by the machine for agent sessions and, if you switch it on, for your own tasks too. That line is the source of truth: edit it and the spiral follows.
+- **Shows what was not recorded.** Past time with no record of any kind, neither yours nor the machine's, is hatched on the spiral, and one line tells you how much of the day so far is accounted for.
+- **Capacity at a glance.** Planned, then remaining / overload / no fitting slot, then the percentage of the day's flexible time still free; below that, flexible and event time as "left now / whole day". A status bar item shows the running timer, or the same capacity summary when nothing is running.
+- **Play back the day.** One button sweeps "now" from the start of the day to its end in six seconds and re-plans as it goes. Nothing in the note is changed.
+- **Focus rounds.** Start a task with a timer and, optionally, a Raycast Focus session. Or start a round for a broad direction instead of a single task.
+- **Calendars, read-only.** Events from macOS Calendar and from Google Calendar (through the Google Calendar API, with an OAuth client you create yourself) can be laid onto the spiral as fixed events. Both can be on at once; the same event is kept once.
+- **Small sounds, two moods.** A soft tick when you click a segment or a row, and a short synthesized sound whenever a task changes state anywhere in the vault, whoever changed it (a hotkey, a task plugin, a board, typing). Moving forward (`TODO`, `DOING`, `DONE`) rises and stays soft; stopping or not making it (`PAUSED`, `WAITING`, `SUSPENDED`, `CANCELLED`, `FAILED`) falls, lower and rougher each step. No audio files; one switch turns it off.
+- **Agent time.** Reads the local session logs of Claude Code, Codex (desktop app and CLI), WorkBuddy, DeepSeek Harness and Antigravity, and draws when each agent was working as thin inner rings, one colour per agent, with the tokens each one used (output plus fresh input; cache reads are listed separately). You pick which of the five you actually use, and one of them as your primary agent: the primary is tracked in full (all history), the others only for sessions active today.
+- **A progress line under what you are doing.** In the editor, a `DOING` line gets one row of monospace text under it, filled with `#` like a terminal: `[#########-----------] 45%`. The number is the progress you wrote on the line (`60%`, `2/3`); failing that, the agent session that belongs to the line, if it keeps a to-do list of its own; failing that, time spent against your estimate. When a session is matched, the row also says whether it is running or waiting for you, what its last step was, and how many tokens it has used. You can bind a line to a session by hand, and archiving the session fills the row to 100%.
+- **Active and passive recording, together.** You record on purpose: the plan, the estimates, the states you set by hand. The machine records in the background as your assistant: when each agent session was really moving, and for how long. Both end up in the same daily note and on the same spiral.
+- **Writing back to the note is Agent Deck's job.** Turning a line `DOING` while its session runs, `TOREVIEW` / `PAUSED` when it stops, writing its last words as `💬` and marking it `DONE` when archived are all done by [Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck) (see "Two ways to use it" above); Nautilus reads the logs and draws them.
+- **Main quests, and four desktop widgets.** Mark the one to three things that matter most today with `[#A]`: they are planned first, drawn in their own colour (red by default), and the status bar keeps the next one in view. The colours for main quests, fixed events, to-dos, important items, card reviews and game time can be changed under Settings → 🎨 Colors; agent colours follow each agent's own app and stay fixed. Before a main quest starts you are asked for its goal (what "done" looks like), written under the task as a `🎯 Goal:` line; no goal, no start. A slider under each main-quest block sets its progress, written into the line when you let go. Companion macOS widgets (source in `widgets/`, built and installed by you; their labels follow the macOS language) show today's main quests with the next one's goal and the last seven days' completion; what is `DOING` in today's note and for how long; every open `TODO`, `LATER` and `- [ ]` in the vault, most recently edited notes first; and a Gantt chart of the plan note (`Plan.md` by default, created if missing), five weeks from this Monday, drawn from list items with `🛫` start and `📅` due dates. They work on the desktop and in the Notification Center sidebar: the circle in front of a row marks it done in the note (tap again to undo), the row's name jumps back to that line in Obsidian, and a button in the corner refreshes on demand.
+
+Antigravity transcripts and DSH zstd session logs are supported. Agent Deck entries can be matched by block ID. Claude shows task-list steps when available; other agents show conversation turns. Configure automatic journal timing, thresholds and the Claude / Codex CLI model in Agent Deck.
+
+## The journal outline as a dashboard for your agents
+
+<p align="center">
+  <img src="assets/spiral-agent-outline.png" width="820" alt="Nautilus Spiral side by side with the daily note outline showing Agent Deck statuses, rounds, and token usage">
+</p>
+
+A daily note is an outline, and one task line stands for one agent session. Nautilus Spiral turns that outline into a dashboard for the agents' work: which one is running, which one is waiting for you, how many tokens each has used and what it said last, all written under the task's own line.
+
+- **One task line, one session.** There are three ways to pair them. A `🔗` line under the task holds the binding in the note itself, so it survives moving the block or rewording the task. Lines logged by Agent Deck are paired directly. Otherwise a session is matched when its title, or the first thing you said to it, repeats the line. The command "Bind this line to an agent session…" writes the `🔗` line by hand.
+- **Sibling lines are agents running side by side.** Several `DOING` lines each have their own session and their own progress row, and the inner rings of the spiral show, one colour per agent, when they were working at the same time.
+- **The state follows the session.** Running, waiting for your reply, or quiet for how long: all read from the session logs and shown on the progress row. When a session stops on a permission prompt or errors out, Nautilus sends a system notification that jumps to the line. Switching the line's keyword (`TOREVIEW`, `NEEDOK`, `ERRORED`, `HITLIMIT`, `QUEUED`) and marking it `DONE` on archive are done by Agent Deck.
+- **What the agent said last comes back into the outline.** Each time a session finishes a turn, Agent Deck squeezes its last reply into one `💬` line under the task; Nautilus shows that line faded, and a double-click opens the session.
+- **Subagents and side chats show up too.** When a Claude Code session dispatches subagents, the progress row ends with `🤖 2 running 1 done` and each subagent gets a line below it: its description, running or finished, its latest step and the tokens it used. A side chat opened on that session in the Claude desktop app gets a line as well (open, and for how long). Everything is read locally: subagent logs sit under `subagents/` in the session's folder. A side chat is not written to disk, so all the plugin can see is the claude process the desktop app starts for it; what you asked, whether it is answering, and its tokens stay unknown.
+- **Sessions opened from a session nest as child blocks.** When a bound session in the Claude desktop app opens new sessions, Agent Deck writes each as a child block of the task with its own `🔗` line, and Nautilus draws a progress row for each.
+- **The record stays in the outline and leads back.** A finished task has `⏱ 20:12–21:09 · 共 57m · 885k tok · Claude` under it, and the final "Claude" is a link that reopens that session (written by Agent Deck for the sessions it logs).
+- **Dispatch is left to a companion plugin.** [块去向 (done-to-top)](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top) sends a block and its children to the Claude CLI with `⌥⌘S`. It fixes the session ID before the session starts and writes the `🔗` line under the task, so the progress row starts moving right away. Select several sibling blocks and each one gets its own session (siblings run in parallel). Choose 「子块各开一个」 and the parent becomes shared background while every child block gets a session, with each conclusion landing under its own child (depth becomes sub-sessions). Sessions can open in Terminal windows, sit in a background tmux session, or run headless with `claude -p`. Without the plugin, pasting the task as your first message to the agent is enough for the match.
+
+What it does not do: it does not schedule. Dispatched sessions each run on their own, with no queue, no retries and no ordering between them. Only the last reply comes back, as one line; the files an agent changed and its full reply stay out of the outline. Sub-session conclusions land under their own child blocks and are not rolled up into the parent.
+
+## Optional execution layer
+
+When planning is not enough and you want the doing tracked too, three pieces cover what Nautilus Log calls its execution layer. Each is small and can be left alone; with all of them ignored the plugin is still just a spiral and a list of estimates.
+
+- **Timing.** A task is timed while it is `DOING`. The status bar shows how long the most recently started task has been running and how many are running; the text turns red after 45 minutes and asks you to check the timer after 2 hours. Neither stops anything. The “Status now” command shows the whole picture.
+- **Pomodoro.** On today's view, a compact bar under capacity switches between `15m`, `25m`, and a remembered `Custom` length. Start it independently to reserve an upcoming block, or start it on a task from the "Up next" right-click menu (switches it to `DOING` and offers to mark `DONE` when time's up). On the spiral's outer rail, elapsed time renders as a solid arc and the unrealized reservation as a dashed arc with an end dot, without pushing scheduled tasks back; completed rounds stay as subtle arcs.
+- **Plan.** The list under the spiral: "Up next" is what fits today, in the order it was placed; "Won't fit" is what does not fit. Click the status dot to cycle status, or right-click to pick a status, set `[#A]`/`[#B]`/`[#C]` priority, or start a Pomodoro.
+- **Review.** "📋 Today's review" compares planned and actual for each task of the day. Only finished tasks with recorded time count towards the variance; running and paused work is listed but does not move the number. "📏 Estimate vs actual" does the same over 30 days.
+
+The difference from Nautilus Log: there is no single master switch and no popover panel. The three pieces live in the status bar, the list and a few hotkeys, and the status bar, the daily review and the 30-day review each have their own toggle in settings.
+
+## Requirements
+
+- **Desktop only.** Developed and used on macOS. The spiral, planning and time tracking are plain Obsidian; calendar, dialogs, sounds, focus prompts and game tracking are macOS-only. Windows and Linux are untested.
+- **Daily notes written as lists**, one file per day. The plugin finds them itself: it follows your Obsidian *Daily notes* (or *Periodic Notes*) settings, and with neither installed it scans the vault for the commonest date-named pattern that is still being written. Set the folder or the name format by hand and it stops guessing.
+- Optional: Xcode Command Line Tools (for the macOS calendar helper), Raycast (Focus), a Google account and your own Google Cloud OAuth client (Google Calendar).
+
+## Installation
+
+Until it is listed in the community directory: download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/MatsuriMW/nautilus-spiral/releases/latest) into `<vault>/.obsidian/plugins/nautilus-spiral/`, or add this repository in BRAT.
+
+## Usage
+
+The core needs three things; everything else is optional and listed in the [guide](./docs/guide.md) under "Turn on what you use".
+
+1. In the plugin settings, set your daily-note **folder** and **file name format** (a moment.js format such as `YYYY-MM-DD`), the hours your day starts and ends, and the date boundary: the time before which you are still writing in yesterday's note. The boundary is a 24-hour clock time such as `08:00` or `4:30`.
+2. In today's note, write a couple of list items: `- 14:00-15:00 meeting` and `- TODO reply to mail 20m`.
+3. Open the spiral from the ribbon icon or the command "Open Nautilus Spiral".
+
+Two rules that edit your note are on by default: at most 3 tasks may be `DOING` at once (blocks an agent is working on do not count), and a `DOING` task untouched for 3 hours becomes `PAUSED`. Set either to 0 to turn it off. If you do not use Raycast, switch off "Start Raycast Focus too".
+
+## Works with Telegram Companion
+
+Install [Telegram Companion](https://github.com/MatsuriMW/telegram-companion) next to it and your phone becomes the remote: send `?` to get today's spiral as an image, say when you got up or went to bed to set the day's bounds, pause the clock when you leave for a meal, tick tasks off, and receive the weekly direction review. Nothing to configure here: both plugins enabled is enough. Details in the [guide](./docs/guide.md) under "Works with Telegram Companion".
+
+## Network, accounts and files outside your vault
+
+Nothing leaves your computer unless you turn on one of the optional features below. There is no telemetry and nothing to pay for.
+
+| What | When | Where it goes |
+|---|---|---|
+| The spiral image when you ask for it from your phone | Only if Telegram Companion is installed and set up | Telegram Bot API, through your own bot. The bot token is read from Telegram Companion's settings and is not stored by this plugin |
+| Reminders, including task names | Only if you set a Discord channel | Your own local `notify-discord` script and the webhook it holds |
+| Requests for your calendar list and the day's events; nothing is written to the calendar | Only if you turn on Google Calendar and connect an account | Google: `accounts.google.com` (you sign in and consent in your browser), `oauth2.googleapis.com` (tokens), `www.googleapis.com` (Calendar API). The only scope requested is `calendar.readonly`, through an OAuth client of type "Desktop app" that you create in your own Google Cloud project; the plugin ships no shared key |
+
+Google Calendar needs a Google account. The client secret and the refresh token are kept in Obsidian's secret storage (the system keychain), not in the plugin's `data.json`; on Obsidian versions without secret storage they fall back to `data.json`. While you are connecting, the plugin listens on `127.0.0.1` on a random port to receive the authorization code from your browser, and closes it as soon as the code arrives or after five minutes.
+
+Files read outside the vault, all read-only, and only for the agents switched on in settings (for agents other than the primary, only session files changed today): `~/.claude/projects`, `~/.config/claude/projects` and the Claude desktop app's `claude-code-sessions` folder (which sessions are archived, and which session each one was opened from); it also checks the local process list to spot side chat processes; `~/.codex/sessions`, `~/.codex/archived_sessions` and `~/.codex/session_index.jsonl` (session titles); `~/.workbuddy/projects`, `~/.dsh/sessions`, `~/.dsh/storages/workspace.json`, and `~/.gemini/antigravity/brain`. DSH usage may also be read from its local statistics API. A daily summary is kept in the plugin folder as `ai-usage.json`.
+
+Files written outside the vault: `~/Library/Caches/nautilus-spiral/` (small Swift helpers compiled on first use, for the calendar and an experimental notification app). With "export data for widgets" on, also `~/Library/Application Support/Nautilus Spiral/widgets.json` (today's main quests, what is in progress, open to-dos across the vault, and the plan's Gantt rows, for the widgets), after which `open` is called on `nautilus-widgets://reload` to refresh them; taps on a widget's done / undo circle land in `inbox/` in the same folder and are deleted once applied.
+
+Local programs it starts: `osascript` (dialogs), `swiftc` and `codesign` (building the helpers), `afplay` (sounds), `open` (Raycast deeplinks, bringing Obsidian forward, refreshing the widgets), `ps` and `sh` (game tracking).
+
+## Where the idea comes from
+
+The model is not mine. [Nautilus](https://github.com/tombarys/roam-depot-nautilus) was written for Roam Research by the Czech writer Tomáš Baránek. It reads the day's fixed events and each task's estimated duration, then fills the gaps between events with tasks in list order. As the "now" hand moves, everything unfinished moves back with it; a task that no longer fits before the next event jumps whole to the next free slot, and smaller tasks behind it move up to fill the hole. The rules are deterministic. No AI is involved in the planning.
+
+What makes it work is that every stretch of time gets something assigned to it. The budgeting app YNAB says "give every dollar a job"; [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), a rebuild of Nautilus for Roam, turned that into **"give every minute a job"**:
+
+- **Allocate first, spend second.** Putting a duration on each task spends the day as a budget. However much there is to do, it is arranged inside a budget you can see, and you know at once when you are over.
+- **Tasks come to you.** As time advances, whatever can be done next is pulled up to "now". You do not keep re-deciding what to do, or worrying that an interruption has wrecked the rest of the day: every task that has a budget finds a place on the spiral.
+- **Plan and record are two separate books.** Nautilus Log added an Org-mode-style logbook beside the plan. The spiral is an elastic forecast built from estimates; the logbook is the stricter evidence of where the time really went. They can be used together or apart.
+
+The thought underneath: time is a real river. You cannot hold it, but you can understand it, plan for it, and use it calmly.
+
+This plugin takes one more step along that line. Part of the "record" book is handed to the machine. You still record actively: the plan, the estimates, the states you change by hand. Meanwhile the agents you work with keep their own session logs, and the plugin reads those as a passive record: which minutes were really worked. Statuses and conclusions come from you; time spans and durations come from the machine, which stays an assistant: it never decides that something is done, and it leaves alone any line you have edited yourself.
+
+## Feedback and updates
+
+See the [Roadmap](https://matsuri.site/portfolio/journal-workflow/#whistlist) to view planned features, submit suggestions, and vote on ideas. You can also follow [@Matsurimywaifu](https://x.com/Matsurimywaifu) on Twitter for updates and feedback.
+
+## Credits
+
+[Nautilus](https://github.com/tombarys/roam-depot-nautilus) by Tomáš Baránek, and its descendants [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) and [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), for the spiral day planner and "give every minute a job". The time-budget idea goes back to the [YNAB Method](https://www.ynab.com/the-four-rules/); this plugin is not affiliated with YNAB. Obsidian already has two ports of the Nautilus line: [Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) and [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger).
+
+This plugin shares the ideas, not the code. The capacity figures, the hatched unrecorded time, the daily review, free-slot hover, the status bar timer and playback follow the rules of Nautilus Log (MIT) so that the numbers mean the same thing; they were written again here for Obsidian, and checked against its `log-core.js` and `timing-core.js`. It was written separately for a different workflow: the daily note itself is the data source, written as a plain list with Logseq-style task keywords, and agent session logs are used as evidence of what actually happened.
+
+MIT licensed.
+
+## Agent inner-ring details
+
+Hovering an agent segment shows only its time, agent and short title. Click an agent segment to pin its hover summary so you can move your pointer up to click **Details** without hovering other segments (click the segment again, click **×**, press Escape, or click outside to unpin). Click **Details**, or double-click the segment, to expand the card; click **Hide details** or press Escape inside the card to close it. The expanded card stays open when the pointer leaves and across same-day redraws, and closes when changing dates.
+
+Cards list sessions by overlap with the selected segment, with full task titles, live state, steps or turns, latest action, model, directory and recent reply. Segment overlap time, daily session time and daily tokens are labeled separately. Tokens are output plus fresh input for the whole daily session, never estimated per segment. Historical dates omit today's live state and reply. The first three sessions appear in the card; a separate action opens the complete list. Linked journal tasks and supported clients can be opened directly.
+
+Automatic journal writing, record granularity, compaction thresholds and record folding are configured in Agent Deck. Nautilus reads and displays that information without writing duplicate AI records.
+
+Commands have no default global hotkeys. Assign your own in Obsidian Settings → Hotkeys.

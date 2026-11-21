@@ -1,8 +1,8 @@
 # Nautilus Spiral — User Guide
 
-[English](./guide.md) · [简体中文](./guide.zh-CN.md) · **User guide**
+[简体中文](../README.md) · [English](../README.en.md) · **User guide**
 
-How to configure it, how to write your daily note, and what every number means: all here. Start with "Usage" in the [English README](../README.md) to get the basics working, then come back and read what you need.
+How to configure it, how to write your daily note, and what every number means: all here. Start with "Usage" in the [English README](../README.en.md) to get the basics working, then come back and read what you need.
 
 **Contents**
 
