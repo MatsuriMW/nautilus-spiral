@@ -10,7 +10,7 @@
 - 规划：[日记里的写法](#日记里的写法) · [排程规则](#排程规则) · [螺旋怎么读](#螺旋怎么读) · [翻看其它日子](#翻看其它日子)
 - 执行：[开始做一件任务](#开始做一件任务) · [计时](#计时实际做了多久) · [硬规则：暂停](#硬规则暂停) · [当日复盘](#-当日复盘) · [预估 vs 实际](#-预估-vs-实际)
 - 人机协作：[Agent 会话写进日记：交给 Agent Deck](#-agent-会话写进日记交给-agent-deck) · [做这件事时 Agent 在干什么](#-做这件事时-agent-在干什么) · [可选模块](#可选模块)
-- 联动：[提醒怎么发](#提醒怎么发) · [macOS 日历](#-macos-日历) · [Google 日历](#-google-日历) · [Telegram Companion](#和-telegram-companion-联动) · [其它插件](#和其它插件一起用)
+- 联动：[提醒怎么发](#提醒怎么发) · [macOS 日历](#-macos-日历) · [Google 日历](#-google-日历) · [Telegram Companion](#和-telegram-companion-联动)
 
 ## 用到哪个开哪个
 
@@ -494,13 +494,6 @@ macOS 以外的系统只有螺旋、排程、计时这些基本的和「人机�
 
 Telegram Companion 只在桌面端跑，电脑上的 Obsidian 得开着，手机上发的消息才有人接。
 
-## 和其它插件一起用
-
-- **任务提醒**（[`nautilus-notify`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/nautilus-notify)）：用螺旋日程算出的排程发 macOS 通知：事件快开始了、钉住的待办过点了、DOING 做太久了、今天排不下了、下一件该做什么，还有早上的今日简报和晚上的收尾提醒。
-- **Telegram Companion**（[`telegram-companion`](https://github.com/MatsuriMW/telegram-companion)）：见上一节。
-- **任务状态快切**（[`task-toggle`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/task-toggle)）：⌘/ 在 无 → TODO → DOING 时间 → DONE 时间段 之间切换，自动写上开始和完成的时刻。
-- **块去向**（[`done-to-top`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top)）：把日记里的任务按 DONE / DOING / TODO 分区归位，没做完的整块发送到明天。`⌥⌘S` 把一块发给 Claude CLI 并在下面记上 `🔗`：选中几块并列的，每块各开一个会话；选「子块各开一个」，母块当共同背景，每个子块一个会话。会话跑在哪儿在它的设置里选：终端窗口、后台的 tmux（桌面上不弹窗口，想看再 `tmux attach`）、或者 `claude -p` 无头。
-
 ## 快捷键
 
 不预设全局快捷键，Obsidian 设置 → 快捷键里搜「螺旋日程」可以改。也可以从命令面板运行“快捷面板”：所有操作都在里面，打几个字就能找到，右边写着各自的快捷键；当下用不了的不会出现。
@@ -516,11 +509,3 @@ Telegram Companion 只在桌面端跑，电脑上的 Obsidian 得开着，手机
 | 未预设 | 测试带按钮的系统通知（试验） |
 
 另外还有两条没设快捷键的命令：「打开今天的日记（凌晨按日界算前一天）」「重新读取日历（macOS 日历 / Google 日历）」。
-
-## Agent 内圈详情
-
-鼠标移到 Agent 内圈只显示时段、Agent 和标题简讯。单击这段内圈可将当前提示固定住，方便把鼠标移到上方去点“详情”而不触发其他段落的悬停；再点同一段、点提示栏里的“×”、按 Escape 或点空白处即可取消固定。点击“详情”或双击这段内圈展开卡片，点击“收起详情”或在卡片内按 Escape 收起。展开后离开鼠标仍保留，同一天刷新时恢复，切换日期时关闭。
-
-详情按本段重叠时长排列会话，显示完整任务标题、当前状态、步骤或轮次、最近动作、模型、目录与最近回复。卡片区分本段重叠用时、本日会话时长和本日 token（产出加非缓存输入）；token 不按当前时段估算分摊。历史日期不显示今天的实时状态与回复。卡片先展示 3 个会话，更多会话可点击查看全部；可定位关联日记项，具备客户端跳转支持时可打开会话。
-
-自动记录、记录颗粒度、累计合并和折叠显示由 Agent Deck 设置。螺旋日程负责读取与展示，不重复写 AI 日志。

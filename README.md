@@ -7,7 +7,7 @@
 **简体中文** · [English](./README.en.md) · [使用指南](./docs/guide.zh-CN.md)
 
 <p align="center">
-  <img src="assets/spiral-overview.png" width="380" alt="螺旋日程总览：螺旋时间盘与「接下来」任务列表">
+  <img src="./assets/spiral-overview.png" width="380" alt="螺旋日程总览：螺旋时间盘与「接下来」任务列表">
 </p>
 
 ## 2.6.0 · 轻量化番茄钟与「接下来」右键菜单
@@ -16,8 +16,8 @@
 - **「接下来」右键菜单改版**：移除人不会手动使用的 AI 机器状态（`TOREVIEW` / `NEEDOK` / `DELEGATED` / `QUEUED` / `HITLIMIT` / `ERRORED`），保留 7 项人工状态，并将第二组替换为任务重要程度设置（`[#A] 重要 · 主线`、`[#B] 较重要`、`[#C] 一般`、`清除重要程度`）以及「🍅 用番茄钟开始」。
 
 <p align="center">
-  <img src="assets/pomodoro.png" width="360" alt="番茄钟运行中：顶部倒计时与螺旋外沿的已兑现实线 + 未实现预订虚线">
-  <img src="assets/upnext-menu.png" width="360" alt="「接下来」右键菜单：人工状态 + A/B/C 重要程度设置 + 用番茄钟开始">
+  <img src="./assets/pomodoro.png" width="360" alt="番茄钟运行中：顶部倒计时与螺旋外沿的已兑现实线 + 未实现预订虚线">
+  <img src="./assets/upnext-menu.png" width="360" alt="「接下来」右键菜单：人工状态 + A/B/C 重要程度设置 + 用番茄钟开始">
 </p>
 
 把今天日记里的事件和待办画成一圈螺旋：固定事件钉在它的时刻上，待办按列表顺序和预计时长，从「现在」开始自动填进事件之间的空档。时间往前走，没做完的任务就跟着往后流；排不下的，当场告诉你缺多少。
@@ -38,10 +38,8 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 - [快速开始](#快速开始)
 - [可选执行层](#可选执行层)
 - [原理：给每一分钟安排一份工作](#原理给每一分钟安排一份工作)
-- [灵感来源](#灵感来源)
 - [联网、账号和库外文件](#联网账号和库外文件)
 - [反馈与后续](#反馈与后续)
-- [致谢](#致谢)
 
 ## 两种用法：只管任务，或者再加上 Agent 记录
 
@@ -75,7 +73,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 ## 用日志大纲和 Agent 一起干活
 
 <p align="center">
-  <img src="assets/spiral-agent-outline.png" width="820" alt="左侧螺旋日程与右侧日记大纲联动展示 Agent 任务状态、轮次与消耗">
+  <img src="./assets/spiral-agent-outline.png" width="820" alt="左侧螺旋日程与右侧日记大纲联动展示 Agent 任务状态、轮次与消耗">
 </p>
 
 日记是一份大纲，一行任务对应一个 Agent 会话。螺旋日程把这份大纲变成 Agent 干活的仪表盘：谁在跑、谁在等你、各用了多少 token、最后说了什么，都写在任务自己那一行下面。
@@ -143,20 +141,6 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 所以两边各管各擅长的：状态和结论听人的，时段和用时交给机器。机器只做辅助，它不替你判断 DONE，你手动改过的行它也不再动。
 
-## 灵感来源
-
-这套模型不是原创。源头是捷克作家 Tomáš Baránek 给 Roam Research 写的 [Nautilus](https://github.com/tombarys/roam-depot-nautilus)（鹦鹉螺）：先读出当天定死的事件和每件任务的预计时长，再让任务按列表顺序填进事件之间的空档。「现在」的指针往后走，没做完的任务跟着整体后退；碰上固定事件放不下，就整块跳到下一个空档，后面放得下的任务自动往前补位。整套规则是确定的，排程这件事不需要 AI。
-
-它有力量的地方，在于让每一段时间都有了着落。记账软件 YNAB 的口号是 Give every dollar a job，[Nautilus Log](https://github.com/404KSG/roam-nautilus-log)（在 Roam 上对 Nautilus 的一次重构）把它改成了 **Give every minute a job**：
-
-- **先分配，再花。** 给每件事报一个时长，等于把今天的时间当成预算分出去。事情再多，也是在一笔看得见的预算里安排，超支了当场知道。
-- **任务自己走到你面前。** 时间往前推，能做的任务被自动拉到「现在」跟前。你不用反复判断这会儿该做哪件，也不用担心临时插进来的事打乱后面的节奏，分配过预算的任务都会在螺旋上找到自己的位置。
-- **预计和实际是两本账。** Nautilus Log 在规划之外加了 Org mode 式的 Logbook：螺旋是按预计时长做的弹性推演，Logbook 是对实际用时更严格的实证，两者可以并存，也可以只用一个。
-
-背后的想法是：时间是一条真实流动的河。留不住它，但可以理解它、规划它、从容地用它。
-
-螺旋日程沿着这条线又走了一步：把「实际」那本账的一部分交给机器来记（上一节说的主动记录和被动记录），数据源也从专门的组件换成了日记本身。和这几个项目的关系、代码上的区别，见文末的致谢。
-
 ## 联网、账号和库外文件
 
 不打开下面这几项可选功能，就没有任何东西离开你的电脑。没有遥测，也没有要付费的地方。
@@ -179,23 +163,4 @@ Google 日历需要一个 Google 账号。客户端密钥和刷新令牌存在 O
 
 后续规划与功能需求整理在 [Roadmap](https://matsuri.site/portfolio/journal-workflow/#whistlist) 中，欢迎在里面添加建议或为你想要的功能投票。也可以通过我的 Twitter 关注进展与反馈问题：[@Matsurimywaifu](https://x.com/Matsurimywaifu)。
 
-## 致谢
-
-- Tomáš Baránek 的 [Nautilus](https://github.com/tombarys/roam-depot-nautilus)：最初的螺旋日计划。
-- 它的后续 [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) 和 [Nautilus Log](https://github.com/404KSG/roam-nautilus-log)：「给每一分钟安排一份工作」，以及规划之外的执行层。
-- 时间预算的想法来自 [YNAB Method](https://www.ynab.com/the-four-rules/)；本插件和 YNAB 没有关联。
-- Obsidian 上已经有两个同一条线的移植：[Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) 和 [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger)。
-
-这个插件用的是它们的想法，不是代码。容量条上的数字、斜纹画出的没记录的时间、当日复盘、空档悬停、状态栏计时和回放，判定规则照 Nautilus Log（MIT），为的是同一个数字是同一个意思；代码是在 Obsidian 里重新写的，并且拿它的 `log-core.js`、`timing-core.js` 逐项对过。它是为另一种工作流单独写的：日记本身就是数据源，用普通列表加 Logseq 式的任务关键词来写，Agent 的会话日志当作「实际发生了什么」的证据。
-
 MIT 许可。
-
-## Agent 内圈详情
-
-鼠标移到 Agent 内圈只显示时段、Agent 和标题简讯。单击这段内圈可先固定住当前提示，方便把鼠标移到上方去点“详情”（再点同一段、点“×”、按 Escape 或点空白处取消固定）。点击“详情”或双击这段内圈展开卡片，点击“收起详情”或在卡片内按 Escape 收起。展开后离开鼠标仍保留，同一天刷新时恢复，切换日期时关闭。
-
-详情按本段重叠时长排列会话，显示完整任务标题、当前状态、步骤或轮次、最近动作、模型、目录与最近回复。卡片区分本段重叠用时、本日会话时长和本日 token（产出加非缓存输入）；token 不按当前时段估算分摊。历史日期不显示今天的实时状态与回复。卡片先展示 3 个会话，更多会话可点击查看全部；可定位关联日记项，具备客户端跳转支持时可打开会话。
-
-自动记录、记录颗粒度、累计合并和折叠显示由 Agent Deck 设置。螺旋日程负责读取与展示，不重复写 AI 日志。
-
-所有命令均不预设全局快捷键。需要时，可在 Obsidian 设置 → 快捷键中自行绑定。

@@ -7,7 +7,7 @@ A spiral day planner for Obsidian that reads your daily note.
 [简体中文](./README.md) · **English** · [User guide](./docs/guide.md)
 
 <p align="center">
-  <img src="assets/spiral-overview.png" width="380" alt="Nautilus Spiral overview: spiral day dial and Up next task list">
+  <img src="./assets/spiral-overview.png" width="380" alt="Nautilus Spiral overview: spiral day dial and Up next task list">
 </p>
 
 ## 2.6.0 · Lightweight Pomodoro & Up Next Context Menu
@@ -16,8 +16,8 @@ A spiral day planner for Obsidian that reads your daily note.
 - **Up Next right-click menu refresh**: Removed machine-only AI statuses (`TOREVIEW` / `NEEDOK` / `DELEGATED` / `QUEUED` / `HITLIMIT` / `ERRORED`), keeping the 7 human statuses and replacing the second group with task priority (`[#A] High · Mainline`, `[#B] Medium`, `[#C] Low`, `Clear priority`) plus "🍅 Start Pomodoro".
 
 <p align="center">
-  <img src="assets/pomodoro.png" width="360" alt="Active Pomodoro bar and spiral outer rail showing elapsed solid arc and unrealized dashed reservation">
-  <img src="assets/upnext-menu.png" width="360" alt="Up Next context menu with human statuses, A/B/C priority, and Start Pomodoro">
+  <img src="./assets/pomodoro.png" width="360" alt="Active Pomodoro bar and spiral outer rail showing elapsed solid arc and unrealized dashed reservation">
+  <img src="./assets/upnext-menu.png" width="360" alt="Up Next context menu with human statuses, A/B/C priority, and Start Pomodoro">
 </p>
 
 *The recording shows the plugin with a Chinese interface; the labels switch to English when Obsidian's language is set to English.*
@@ -41,9 +41,7 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 - [Usage](#usage)
 - [Works with Telegram Companion](#works-with-telegram-companion)
 - [Network, accounts and files outside your vault](#network-accounts-and-files-outside-your-vault)
-- [Where the idea comes from](#where-the-idea-comes-from)
 - [Feedback and updates](#feedback-and-updates)
-- [Credits](#credits)
 
 ## Two ways to use it: tasks only, or tasks plus agent records
 
@@ -77,7 +75,7 @@ Antigravity transcripts and DSH zstd session logs are supported. Agent Deck entr
 ## The journal outline as a dashboard for your agents
 
 <p align="center">
-  <img src="assets/spiral-agent-outline.png" width="820" alt="Nautilus Spiral side by side with the daily note outline showing Agent Deck statuses, rounds, and token usage">
+  <img src="./assets/spiral-agent-outline.png" width="820" alt="Nautilus Spiral side by side with the daily note outline showing Agent Deck statuses, rounds, and token usage">
 </p>
 
 A daily note is an outline, and one task line stands for one agent session. Nautilus Spiral turns that outline into a dashboard for the agents' work: which one is running, which one is waiting for you, how many tokens each has used and what it said last, all written under the task's own line.
@@ -146,38 +144,8 @@ Files written outside the vault: `~/Library/Caches/nautilus-spiral/` (small Swif
 
 Local programs it starts: `osascript` (dialogs), `swiftc` and `codesign` (building the helpers), `afplay` (sounds), `open` (Raycast deeplinks, bringing Obsidian forward, refreshing the widgets), `ps` and `sh` (game tracking).
 
-## Where the idea comes from
-
-The model is not mine. [Nautilus](https://github.com/tombarys/roam-depot-nautilus) was written for Roam Research by the Czech writer Tomáš Baránek. It reads the day's fixed events and each task's estimated duration, then fills the gaps between events with tasks in list order. As the "now" hand moves, everything unfinished moves back with it; a task that no longer fits before the next event jumps whole to the next free slot, and smaller tasks behind it move up to fill the hole. The rules are deterministic. No AI is involved in the planning.
-
-What makes it work is that every stretch of time gets something assigned to it. The budgeting app YNAB says "give every dollar a job"; [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), a rebuild of Nautilus for Roam, turned that into **"give every minute a job"**:
-
-- **Allocate first, spend second.** Putting a duration on each task spends the day as a budget. However much there is to do, it is arranged inside a budget you can see, and you know at once when you are over.
-- **Tasks come to you.** As time advances, whatever can be done next is pulled up to "now". You do not keep re-deciding what to do, or worrying that an interruption has wrecked the rest of the day: every task that has a budget finds a place on the spiral.
-- **Plan and record are two separate books.** Nautilus Log added an Org-mode-style logbook beside the plan. The spiral is an elastic forecast built from estimates; the logbook is the stricter evidence of where the time really went. They can be used together or apart.
-
-The thought underneath: time is a real river. You cannot hold it, but you can understand it, plan for it, and use it calmly.
-
-This plugin takes one more step along that line. Part of the "record" book is handed to the machine. You still record actively: the plan, the estimates, the states you change by hand. Meanwhile the agents you work with keep their own session logs, and the plugin reads those as a passive record: which minutes were really worked. Statuses and conclusions come from you; time spans and durations come from the machine, which stays an assistant: it never decides that something is done, and it leaves alone any line you have edited yourself.
-
 ## Feedback and updates
 
 See the [Roadmap](https://matsuri.site/portfolio/journal-workflow/#whistlist) to view planned features, submit suggestions, and vote on ideas. You can also follow [@Matsurimywaifu](https://x.com/Matsurimywaifu) on Twitter for updates and feedback.
 
-## Credits
-
-[Nautilus](https://github.com/tombarys/roam-depot-nautilus) by Tomáš Baránek, and its descendants [Nautilus Enhanced](https://github.com/hopeserena/nautilus-enhanced) and [Nautilus Log](https://github.com/404KSG/roam-nautilus-log), for the spiral day planner and "give every minute a job". The time-budget idea goes back to the [YNAB Method](https://www.ynab.com/the-four-rules/); this plugin is not affiliated with YNAB. Obsidian already has two ports of the Nautilus line: [Nautilus Log](https://github.com/accessiblefish/obsidian-nautilus-log) and [Nautilus Logger](https://github.com/dimpurr/obsidian-nautilus-logger).
-
-This plugin shares the ideas, not the code. The capacity figures, the hatched unrecorded time, the daily review, free-slot hover, the status bar timer and playback follow the rules of Nautilus Log (MIT) so that the numbers mean the same thing; they were written again here for Obsidian, and checked against its `log-core.js` and `timing-core.js`. It was written separately for a different workflow: the daily note itself is the data source, written as a plain list with Logseq-style task keywords, and agent session logs are used as evidence of what actually happened.
-
 MIT licensed.
-
-## Agent inner-ring details
-
-Hovering an agent segment shows only its time, agent and short title. Click an agent segment to pin its hover summary so you can move your pointer up to click **Details** without hovering other segments (click the segment again, click **×**, press Escape, or click outside to unpin). Click **Details**, or double-click the segment, to expand the card; click **Hide details** or press Escape inside the card to close it. The expanded card stays open when the pointer leaves and across same-day redraws, and closes when changing dates.
-
-Cards list sessions by overlap with the selected segment, with full task titles, live state, steps or turns, latest action, model, directory and recent reply. Segment overlap time, daily session time and daily tokens are labeled separately. Tokens are output plus fresh input for the whole daily session, never estimated per segment. Historical dates omit today's live state and reply. The first three sessions appear in the card; a separate action opens the complete list. Linked journal tasks and supported clients can be opened directly.
-
-Automatic journal writing, record granularity, compaction thresholds and record folding are configured in Agent Deck. Nautilus reads and displays that information without writing duplicate AI records.
-
-Commands have no default global hotkeys. Assign your own in Obsidian Settings → Hotkeys.

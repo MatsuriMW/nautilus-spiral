@@ -496,13 +496,6 @@ Add [task reminders](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/nau
 
 Telegram Companion only runs on the desktop, and Obsidian on your computer has to be open for messages from your phone to be picked up.
 
-## Works with other plugins
-
-- **Task reminders** ([`nautilus-notify`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/nautilus-notify)): sends macOS notifications from the schedule Nautilus Spiral worked out: an event about to start, a pinned to-do whose time has passed, a DOING task running too long, today no longer fitting, what's next, plus a morning briefing and an evening wrap-up.
-- **Telegram Companion** ([`telegram-companion`](https://github.com/MatsuriMW/telegram-companion)): see the previous section.
-- **Task status toggle** ([`task-toggle`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/task-toggle)): ⌘/ cycles none → TODO → DOING time → DONE time span, writing the start and finish times automatically.
-- **Block routing** ([`done-to-top`](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/done-to-top)): files the tasks in the note into DONE / DOING / TODO sections and sends the whole unfinished block to tomorrow. `⌥⌘S` sends a block to the Claude CLI and records the `🔗` under it: select several sibling blocks and each gets its own session; choose "one session per child block" and the parent becomes shared background while every child gets a session. Where a session runs is a setting of its own: a Terminal window, a background tmux (no window on the desktop; `tmux attach` when you want to look), or headless with `claude -p`.
-
 ## Hotkeys
 
 No global hotkeys are preset; search "Nautilus Spiral" in Obsidian Settings → Hotkeys to change them. You can also run "Quick panel" from the command palette: every action is there, a few letters find it, and each shows its hotkey on the right; ones that can't be used right now don't appear.
@@ -518,11 +511,3 @@ No global hotkeys are preset; search "Nautilus Spiral" in Obsidian Settings → 
 | not set | Test a system notification with buttons (experimental) |
 
 Two more commands have no hotkey: "Open today's daily note (before the day cutoff it's still yesterday)" and "Reload calendars (macOS Calendar / Google Calendar)".
-
-## Agent inner-ring details
-
-Hovering an agent segment shows only its time, agent and short title. Click an agent segment to pin its hover summary so you can move your pointer up to click **Details** without hovering other segments (click the segment again, click **×**, press Escape, or click outside to unpin). Click **Details**, or double-click the segment, to expand the card; click **Hide details** or press Escape inside the card to close it. The expanded card stays open when the pointer leaves and across same-day redraws, and closes when changing dates.
-
-Cards list sessions by overlap with the selected segment, with full task titles, live state, steps or turns, latest action, model, directory and recent reply. Segment overlap time, daily session time and daily tokens are labeled separately. Tokens are output plus fresh input for the whole daily session, never estimated per segment. Historical dates omit today's live state and reply. The first three sessions appear in the card; a separate action opens the complete list. Linked journal tasks and supported clients can be opened directly.
-
-Automatic journal writing, record granularity, compaction thresholds and record folding are configured in Agent Deck. Nautilus reads and displays that information without writing duplicate AI records.
