@@ -58,6 +58,8 @@ const DEFAULTS = {
   askVia: "dialog",     // 带按钮提醒的方式：dialog = 默认通知；notification = 带按钮的系统通知（试验：要系统允许本机编的小 App 发通知）
   notifySound: "Pop",   // 在本机弹提醒时响哪个声音：系统声音的名字（/System/Library/Sounds 里的，Pop、Glass、Ping…）或一个声音文件的路径；空 = 不响
   colors: {},           // { main: "#rrggbb" }：设置里改过的颜色，没改过的不存，用 COLORS 的默认值
+  pomodoro: { preset: "25", customMinutes: 45, active: null },   // 番茄钟：preset = "15"|"25"|"custom"，active = { id, dayKey, start, end, minutes, task }
+  pomodoroHistory: {},  // { "2026_11_21": [{ start, end, minutes, label }] }：每天已完成的番茄钟记录（留 45 天）
 };
 // 螺旋上各类的颜色（设置里能改）：[设置里的名字, 默认值]。默认值和 styles.css 开头的一致；Agent 的颜色跟各家自己的界面走，不放进来
 const COLORS = {
@@ -877,6 +879,36 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
   return { from, available, demand, overflow: Math.max(0, demand - available), unplaced, free: free.map(([a, b]) => [a, b]), eventLeft, queue, suspended };
 }
 
+// ---------------- 轻量化番茄钟（预订未来时段） ----------------
+
+function pomoMinutes(pomo) {
+  const p = pomo || {};
+  if (p.preset === "15") return 15;
+  if (p.preset === "custom") return Math.min(240, Math.max(1, Math.round(Number(p.customMinutes) || 45)));
+  return 25;
+}
+
+function pomoTimeRange(rec, cfg) {
+  if (!rec || !Number.isFinite(rec.start) || !Number.isFinite(rec.end) || rec.end <= rec.start) return null;
+  const d = new Date(rec.start);
+  const startMin = normalize(d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60, cfg);
+  const spanMin = Math.max(0.5, (rec.end - rec.start) / 60e3);
+  return [startMin, startMin + spanMin];
+}
+
+function pomoSplit(startMin, endMin, nowMin) {
+  if (endMin <= startMin) return { elapsed: null, reserved: null };
+  if (nowMin <= startMin) return { elapsed: null, reserved: [startMin, endMin] };
+  if (nowMin >= endMin) return { elapsed: [startMin, endMin], reserved: null };
+  return { elapsed: [startMin, nowMin], reserved: [nowMin, endMin] };
+}
+
+function pomoFormatLeft(ms) {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 // ---------------- 界面上的小音效 ----------------
 // 现合成的短音，不带声音文件。type = 波形，notes = [频率, 响多久]，一个接一个响；attack = 每个音淡入多久（秒，越长越柔）。
 // 这些音一天要听很多遍：音量压低，最常听的 DONE 不往高处、亮处走。
@@ -1174,6 +1206,42 @@ function cycleUpNextStatus(raw, origRaw = null, nowStr = moment().format("HH:mm"
   }
   return { nextRaw: toKeyword(raw, "DONE", nowStr), nextKw: "DONE", origRaw: raw };
 }
+function taskPriority(raw) {
+  const m = /\[#([ABC])\]/.exec(String(raw || ""));
+  if (m) return m[1];
+  const lm = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/.exec(String(raw || ""));
+  if (!lm) return "";
+  let rest = lm[2].replace(STAMP_RE, "").replace(CHECKBOX_RE, "");
+  const ps = prioShort(rest, SHORT_KW_RE);
+  return ps ? ps.prio : "";
+}
+function toPriority(raw, prio) {
+  const m = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/.exec(String(raw || ""));
+  if (!m) return raw;
+  let [, head, rest] = m;
+  const st = STAMP_RE.exec(rest);
+  if (st) { head += st[0]; rest = rest.slice(st[0].length); }
+  const cb = CHECKBOX_RE.exec(rest);
+  if (cb) { head += cb[0]; rest = rest.slice(cb[0].length); }
+  const ps = prioShort(rest, SHORT_KW_RE);
+  if (ps) rest = `${ps.kw} [#${ps.prio}] ${ps.rest}`;
+  const kw = KEYWORD_RE.exec(rest);
+  if (kw) {
+    head += kw[0];
+    rest = rest.slice(kw[0].length);
+    const rg = /^(\d{1,2}[:：]\d{2}\s*[-–~～到至]\s*\d{1,2}[:：]\d{2}\s*)/.exec(rest);
+    if (rg) { head += rg[0]; rest = rest.slice(rg[0].length); }
+    else {
+      const tm = /^(\d{1,2}[:：]\d{2}(?![\d:：]|\s*[-–~～到至])\s*)/.exec(rest);
+      if (tm) { head += tm[0]; rest = rest.slice(tm[0].length); }
+    }
+    const ai = /^(🤖\s*)/.exec(rest);
+    if (ai) { head += ai[0]; rest = rest.slice(ai[0].length); }
+  }
+  rest = rest.replace(/\[#[ABC]\]\s*/g, "").trimStart();
+  const target = ["A", "B", "C"].includes(String(prio || "").toUpperCase()) ? String(prio).toUpperCase() : "";
+  return target ? `${head}[#${target}] ${rest}` : `${head}${rest}`;
+}
 const UP_NEXT_MENU_GROUPS = [
   [
     ["TODO", T("TODO · 待办", "TODO · To-do")],
@@ -1184,14 +1252,12 @@ const UP_NEXT_MENU_GROUPS = [
     ["SUSPENDED", T("SUSPENDED · 搁置", "SUSPENDED · Suspended")],
     ["CANCELLED", T("CANCELLED · 取消", "CANCELLED · Cancelled")],
   ],
-  [
-    ["TOREVIEW", T("TOREVIEW · 待检视", "TOREVIEW · To review")],
-    ["NEEDOK", T("NEEDOK · 等你允许", "NEEDOK · Needs approval")],
-    ["DELEGATED", T("DELEGATED · 已委派", "DELEGATED · Delegated")],
-    ["QUEUED", T("QUEUED · 排队中", "QUEUED · Queued")],
-    ["HITLIMIT", T("HITLIMIT · 达到限额", "HITLIMIT · Hit limit")],
-    ["ERRORED", T("ERRORED · 出错", "ERRORED · Errored")],
-  ],
+];
+const UP_NEXT_PRIORITY_ITEMS = [
+  ["A", T("[#A] 重要 · 主线", "[#A] High · Mainline")],
+  ["B", T("[#B] 较重要", "[#B] Medium")],
+  ["C", T("[#C] 一般", "[#C] Low")],
+  ["", T("清除重要程度", "Clear priority")],
 ];
 
 // 一件任务「动过没有」看这一行加上它下面所有子项
@@ -2714,6 +2780,33 @@ class GoalModal extends OB.Modal {
   onClose() { this.contentEl.empty(); this.done(this.text); }
 }
 
+class PomodoroDoneModal extends OB.Modal {
+  constructor(app, plugin, rec) { super(app); this.plugin = plugin; this.rec = rec; }
+  onOpen() {
+    const { contentEl } = this;
+    const rec = this.rec;
+    this.modalEl.addClass("naut-pomo-modal");
+    contentEl.createDiv({ cls: "naut-fm-title", text: T(`🍅 番茄钟完成（${dur(rec.minutes)}）`, `🍅 Pomodoro done (${dur(rec.minutes)})`) });
+    const sub = rec.task
+      ? T(`刚才预订给「${rec.task.label}」的 ${dur(rec.minutes)} 已经走完，要标记为 DONE 还是再来一轮？`, `Your ${dur(rec.minutes)} block for "${rec.task.label}" is complete. Mark it DONE or start another round?`)
+      : T(`预订的 ${dur(rec.minutes)} 已经兑现，已记入今天的番茄轨迹。`, `Your ${dur(rec.minutes)} block is complete and recorded on today's spiral.`);
+    contentEl.createDiv({ cls: "naut-fm-sub", text: sub });
+    const bar = contentEl.createDiv({ cls: "naut-goal-btns" });
+    bar.createEl("button", { text: T("收工", "Close") }).onclick = () => this.close();
+    bar.createEl("button", { text: T("再来一轮", "Another round") }).onclick = async () => {
+      this.close();
+      await this.plugin.startPomodoro(rec.minutes, rec.task ? { ref: rec.task } : null);
+    };
+    if (rec.task) {
+      bar.createEl("button", { cls: "mod-cta", text: T("标为 DONE", "Mark DONE") }).onclick = async () => {
+        this.close();
+        await this.plugin.completePomodoroTask(rec.task);
+      };
+    }
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 class QuickPanel extends OB.FuzzySuggestModal {
   constructor(app, plugin) {
     super(app);
@@ -2800,7 +2893,10 @@ class SpiralView extends ItemView {
     window.addEventListener("blur", hide, { once: true, signal: ac.signal });
     window.addEventListener("pointerdown", hide, { capture: true, once: true, signal: ac.signal });
   }
-  async onClose() { this._hideDotTip(); this.stopPlay(); }
+  _clearPomoTimer() {
+    if (this._pomoTimer) { window.clearInterval(this._pomoTimer); this._pomoTimer = null; }
+  }
+  async onClose() { this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); }
 
   date() { return this.plugin.today().add(this.offset, "days"); }
   path() { return this.plugin.journalPath(this.date()); }
@@ -2818,6 +2914,7 @@ class SpiralView extends ItemView {
     const content = file instanceof TFile ? await this.plugin.readLiveContent(file) : null;
     if (seq !== this._renderSeq) return;
     clearTimeout(this._hoverClose);
+    this._clearPomoTimer();
     this._hideDotTip();
     root.empty();
     // 入场动效只在打开视图、换一天时放一次；每分钟的刷新和日记改动直接换成新的，不闪
@@ -3003,6 +3100,59 @@ class SpiralView extends ItemView {
     }
     // 📅 日历读不到时说明原因（全天事件本身在下面「固定事件」里）
     if (cal && cal.error) row("is-error", "📅", cal.error).setText(cal.error.split("\n")[0]);
+
+    // 🍅 番茄钟栏（仅今天显示）：三档切换（15 / 25 / 自定义）+ 进行中倒计时
+    if (dayRel === 0) {
+      const pomo = this.plugin.ensurePomodoro();
+      const hist = (cfg.pomodoroHistory && cfg.pomodoroHistory[dayKey]) || [];
+      const barEl = root.createDiv({ cls: "naut-pomo" + (pomo.active ? " is-active" : "") });
+      if (pomo.active) {
+        const a = pomo.active;
+        const range = pomoTimeRange(a, cfg);
+        const top = barEl.createDiv({ cls: "naut-pomo-row" });
+        top.createSpan({ cls: "naut-pomo-ico", text: "🍅" });
+        const cd = top.createSpan({ cls: "naut-pomo-cd", text: pomoFormatLeft(a.end - Date.now()) });
+        if (range) top.createSpan({ cls: "naut-pomo-end", text: `→ ${clock(range[1])}` });
+        if (a.task?.label) {
+          const lbl = top.createSpan({ cls: "naut-pomo-task", text: a.task.label, attr: { title: a.task.label } });
+          lbl.onclick = () => this.plugin.openPomodoroTask(a.task);
+        }
+        const stopBtn = top.createEl("button", { cls: "naut-pomo-btn", text: T("结束", "Stop"), attr: { title: T("取消本次预订（不计入已完成）", "Cancel this reservation (won't be logged as completed)") } });
+        stopBtn.onclick = () => this.plugin.stopPomodoro(false);
+        const prog = barEl.createDiv({ cls: "naut-pomo-prog" });
+        const fillEl = prog.createDiv({ cls: "naut-pomo-fill" });
+        const paint = () => {
+          const left = a.end - Date.now();
+          cd.setText(pomoFormatLeft(left));
+          const pct = Math.min(100, Math.max(0, ((Date.now() - a.start) / Math.max(1, a.end - a.start)) * 100));
+          fillEl.style.width = `${pct.toFixed(1)}%`;
+          if (left <= 0) this.plugin.tickPomodoro();
+        };
+        paint();
+        this._pomoTimer = window.setInterval(paint, 1000);
+      } else {
+        const top = barEl.createDiv({ cls: "naut-pomo-row" });
+        top.createSpan({ cls: "naut-pomo-ico", text: "🍅" });
+        const segs = top.createDiv({ cls: "naut-pomo-presets" });
+        for (const [id, label] of [["15", "15m"], ["25", "25m"], ["custom", T("自定义", "Custom")]]) {
+          const b = segs.createEl("button", { cls: "naut-pomo-pill" + (pomo.preset === id ? " is-on" : ""), text: label });
+          b.onclick = () => this.plugin.setPomodoroPreset(id);
+        }
+        if (pomo.preset === "custom") {
+          const inp = top.createEl("input", { cls: "naut-pomo-custom", attr: { type: "number", min: "1", max: "240", value: String(pomo.customMinutes || 45), "aria-label": T("自定义分钟数", "Custom minutes") } });
+          const commit = () => this.plugin.setPomodoroCustom(inp.value);
+          inp.onchange = commit;
+          inp.onkeydown = (e) => { if (e.key === "Enter") { commit(); this.plugin.startPomodoro(); } };
+        }
+        const go = top.createEl("button", { cls: "naut-pomo-btn is-start", attr: { title: T(`开始番茄钟：预订接下来 ${dur(pomoMinutes(pomo))}`, `Start Pomodoro: reserve the next ${dur(pomoMinutes(pomo))}`), "aria-label": T("开始番茄钟", "Start Pomodoro") } });
+        if (OB.setIcon) OB.setIcon(go, "play"); else go.setText("▶");
+        go.onclick = () => this.plugin.startPomodoro();
+        if (hist.length) {
+          const sum = hist.reduce((k, x) => k + (x.minutes || 0), 0);
+          top.createSpan({ cls: "naut-pomo-count", text: `×${hist.length}`, attr: { title: T(`今天已完成 ${hist.length} 个番茄钟，共 ${dur(sum)}`, `${hist.length} completed today (${dur(sum)} total)`) } });
+        }
+      }
+    }
 
     // 鼠标划到螺旋的哪一段，这一行立刻显示那一段的时间和做的事（不等系统的悬停提示），位置固定在螺旋上方
     const hover = root.createDiv({ cls: "naut-hover" });
@@ -3263,6 +3413,53 @@ class SpiralView extends ItemView {
       const [x, y] = pt(l.start);
       hov(late(svgEl("circle", { cx: x, cy: y, r: 2.6, class: "naut-log" }, svg), l.start), clock(l.start), l.label);
     }
+    // 🍅 番茄钟外沿轨道（offset = +9.5）：已完成留淡色细弧，进行中拆为「已兑现实线 + 未实现预订虚线 + 终点圆点」
+    const POMO_OFF = 9.5;
+    const pomoHist = (cfg.pomodoroHistory && cfg.pomodoroHistory[dayKey]) || [];
+    for (const h of pomoHist) {
+      const r = pomoTimeRange(h, cfg);
+      if (!r) continue;
+      const a = Math.max(S, r[0]), b = Math.min(E, r[1]);
+      if (b - a < 0.5) continue;
+      const d = arc(a, b, POMO_OFF);
+      if (!d) continue;
+      const vis = late(svgEl("path", { d, class: "naut-pomo-hist", pathLength: 1 }, svg), a);
+      hov(fat(d, vis), `${clock(r[0])}–${clock(r[1])} · ${dur(h.minutes || Math.round(r[1] - r[0]))}`, h.label ? `🍅 ${h.label}` : T("🍅 已完成番茄钟", "🍅 Completed pomodoro"));
+    }
+    const activePomo = dayRel === 0 && !playing && cfg.pomodoro?.active && cfg.pomodoro.active.dayKey === dayKey ? cfg.pomodoro.active : null;
+    if (activePomo) {
+      const r = pomoTimeRange(activePomo, cfg);
+      if (r) {
+        const a0 = Math.max(S, r[0]), b0 = Math.min(E, r[1]);
+        const sp = pomoSplit(a0, b0, now);
+        const evOverlap = items.filter((i) => i.kind === "event" && i.start < r[1] && i.end > Math.max(now, r[0])).map((i) => i.label);
+        const leftMin = Math.max(0, Math.ceil((activePomo.end - Date.now()) / 60e3));
+        const sub = [
+          T(`还剩 ${dur(leftMin)}（预订中，未实现）`, `${dur(leftMin)} left (reserved)`),
+          evOverlap.length ? T(`与「${evOverlap[0]}」重叠`, `overlaps "${evOverlap[0]}"`) : "",
+        ].filter(Boolean).join(" · ");
+        const title = activePomo.task?.label ? `🍅 ${activePomo.task.label}` : T("🍅 番茄钟预订", "🍅 Pomodoro reservation");
+        if (sp.elapsed && sp.elapsed[1] - sp.elapsed[0] >= 0.3) {
+          const d = arc(sp.elapsed[0], sp.elapsed[1], POMO_OFF);
+          if (d) {
+            const vis = svgEl("path", { d, class: "naut-pomo-elapsed" }, svg);
+            hov(fat(d, vis), `${clock(r[0])}–${clock(r[1])} · ${dur(activePomo.minutes)}`, title, sub);
+          }
+        }
+        if (sp.reserved && sp.reserved[1] - sp.reserved[0] >= 0.3) {
+          const d = arc(sp.reserved[0], sp.reserved[1], POMO_OFF);
+          if (d) {
+            const vis = svgEl("path", { d, class: "naut-pomo-plan" }, svg);
+            hov(fat(d, vis), `${clock(r[0])}–${clock(r[1])} · ${dur(activePomo.minutes)}`, title, sub);
+          }
+        }
+        if (b0 >= S && b0 <= E) {
+          const [ex, ey] = pt(b0, POMO_OFF);
+          const dot = svgEl("circle", { cx: ex, cy: ey, r: 2.8, class: "naut-pomo-end-dot" }, svg);
+          hov(dot, `${clock(r[0])}–${clock(r[1])} · ${dur(activePomo.minutes)}`, title, sub);
+        }
+      }
+    }
     if (dayRel === 0 && now >= S && now <= E) {
       const nr = rad(now);
       const [x0, y0] = [c + 27 * Math.cos(ang(now)), c + 27 * Math.sin(ang(now))];   // 从中间的时间外面起，不压着字
@@ -3355,7 +3552,8 @@ class SpiralView extends ItemView {
         row.createSpan({ cls: "naut-dur", text: r.dur, attr: r.tip ? { title: r.tip } : {} });
         row.onclick = () => this.plugin.openItem(file, r.item);
         if (r.upNext) {
-          row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item);
+          const prioLine = r.item.inheritedFrom != null ? r.item.inheritedFrom : r.item.line;
+          row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item, taskPriority(journalLines[prioLine]));
         }
       }
     };
@@ -3499,7 +3697,19 @@ class SpiralView extends ItemView {
     }));
   }
 
-  openUpNextMenu(e, file, dayKey, item) {
+  // 「接下来」面板右键设置重要程度（[#A] / [#B] / [#C] / 清除）
+  async setUpNextPriority(file, dayKey, item, prio) {
+    return this._mutateUpNext(file, dayKey, item, (cur, targetLine) => ({
+      nextRaw: toPriority(cur, prio),
+      soundKw: null,
+      after: () => {
+        this._upNextHold?.get(dayKey)?.delete(targetLine);
+        this.plugin.sound("tick");
+      },
+    }));
+  }
+
+  openUpNextMenu(e, file, dayKey, item, curPrio = "") {
     e.preventDefault();
     e.stopPropagation();
     this._hideDotTip();
@@ -3516,6 +3726,19 @@ class SpiralView extends ItemView {
       }
     });
     menu.addSeparator();
+    for (const [prio, title] of UP_NEXT_PRIORITY_ITEMS) {
+      menu.addItem((mi) => {
+        mi.setTitle(title);
+        if (prio && curPrio === prio && typeof mi.setChecked === "function") mi.setChecked(true);
+        mi.onClick(() => this.setUpNextPriority(file, dayKey, item, prio));
+      });
+    }
+    menu.addSeparator();
+    const pomoM = pomoMinutes(this.plugin.ensurePomodoro());
+    menu.addItem((mi) => {
+      mi.setTitle(T(`🍅 用番茄钟开始（${dur(pomoM)}）`, `🍅 Start Pomodoro (${dur(pomoM)})`));
+      mi.onClick(() => this.plugin.startPomodoro(pomoM, { file, dayKey, item }));
+    });
     menu.addItem((mi) => {
       mi.setTitle(T("定位到日记", "Show in journal"));
       mi.onClick(() => this.plugin.openItem(file, item));
@@ -3707,6 +3930,7 @@ module.exports = class NautilusSpiral extends Plugin {
     for (const key of removedSettings) delete this.settings[key];
     if (removedSettings.length) await this.saveData(this.settings);
     this.settings.aiAgents = Object.assign({}, DEFAULTS.aiAgents, this.settings.aiAgents);
+    this.ensurePomodoro();
     this.applyColors();
     lucideWatch(this, window);
     this.registerEvent(this.app.workspace.on("window-open", (w) => { lucideWatch(this, w.win); this.applyColors(w.doc); }));
@@ -3778,9 +4002,11 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
     this.registerEvent(this.app.workspace.on("agent-deck:sessions-changed", () => this.refresh()));
     this.registerInterval(window.setInterval(() => this.refresh(), 60 * 1000));
+    this.registerInterval(window.setInterval(() => this.tickPomodoro(), 5 * 1000));
 
     this.app.workspace.onLayoutReady(async () => {
       this.journalDetect();   // 库这时候才完整索引好，翻库猜的结论这时候才准
+      this.tickPomodoro();
       const f = this.app.vault.getAbstractFileByPath(this.journalPath(this.today()));
       if (f instanceof TFile) this.observe(f, await this.app.vault.read(f), false);
       const firstOpen = !this.settings.autoOpened;
@@ -4045,6 +4271,8 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "open", name: T("打开螺旋日程", "Open Nautilus Spiral"), run: () => this.activate() },
       { id: "day-bounds", name: T("设置今天的起床 / 收工时间", "Set today's start / end of day"), run: () => new BoundsModal(this.app, this, this.today()).open() },
       { id: "open-today", name: T("打开今天的日记（凌晨按日界算前一天）", "Open today's daily note (before the day cutoff it's still yesterday)"), run: () => this.openToday() },
+      { id: "pomodoro-start", name: T("开始番茄钟（预订接下来一段专注时间）", "Start Pomodoro (reserve an upcoming focus block)"), when: () => !this.settings.pomodoro?.active, run: () => this.startPomodoro() },
+      { id: "pomodoro-stop", name: T("结束当前番茄钟", "Stop current Pomodoro"), when: () => !!this.settings.pomodoro?.active, run: () => this.stopPomodoro(false) },
       { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.gcal.cals = null; this.refresh(); } },
     ];
   }
@@ -5521,10 +5749,142 @@ module.exports = class NautilusSpiral extends Plugin {
     this.sound(name);
   }
 
-  // 按天记的几份记录：完成时间、计时留 45 天，主线完成率留 90 天
+  // ---- 轻量化番茄钟 ----
+  ensurePomodoro() {
+    const cfg = this.settings;
+    if (!cfg.pomodoro || typeof cfg.pomodoro !== "object") cfg.pomodoro = { preset: "25", customMinutes: 45, active: null };
+    if (!["15", "25", "custom"].includes(cfg.pomodoro.preset)) cfg.pomodoro.preset = "25";
+    const cm = Number(cfg.pomodoro.customMinutes);
+    cfg.pomodoro.customMinutes = Number.isFinite(cm) ? Math.min(240, Math.max(1, Math.round(cm))) : 45;
+    if (!cfg.pomodoroHistory || typeof cfg.pomodoroHistory !== "object") cfg.pomodoroHistory = {};
+    return cfg.pomodoro;
+  }
+
+  async setPomodoroPreset(preset) {
+    const p = this.ensurePomodoro();
+    p.preset = ["15", "25", "custom"].includes(preset) ? preset : "25";
+    await this.saveData(this.settings);
+    this.refresh();
+  }
+
+  async setPomodoroCustom(val) {
+    const p = this.ensurePomodoro();
+    const n = Math.min(240, Math.max(1, Math.round(Number(val) || p.customMinutes || 45)));
+    p.customMinutes = n;
+    await this.saveData(this.settings);
+  }
+
+  async startPomodoro(minutes = null, taskSpec = null) {
+    const p = this.ensurePomodoro();
+    const mins = minutes != null ? Math.min(240, Math.max(1, Math.round(Number(minutes) || 25))) : pomoMinutes(p);
+    let taskRef = null;
+    let switchedDoing = false;
+    if (taskSpec?.ref) {
+      taskRef = { ...taskSpec.ref };
+    } else if (taskSpec?.file && taskSpec?.item) {
+      const { file, item } = taskSpec;
+      const targetLine = item.inheritedFrom != null ? item.inheritedFrom : item.line;
+      const label = item.inheritedFrom != null ? (item.inheritedLabel || workKey(item.label)) : workKey(item.label);
+      taskRef = { path: file.path, key: workKey(label), label };
+      if (targetLine != null && canonKw(item.kw) !== "DOING") {
+        let nextRaw = null;
+        const n = await this.editFile(file, (lines) => {
+          const cur = lines[targetLine];
+          if (cur == null) return 0;
+          const next = toKeyword(cur, "DOING");
+          if (next === cur) return 0;
+          lines[targetLine] = next;
+          nextRaw = next;
+          return 1;
+        });
+        if (n && nextRaw != null) {
+          switchedDoing = true;
+          const hit = kwLine(nextRaw);
+          if (hit && this.kwFresh(file.path, [hit]).length) this.kwSound("DOING");
+        }
+      }
+    }
+    const nowMs = Date.now();
+    const dayKey = this.today().format(this.settings.format);
+    p.active = { id: nowMs, dayKey, start: nowMs, end: nowMs + mins * 60e3, minutes: mins, task: taskRef };
+    await this.saveData(this.settings);
+    if (!switchedDoing) this.sound("play");
+    this.refresh();
+    return p.active;
+  }
+
+  async stopPomodoro(completed = false) {
+    const p = this.ensurePomodoro();
+    const a = p.active;
+    if (!a) return null;
+    p.active = null;
+    if (completed) {
+      const list = (this.settings.pomodoroHistory[a.dayKey] ||= []);
+      list.push({ start: a.start, end: a.end, minutes: a.minutes, label: a.task?.label || "" });
+    }
+    await this.saveData(this.settings);
+    this.sound(completed ? "DONE" : "stop");
+    this.refresh();
+    return a;
+  }
+
+  tickPomodoro() {
+    const p = this.ensurePomodoro();
+    const a = p.active;
+    if (!a || this._pomoCompleting === a.id) return;
+    if (Date.now() >= a.end) {
+      this._pomoCompleting = a.id;
+      this.completePomodoro(a).finally(() => { if (this._pomoCompleting === a.id) this._pomoCompleting = null; });
+    }
+  }
+
+  async completePomodoro(active) {
+    const done = await this.stopPomodoro(true);
+    if (!done) return;
+    new OB.Notice(T(`🍅 番茄钟完成（${dur(done.minutes)}）${done.task ? ` · ${done.task.label}` : ""}`, `🍅 Pomodoro done (${dur(done.minutes)})${done.task ? ` · ${done.task.label}` : ""}`), 8000);
+    new PomodoroDoneModal(this.app, this, done).open();
+  }
+
+  async completePomodoroTask(taskRef) {
+    if (!taskRef?.path || !taskRef?.key) return false;
+    const file = this.app.vault.getAbstractFileByPath(taskRef.path);
+    if (!(file instanceof TFile)) return false;
+    const content = await this.readLiveContent(file);
+    const hit = parseJournal(content, this.settings).find((t) => t.kind === "task" && t.state !== "done" && workKey(t.label) === taskRef.key);
+    if (!hit || hit.line == null) return false;
+    const targetLine = hit.inheritedFrom != null ? hit.inheritedFrom : hit.line;
+    let nextRaw = null;
+    const n = await this.editFile(file, (lines) => {
+      const cur = lines[targetLine];
+      if (cur == null) return 0;
+      const next = toKeyword(cur, "DONE");
+      if (next === cur) return 0;
+      lines[targetLine] = next;
+      nextRaw = next;
+      return 1;
+    });
+    if (n && nextRaw != null) {
+      const kw = kwLine(nextRaw);
+      if (kw && this.kwFresh(file.path, [kw]).length) this.kwSound("DONE");
+      this.refresh();
+      return true;
+    }
+    return false;
+  }
+
+  async openPomodoroTask(taskRef) {
+    if (!taskRef?.path) return;
+    const file = this.app.vault.getAbstractFileByPath(taskRef.path);
+    if (!(file instanceof TFile)) return;
+    const content = await this.readLiveContent(file);
+    const hit = parseJournal(content, this.settings).find((t) => t.kind === "task" && workKey(t.label) === taskRef.key);
+    await this.openLine(file, hit ? hit.line : 0);
+  }
+
+  // 按天记的几份记录：完成时间、计时、番茄钟历史留 45 天，主线完成率留 90 天
   pruneLogs() {
     const cfg = this.settings;
-    for (const [store, days] of [[cfg.doneTimes, 45], [(cfg.workLog ||= {}), 45], [(cfg.mainLog ||= {}), 90]]) {
+    for (const [store, days] of [[cfg.doneTimes, 45], [(cfg.workLog ||= {}), 45], [(cfg.pomodoroHistory ||= {}), 45], [(cfg.mainLog ||= {}), 90]]) {
       const cutoff = moment().subtract(days, "days");
       for (const k of Object.keys(store)) {
         const d = moment(k, cfg.format, true);
@@ -6383,4 +6743,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft };

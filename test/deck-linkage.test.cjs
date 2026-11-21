@@ -28,7 +28,7 @@ const ctx = {
 };
 vm.runInNewContext(fs.readFileSync(source, 'utf8') + '\nmodule.exports.TestSessionsModal = AiSessionsModal; module.exports.testProjectAiDay = projectAiDay;', ctx, { filename: source });
 const Plugin = ctx.module.exports;
-const { DEFAULTS, parseJournal, mainOf, schedule, taskStatus, statusCls, toKeyword, cycleUpNextStatus, UP_NEXT_MENU_GROUPS } = Plugin.core;
+const { DEFAULTS, parseJournal, mainOf, schedule, taskStatus, statusCls, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS } = Plugin.core;
 
 {
   const p = Object.create(Plugin.prototype);
@@ -216,10 +216,20 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   assert.equal(yesStep.nextKw, 'SUSPENDED', 'YES 归为 DONE，点击应直接切去 SUSPENDED');
   assert.equal(yesStep.nextRaw, '- SUSPENDED 写稿 10m');
   const menuKws = UP_NEXT_MENU_GROUPS.flat().map(([k]) => k);
-  for (const k of ['TODO', 'DOING', 'DONE', 'PAUSED', 'WAITING', 'SUSPENDED', 'CANCELLED', 'TOREVIEW', 'NEEDOK', 'DELEGATED', 'QUEUED', 'HITLIMIT', 'ERRORED']) {
-    assert.ok(menuKws.includes(k), `右键菜单应包含 ${k}`);
+  for (const k of ['TODO', 'DOING', 'DONE', 'PAUSED', 'WAITING', 'SUSPENDED', 'CANCELLED']) {
+    assert.ok(menuKws.includes(k), `右键菜单应包含人工状态 ${k}`);
   }
-  console.log('PASS 「接下来」点击三段循环与右键菜单状态切换');
+  for (const k of ['TOREVIEW', 'NEEDOK', 'DELEGATED', 'QUEUED', 'HITLIMIT', 'ERRORED']) {
+    assert.ok(!menuKws.includes(k), `右键菜单不应包含 AI 机器状态 ${k}`);
+  }
+  assert.deepEqual(Array.from(UP_NEXT_PRIORITY_ITEMS, ([p]) => p), ['A', 'B', 'C', ''], '右键菜单应提供 A/B/C/清除 重要程度');
+  assert.equal(toPriority('- TODO 写周报 25m', 'A'), '- TODO [#A] 写周报 25m');
+  assert.equal(toPriority('- TODO [#A] 写周报 25m', 'B'), '- TODO [#B] 写周报 25m');
+  assert.equal(toPriority('- DOING 20:30 [#B] 写周报', 'A'), '- DOING 20:30 [#A] 写周报');
+  assert.equal(toPriority('- TODO [#C] 写周报', ''), '- TODO 写周报');
+  assert.equal(taskPriority('- DOING 20:30 [#B] 写周报'), 'B');
+  assert.equal(taskPriority('- todo a 写周报'), 'A');
+  console.log('PASS 「接下来」点击三段循环与右键菜单状态/重要程度切换');
 
   // 6. 母块/子块状态继承：母块无状态或 TODO 保留子块各自状态；母块为其他状态时覆盖带状态的子块
   const nested = parseJournal([

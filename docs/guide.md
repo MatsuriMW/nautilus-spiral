@@ -165,11 +165,16 @@ The list under the spiral is grouped: Fixed events, Up next, Won't fit, ⏸ On h
 
 There is no separate "Start" button: making a task `DOING` in the note is starting it.
 
-- Click that row in "Up next" (click again to move it to the next state), or right-click to pick a state; you can also change the keyword to `DOING` in the note yourself, or use the Task status toggle plugin's `⌘/`.
+- Click the status icon in "Up next" to cycle states, or right-click to pick a human status (`TODO` / `DOING` / `DONE` / `PAUSED` / `WAITING` / `SUSPENDED` / `CANCELLED`), set priority (`[#A]` / `[#B]` / `[#C]` / clear), or "Start Pomodoro"; you can also edit the keyword directly in the note, or use the Task status toggle plugin's `⌘/`.
 - When the line says `DOING`, the plugin takes the time after it (or the current time if none is written) as the start and counts from there; when it becomes `DONE`, `PAUSED` or back to `TODO`, counting stops. Interrupt and resume, and it is several spans, recorded span by span.
 - The estimate can go after the keyword or at the end of the line, both work (`15 minutes`, `15 分钟`, `15m`, `1.5h`); without one, "Default task length" applies. Scheduling and the reviews both use it.
 
-2.4.0 removed the execution-layer switches (the ▶ button, focus rounds, pomodoro, Raycast Focus, the "are you done?" prompt at the end): timing now follows only the keywords and times in the note. Time records, pause rules and reviews are in the sections below.
+### 🍅 Lightweight Pomodoro
+
+On today's view, the compact bar under capacity offers `15m` / `25m` / `Custom` presets and a play button:
+
+- **Independent or task-bound**: click play to reserve an upcoming block without touching the note, or right-click a task in "Up next" → "🍅 Start Pomodoro" to switch it to `DOING` and get a completion prompt offering "Mark DONE / Another round / Close".
+- **On the spiral's outer rail**: an active Pomodoro splits into a solid arc for elapsed time and a dashed arc with a hollow end dot for the unrealized reservation, without pushing scheduled tasks back; completed rounds stay as subtle arcs on the outer rail (cancelling early leaves no trace).
 
 ## Timing: how long something actually took
 
