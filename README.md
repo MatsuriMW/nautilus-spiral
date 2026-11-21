@@ -7,7 +7,7 @@
 **简体中文** · [English](./README.en.md) · [使用指南](./docs/guide.zh-CN.md)
 
 <p align="center">
-  <img src="./assets/spiral-overview.png" width="380" alt="螺旋日程总览：螺旋时间盘与「接下来」任务列表">
+  <img src="./assets/demo.gif" width="380" alt="螺旋日程动态演示：螺旋时间盘、番茄钟与「接下来」任务列表">
 </p>
 
 把今天日记里的事件和待办画成一圈螺旋：固定事件钉在它的时刻上，待办按顺序和预计时长，从「现在」开始自动填进空档。时间往前走，没做完的任务跟着往后流；排不下的，当场告诉你缺多少。

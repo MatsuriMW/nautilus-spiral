@@ -7,7 +7,7 @@ A daily-note-driven spiral day planner for Obsidian.
 [简体中文](./README.md) · **English** · [User guide](./docs/guide.md)
 
 <p align="center">
-  <img src="./assets/spiral-overview.png" width="380" alt="Nautilus Spiral overview: spiral day dial and Up next task list">
+  <img src="./assets/demo.gif" width="380" alt="Nautilus Spiral live demo: spiral day dial, Pomodoro timer, and Up next task list">
 </p>
 
 Turn today's daily note into a spiral timeline: fixed events stay pinned to their times, and to-dos flow automatically from "now" into the free gaps by list order and estimated duration. As the day moves on, unfinished tasks shift forward and the capacity bar tells you at a glance whether today still fits.
