@@ -433,6 +433,59 @@ function detectJournal(app, cfg) {
   return _jdet;
 }
 
+// 历史日期缓存辅助：过去一天的日记定稿后，文件内容、设置与日历/AI 快照未变时直接复用计算结果并跳过冗余重绘
+function fastHash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+function isPastDate(date, today) {
+  if (!date || !today) return false;
+  return date.format("YYYY-MM-DD") < today.format("YYYY-MM-DD");
+}
+function calendarSig(cal) {
+  if (!cal) return "";
+  return JSON.stringify([
+    (cal.items || []).map((i) => [i.label, i.start, i.end, i.cal?.color || ""]),
+    (cal.allDay || []).map((e) => e.title),
+    cal.error || "",
+  ]);
+}
+function pastDayComputeSig({ dayKey, content, cfg, cal }) {
+  return JSON.stringify([
+    dayKey,
+    content.length,
+    fastHash(content),
+    cfg.dayStart,
+    cfg.dayEnd,
+    cfg.dayCutoff,
+    cfg.defaultDur,
+    cfg.showMain !== false,
+    (cfg.dayBounds || {})[dayKey] || null,
+    (cfg.doneTimes || {})[dayKey] || null,
+    (cfg.workLog || {})[dayKey] || null,
+    calendarSig(cal),
+  ]);
+}
+function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount }) {
+  return JSON.stringify([
+    computeSig,
+    cfg.showAi !== false,
+    cfg.trackGames !== false,
+    cfg.showUnrecorded !== false,
+    !!cfg.dayReviewFolded,
+    !!cfg.reviewFolded,
+    cfg.aiPrimary || "",
+    cfg.aiAgents || null,
+    aiDay ? [aiDay.wall, aiDay.out, aiDay.fresh, aiDay.cached, aiDay.calls, aiDay.sessions] : null,
+    gameDay ? gameDay.map((g) => `${g[0]}-${g[1]}:${g[2] || ""}`) : null,
+    deckCount || 0,
+  ]);
+}
+
 function parseJournal(content, cfg) {
   const prio = cfg.priorityMarkers.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
   const items = [];
@@ -2896,23 +2949,38 @@ class SpiralView extends ItemView {
   _clearPomoTimer() {
     if (this._pomoTimer) { window.clearInterval(this._pomoTimer); this._pomoTimer = null; }
   }
-  async onClose() { this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); }
+  async onClose() { this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); this._lastPastRenderKey = null; }
 
   date() { return this.plugin.today().add(this.offset, "days"); }
   path() { return this.plugin.journalPath(this.date()); }
 
-  async render() {
+  async render({ force = false } = {}) {
     const seq = (this._renderSeq = (this._renderSeq || 0) + 1);
     const root = this.containerEl.children[1];
     const cfg = this.plugin.settings;
     const date = this.date();
+    const dayKey = date.format(cfg.format);
     const file = this.app.vault.getAbstractFileByPath(this.path());
-    const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage() : null;
+    const playing = this._play != null;
+    const realRel = this.offset === 0 ? 0 : this.offset < 0 ? -1 : 1;
+    const isPastStatic = realRel < 0 && !playing;
+    const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage({ skipScan: isPastStatic }) : null;
     if (seq !== this._renderSeq) return;
     const gameLog = cfg.trackGames !== false ? await this.plugin.gameLog() : null;
     if (seq !== this._renderSeq) return;
     const content = file instanceof TFile ? await this.plugin.readLiveContent(file) : null;
     if (seq !== this._renderSeq) return;
+    const calSnap = file instanceof TFile ? this.plugin.calendarFor(date) : null;
+    const aiDayRaw = aiStore?.days?.[dayKey] || null;
+    const gameDayRaw = (gameLog && gameLog.days[dayKey]) || null;
+    const deckBindings = file instanceof TFile ? this.plugin.deckJournalBindings(dayKey, file.path) : null;
+    const computeSig = isPastStatic && content != null ? pastDayComputeSig({ dayKey, content, cfg, cal: calSnap }) : null;
+    const pastRenderKey = isPastStatic && computeSig != null
+      ? pastDayRenderSig({ computeSig, cfg, aiDay: aiDayRaw, gameDay: gameDayRaw, deckCount: deckBindings ? deckBindings.size : 0 })
+      : null;
+    // 历史日期输入指纹未变且不是切天入场/强制刷新时，跳过整棵 DOM 重建（避免每分钟定时器与后台会话事件触发闪烁和重算）
+    if (pastRenderKey && !force && !this._enter && this._lastPastRenderKey === pastRenderKey && root.childElementCount > 0) return;
+    this._lastPastRenderKey = pastRenderKey;
     clearTimeout(this._hoverClose);
     this._clearPomoTimer();
     this._hideDotTip();
@@ -2953,42 +3021,53 @@ class SpiralView extends ItemView {
       pb.disabled = this._play != null;
       pb.onclick = () => this.play();
     }
-    const items = parseJournal(content, cfg);
-    const M = mainOf(cfg.showMain !== false ? content : "");
-    markMain(items, M);   // 主线块里的任务排程时排在 DOING 后面，螺旋上换主线的颜色
-    const cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
-    const dayKey = date.format(cfg.format);
-    const done = cfg.doneTimes[dayKey] || {};
     const nowM = moment();
     // 回放时 this._play 是模拟的「现在」：这一天按那个时刻重排、重画，像它就是今天一样
-    const playing = this._play != null;
     const now = playing ? this._play : normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
-    const realRel = this.offset === 0 ? 0 : this.offset < 0 ? -1 : 1;
     const dayRel = playing ? 0 : realRel;
     const bounds = (cfg.dayBounds || {})[dayKey] || {};
-    const orphans = applyWork(items, cfg, dayKey, now, dayRel, bounds);   // 这天做过、但任务行已经挪走的
-    // 回放：模拟的时刻以后才做的那些段先不算
-    if (playing) for (const t of items) if (t.worked) { t.worked = t.worked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
-    const plan = schedule(items, cfg, now, dayRel, bounds);
     const S = cfg.dayStart * 60, E = cfg.dayEnd * 60;
     const S1 = bounds.start ?? S, E1 = bounds.end ?? E;   // 这天实际的开始 / 结束
+    let items, M, cal, orphans, plan;
+    const cachedDay = isPastStatic && !force && computeSig != null ? this.plugin.pastDayCache?.get(dayKey) : null;
+    if (cachedDay && cachedDay.sig === computeSig) {
+      ({ items, M, cal, orphans, plan } = cachedDay);
+    } else {
+      items = parseJournal(content, cfg);
+      M = mainOf(cfg.showMain !== false ? content : "");
+      markMain(items, M);   // 主线块里的任务排程时排在 DOING 后面，螺旋上换主线的颜色
+      cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
+      const done = cfg.doneTimes[dayKey] || {};
+      orphans = applyWork(items, cfg, dayKey, now, dayRel, bounds);   // 这天做过、但任务行已经挪走的
+      // 回放：模拟的时刻以后才做的那些段先不算
+      if (playing) for (const t of items) if (t.worked) { t.worked = t.worked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
+      plan = schedule(items, cfg, now, dayRel, bounds);
 
-    for (const t of items) {
-      if (t.kind === "task" && t.state === "done") {
-        // 完成时间的来源，按可信度：DONE 后面手写的时间 > **07:37** 时间戳 > 插件看到它变成 DONE 的时刻
-        const at = t.doneAt ?? t.stamp ?? done[t.label];
-        // 没写时长、但记到了做的时段：时长按实际做的算（含前几天做掉的）
-        const spent = t.spentToday + t.spentBefore;
-        if (!t.explicitDur && !t.actual && spent >= 1) t.dur = Math.round(spent);
-        t.doneAt = at ?? (t.worked.length ? t.worked.at(-1)[1] : null);
-        // 画在哪：记下来的那几段「进行中」+ DONE 14:00-15:30 写的时段（任务归位插件写的只是最后一段，中断之前的几段在记录里）
-        //        都没有就用完成时刻往前推一个时长
-        if (t.actual && t.worked.length) {
-          const all = [...t.worked, t.actual].sort((a, b) => a[0] - b[0]);
-          t.segments = [];
-          for (const [a, b] of all) { const last = t.segments.at(-1); if (last && a <= last[1]) last[1] = Math.max(last[1], b); else t.segments.push([a, b]); }
-          t.dur = Math.round(unionMin(t.segments) + t.spentBefore);
-        } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(S, at - t.dur), at]] : [];
+      for (const t of items) {
+        if (t.kind === "task" && t.state === "done") {
+          // 完成时间的来源，按可信度：DONE 后面手写的时间 > **07:37** 时间戳 > 插件看到它变成 DONE 的时刻
+          const at = t.doneAt ?? t.stamp ?? done[t.label];
+          // 没写时长、但记到了做的时段：时长按实际做的算（含前几天做掉的）
+          const spent = t.spentToday + t.spentBefore;
+          if (!t.explicitDur && !t.actual && spent >= 1) t.dur = Math.round(spent);
+          t.doneAt = at ?? (t.worked.length ? t.worked.at(-1)[1] : null);
+          // 画在哪：记下来的那几段「进行中」+ DONE 14:00-15:30 写的时段（任务归位插件写的只是最后一段，中断之前的几段在记录里）
+          //        都没有就用完成时刻往前推一个时长
+          if (t.actual && t.worked.length) {
+            const all = [...t.worked, t.actual].sort((a, b) => a[0] - b[0]);
+            t.segments = [];
+            for (const [a, b] of all) { const last = t.segments.at(-1); if (last && a <= last[1]) last[1] = Math.max(last[1], b); else t.segments.push([a, b]); }
+            t.dur = Math.round(unionMin(t.segments) + t.spentBefore);
+          } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(S, at - t.dur), at]] : [];
+        }
+      }
+      if (isPastStatic && computeSig != null && this.plugin.pastDayCache) {
+        this.plugin.pastDayCache.delete(dayKey);
+        this.plugin.pastDayCache.set(dayKey, { sig: computeSig, items, M, cal, orphans, plan });
+        if (this.plugin.pastDayCache.size > 60) {
+          const oldest = this.plugin.pastDayCache.keys().next().value;
+          if (oldest !== undefined) this.plugin.pastDayCache.delete(oldest);
+        }
       }
     }
 
@@ -3014,7 +3093,6 @@ class SpiralView extends ItemView {
     };
     const ai = projectAiDay(aiStore?.days?.[dayKey], cfg);
     const agentDeck = this.plugin.agentDeck();
-    const deckBindings = this.plugin.deckJournalBindings(dayKey, file.path);
     const journalLines = content.split("\n");
     // 这天用了哪几个 Agent（按 Claude / Codex / WorkBuddy 的固定顺序）；旧记录没分 Agent 的都算 Claude
     const agents = !ai ? [] : ai.by ? Object.keys(AI_AGENTS).filter((k) => ai.by[k] && ai.by[k].segs.length).map((k) => [k, ai.by[k]]) : [["claude", { segs: ai.segs, wall: ai.wall, out: ai.out }]];
@@ -3935,6 +4013,7 @@ module.exports = class NautilusSpiral extends Plugin {
     lucideWatch(this, window);
     this.registerEvent(this.app.workspace.on("window-open", (w) => { lucideWatch(this, w.win); this.applyColors(w.doc); }));
     this.states = new Map();   // path -> Map(label -> state)，用来发现「刚改成 DONE」
+    this.pastDayCache = new Map();   // dayKey -> { sig, items, M, cal, orphans, plan }，历史日期定稿后复用解析排程结果
     this.cal = new MacCalendar();
     this.gcal = new GoogleCalendar({
       get: (id) => this.secret(`google-${id}`),
@@ -4273,7 +4352,7 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "open-today", name: T("打开今天的日记（凌晨按日界算前一天）", "Open today's daily note (before the day cutoff it's still yesterday)"), run: () => this.openToday() },
       { id: "pomodoro-start", name: T("开始番茄钟（预订接下来一段专注时间）", "Start Pomodoro (reserve an upcoming focus block)"), when: () => !this.settings.pomodoro?.active, run: () => this.startPomodoro() },
       { id: "pomodoro-stop", name: T("结束当前番茄钟", "Stop current Pomodoro"), when: () => !!this.settings.pomodoro?.active, run: () => this.stopPomodoro(false) },
-      { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.gcal.cals = null; this.refresh(); } },
+      { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.pastDayCache?.clear(); this.gcal.cals = null; this.views().forEach((v) => v.render({ force: true })); } },
     ];
   }
 
@@ -4457,11 +4536,14 @@ module.exports = class NautilusSpiral extends Plugin {
   useGoogleCal() { return !!this.settings.googleCal && this.gcal.connected(); }
 
   // 这天的日历事件（macOS「日历」和 Google 日历，开了哪个读哪个）：先交缓存（同步），过期了在后台重读，读完有变化再重画。两个都没开返回 null
+  // 历史日期（早于今天业务日）读过一次且未出错后长期复用内存缓存，不再每 2 分钟重复读取，手动「重新读取日历」或改日历设置时清空。
   calendarFor(date) {
     if (!this.useMacCal() && !this.useGoogleCal()) return null;
     const key = date.format("YYYY-MM-DD");
     const c = this.cal.cache.get(key);
-    if (!c || Date.now() - c.at > 120000) this.loadCalendar(date.clone(), key);
+    const past = isPastDate(date, this.today());
+    const stale = !c || (!past && Date.now() - c.at > 120000) || (past && !!c.error && Date.now() - c.at > 120000);
+    if (stale) this.loadCalendar(date.clone(), key);
     return c || null;
   }
 
@@ -4856,11 +4938,12 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 人机协作汇总：先用存下的（手机上也能看），再在后台读 Claude Code 日志更新，至多一分钟一次
-  async aiUsage() {
+  async aiUsage({ skipScan = false } = {}) {
     if (!this.aiStore) {
       try { this.aiStore = JSON.parse(await this.app.vault.adapter.read(this.aiStorePath)); } catch (e) { this.aiStore = { days: {} }; }
       this._aiStoreVer = (this._aiStoreVer || 0) + 1;
     }
+    if (skipScan) return this.aiStore;
     const reindex = this._ai && this.aiCalendar(this._ai.cfg) !== this.aiCalendar();
     if (OB.Platform && OB.Platform.isDesktopApp && !this._aiBusy && (reindex || Date.now() - (this._aiAt || 0) > 55000)) this.scanAi();
     return this.aiStore;
