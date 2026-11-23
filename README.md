@@ -21,7 +21,7 @@ Turn today's daily note into a spiral timeline: fixed events stay pinned to thei
 
 A 50-second tour (Chinese captions, with sound):
 
-https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
+https://github.com/user-attachments/assets/c1ccdeaf-1e4b-4798-bcfd-d04401101979
 
 The interface switches automatically between English and Chinese based on Obsidian's language setting.
 
