@@ -30,7 +30,7 @@
   --naut-kw-delegated: #5b9690;
   --naut-now: #5c6370;
   --naut-pomo: #d45d4a;
-  --naut-ease: cubic-bezier(.2, .7, .2, 1);
+  --naut-ease: cubic-bezier(.22, 1, .36, 1);
 }
 .naut-root { padding: 10px 12px 24px; }
 .naut-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
@@ -39,10 +39,10 @@
 .naut-head .naut-bounds-btn { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .naut-head .naut-bounds-btn.is-set { color: var(--text-normal); }
 /* 回放一整天 */
-.naut-head .naut-playback { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--text-muted); transition: color .16s ease-out, transform .12s var(--naut-ease); }
+.naut-head .naut-playback { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--text-muted); transition: color .16s ease-out, transform .14s var(--naut-ease); }
 .naut-head .naut-playback:hover:not(:disabled) { color: var(--naut-task); }
 .naut-head .naut-playback:active:not(:disabled) { transform: scale(.9); }
-.naut-head .naut-playback:disabled { color: var(--naut-task); opacity: 1; }
+.naut-head .naut-playback:disabled, .naut-head .naut-playback.is-playing { color: var(--naut-task); opacity: 1; }
 .naut-head .naut-playback svg { width: 14px; height: 14px; }
 /* 起床 / 收工弹窗 */
 .naut-bounds-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
@@ -54,7 +54,7 @@
 /* 容量条 */
 .naut-cap { margin-bottom: 6px; }
 .naut-bar { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; }
-.naut-bar > div { border-radius: 1px; }
+.naut-bar > div { border-radius: 1px; transition: width .24s var(--naut-ease); }
 .naut-bar-task { background: var(--naut-task); }
 .naut-bar-free { background: var(--background-modifier-border); }
 .naut-bar-over { background: var(--naut-prio); }
@@ -156,7 +156,7 @@
 /* 列表 */
 .naut-list { margin-top: 8px; font-size: var(--font-ui-small); }
 .naut-sec { margin: 10px 0 4px; font-size: var(--font-ui-smaller); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em; }
-.naut-row { display: flex; gap: 8px; padding: 3px 6px; border-radius: 4px; border-left: 3px solid transparent; cursor: pointer; transition: background-color .12s ease-out; }
+.naut-row { display: flex; gap: 8px; padding: 3px 6px; border-radius: 0 4px 4px 0; border-left: 3px solid transparent; cursor: pointer; transition: background-color .12s ease-out; }
 .naut-row.is-upnext { cursor: default; }
 .naut-row:hover { background: var(--background-modifier-hover); }
 .naut-st-dot { flex: none; width: 1.1em; text-align: center; font-size: .85em; line-height: 1.4; color: var(--naut-task); opacity: .85; user-select: none; cursor: pointer; transition: transform .12s ease-out, opacity .12s ease-out; }
@@ -207,7 +207,7 @@
 .naut-row.is-doing.is-prio .naut-time::before { background: var(--naut-prio); }
 .naut-row.is-doing.is-main .naut-time::before { background: var(--naut-main); }
 .naut-row.is-doing.is-kw-doing .naut-time::before { background: var(--naut-kw-doing); }
-.naut-row.is-upnext { border-left: 0; padding-left: 4px; }
+.naut-row.is-upnext { border-left: 0; border-radius: 4px; padding-left: 4px; }
 .naut-row.is-upnext.is-doing .naut-time::before { display: none; }
 .naut-row.is-upnext.is-doing .naut-st-dot { animation: naut-breathe 2.8s ease-in-out infinite; }
 
@@ -266,38 +266,42 @@
 
 /* 入场（.naut-enter）：只在打开视图、换一天时放一次，每分钟的刷新不放。
    轨道从早上往夜里画出来，各段按自己的开始时间（--naut-d）跟着长出来，指针转到现在，列表一行行浮上来 */
-@keyframes naut-draw { from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; } 12% { opacity: 1; } to { stroke-dasharray: 1; stroke-dashoffset: 0; } }
-@keyframes naut-draw-soft { from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; } to { stroke-dasharray: 1; stroke-dashoffset: 0; } }
+@keyframes naut-draw { from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; } 10% { opacity: 1; } to { stroke-dasharray: 1; stroke-dashoffset: 0; } }
+@keyframes naut-draw-soft { from { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; } 18% { opacity: 1; } to { stroke-dasharray: 1; stroke-dashoffset: 0; } }
 @keyframes naut-fade { from { opacity: 0; } }
-@keyframes naut-rise { from { opacity: 0; transform: translateY(5px); } }
-@keyframes naut-sweep { from { opacity: 0; transform: rotate(-50deg); } }
+@keyframes naut-rise { from { opacity: 0; transform: translateY(6px) scale(.992); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes naut-sweep { from { opacity: 0; transform: rotate(-38deg); } to { opacity: 1; transform: rotate(0deg); } }
 @keyframes naut-wipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
 @keyframes naut-grow { from { transform: scaleY(0); } }
 
-.naut-enter .naut-track { animation: naut-draw .85s cubic-bezier(.3, .2, .2, 1) backwards; }
-.naut-enter .naut-off { animation: naut-fade .5s ease-out .5s backwards; }
-.naut-enter .naut-gap { animation: naut-fade .6s ease-out .55s backwards; }
-.naut-enter .naut-seg { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards; }
-.naut-enter .naut-seg.naut-live { animation: naut-draw-soft .5s var(--naut-ease) var(--naut-d, 0ms) backwards, naut-breathe 2.8s ease-in-out 1.4s infinite; }
-.naut-enter .naut-ai, .naut-enter .naut-game, .naut-enter .naut-rev { animation: naut-draw-soft .5s var(--naut-ease) calc(var(--naut-d, 0ms) + 120ms) backwards; }
-.naut-enter .naut-hour, .naut-enter .naut-log { animation: naut-fade .4s ease-out var(--naut-d, 0ms) backwards; }
-.naut-enter .naut-now-g { transform-origin: 160px 160px; animation: naut-sweep .9s var(--naut-ease) .2s backwards; }
-.naut-enter .naut-handle, .naut-enter .naut-center, .naut-enter .naut-center-rev { animation: naut-fade .4s ease-out .6s backwards; }
-.naut-enter .naut-bar { animation: naut-wipe .6s var(--naut-ease) backwards; }
-.naut-enter .naut-cap > :not(.naut-bar) { animation: naut-fade .4s ease-out .15s backwards; }
-.naut-enter .naut-list > * { animation: naut-rise .32s var(--naut-ease) backwards; animation-delay: calc(220ms + var(--naut-i, 0) * 24ms); }
-.naut-enter .naut-ai-bar { animation: naut-grow .5s var(--naut-ease) backwards; }
-.naut-enter .naut-ai-col:nth-child(2) .naut-ai-bar { animation-delay: 40ms; }
-.naut-enter .naut-ai-col:nth-child(3) .naut-ai-bar { animation-delay: 80ms; }
-.naut-enter .naut-ai-col:nth-child(4) .naut-ai-bar { animation-delay: 120ms; }
-.naut-enter .naut-ai-col:nth-child(5) .naut-ai-bar { animation-delay: 160ms; }
-.naut-enter .naut-ai-col:nth-child(6) .naut-ai-bar { animation-delay: 200ms; }
-.naut-enter .naut-ai-col:nth-child(7) .naut-ai-bar { animation-delay: 240ms; }
+.naut-enter .naut-track { animation: naut-draw .48s var(--naut-ease) backwards; }
+.naut-enter .naut-off { animation: naut-fade .28s ease-out .18s backwards; }
+.naut-enter .naut-gap { animation: naut-fade .32s ease-out .2s backwards; }
+.naut-enter .naut-seg { animation: naut-draw-soft .32s var(--naut-ease) var(--naut-d, 0ms) backwards; }
+.naut-enter .naut-seg.naut-live { animation: naut-draw-soft .32s var(--naut-ease) var(--naut-d, 0ms) backwards, naut-breathe 2.8s ease-in-out .8s infinite; }
+.naut-enter .naut-ai, .naut-enter .naut-game, .naut-enter .naut-rev { animation: naut-draw-soft .32s var(--naut-ease) calc(var(--naut-d, 0ms) + 50ms) backwards; }
+.naut-enter .naut-hour, .naut-enter .naut-log { animation: naut-fade .24s ease-out var(--naut-d, 0ms) backwards; }
+.naut-enter .naut-now-g { transform-origin: 160px 160px; animation: naut-sweep .45s var(--naut-ease) .08s backwards; }
+.naut-enter .naut-handle, .naut-enter .naut-center, .naut-enter .naut-center-rev { animation: naut-fade .25s ease-out .2s backwards; }
+.naut-enter .naut-bar { animation: naut-wipe .36s var(--naut-ease) backwards; }
+.naut-enter .naut-cap > :not(.naut-bar) { animation: naut-fade .24s ease-out .06s backwards; }
+.naut-enter .naut-list > * { animation: naut-rise .24s var(--naut-ease) backwards; animation-delay: calc(80ms + var(--naut-i, 0) * 12ms); }
+.naut-enter .naut-ai-bar { animation: naut-grow .32s var(--naut-ease) backwards; }
+.naut-enter .naut-ai-col:nth-child(2) .naut-ai-bar { animation-delay: 22ms; }
+.naut-enter .naut-ai-col:nth-child(3) .naut-ai-bar { animation-delay: 44ms; }
+.naut-enter .naut-ai-col:nth-child(4) .naut-ai-bar { animation-delay: 66ms; }
+.naut-enter .naut-ai-col:nth-child(5) .naut-ai-bar { animation-delay: 88ms; }
+.naut-enter .naut-ai-col:nth-child(6) .naut-ai-bar { animation-delay: 110ms; }
+.naut-enter .naut-ai-col:nth-child(7) .naut-ai-bar { animation-delay: 132ms; }
 
-/* 回放：指针和中间的时刻跟着模拟的时间走，中间的字换成强调色；呼吸先停，免得和扫过去的动作打架 */
+/* 回放：指针、彗星拖尾和中间的时刻跟着连续模拟时间滑行，中间的字与指针换成强调色；呼吸先停，免得和扫过去的动作打架 */
+.naut-play-trail { fill: none; stroke: var(--naut-task); stroke-width: 12; stroke-linecap: round; opacity: 0.16; pointer-events: none; }
+.naut-playing .naut-bar > div { transition: none; }
 .naut-playing .naut-center { fill: var(--naut-task); font-weight: 700; }
+.naut-playing .naut-now { stroke: var(--naut-task); stroke-width: 1.45; opacity: 0.72; }
+.naut-playing .naut-now-dot { fill: var(--naut-task); }
+.naut-playing .naut-now-halo { fill: var(--naut-task); animation-duration: 1.05s; }
 .naut-playing .naut-seg.naut-live { animation: none; }
-.naut-playing .naut-now-halo { animation-duration: .9s; }
 
 /* 截成 PNG 发 Telegram 的那份离屏副本：不动。系统设了「减弱动态效果」的也不动 */
 .naut-snap *, .naut-snap *::before { animation: none !important; transition: none !important; }

@@ -538,12 +538,12 @@ function parseJournal(content, cfg) {
     if (state === "drop") return;
     const progress = state === "none" ? null : parseProgress(s);
     const label = labelPreview;
-    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp, ...(inheritedFrom != null ? { inheritedFrom, inheritedLabel } : {}) };
+    const auto = state !== "none" && /^(?:\[#[ABC]\]\s*)*🤖/.test(s);   // 这一行是自动记的（Agent 回写的）
+    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp, ...(auto ? { auto: true } : {}), ...(inheritedFrom != null ? { inheritedFrom, inheritedLabel } : {}) };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
       const ts = s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/, "");   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
-      const auto = /^(?:\[#[ABC]\]\s*)*🤖/.test(s);   // 这一行是自动记的（Agent 回写的）
       const lr = new RegExp("^" + RANGE_RE.source).exec(ts);
       const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
       if (state === "done" && lr) {
@@ -570,7 +570,7 @@ function parseJournal(content, cfg) {
         return;
       }
       // SUSPENDED 17:12 / PAUSED 17:12 / WAITING 17:12 / PAUSED 🤖 19:17-19:23：后面的时刻是当初开始做的记录，不是约好的时间，不当事件
-      if (state === "open" && !doing && (suspended || paused) && (lr || ls)) {
+      if (state === "open" && (doing || suspended || paused) && (lr || ls)) {
         const m = lr || ls;
         const d = parseDuration(ts.slice(m[0].length));
         // 自动记的行「TOREVIEW 🤖 21:59-00:06」：这一段就是这回事真实占用的时间（AI 回传的那个时间），
@@ -582,13 +582,8 @@ function parseJournal(content, cfg) {
           if (b < a) b += 1440;   // 06:42-08:19 这种：分界前的时刻归到了前一天，结束时刻要跟着跨过来
           span = b > a ? [a, b] : null;
         }
-        items.push({ ...base, kind: "task", dur: d ?? (span ? span[1] - span[0] : cfg.defaultDur), explicitDur: d != null, ...(span ? { aiSpan: span } : {}) });
-        return;
-      }
-      if (state === "open" && doing && (lr || ls)) {
-        const m = lr || ls;
-        const startedAt = normalize(tokenMinutes(m[1], m[2], m[3], m[4]), cfg);
-        items.push({ ...base, kind: "task", dur: parseDuration(ts.slice(m[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(ts.slice(m[0].length)) != null, startedAt });
+        const startedAt = doing ? normalize(tokenMinutes(m[1], m[2], m[3], m[4]), cfg) : undefined;
+        items.push({ ...base, kind: "task", dur: d ?? (span ? span[1] - span[0] : cfg.defaultDur), explicitDur: d != null, ...(startedAt !== undefined ? { startedAt } : {}), ...(span ? { aiSpan: span } : {}) });
         return;
       }
     }
@@ -1103,6 +1098,27 @@ function pastGaps(S, E, upto, occupied) {
   const end = Math.min(E, upto);
   if (!(end > S)) return [];
   return subtract([[S, end]], unionSegs(occupied.map(([a, b]) => [Math.max(a, S), Math.min(b, end)]).filter(([a, b]) => b > a)));
+}
+
+// 自动记的 🤖 任务（或 Agent Deck 当前托管的行）：没手写预估时长与进度时，有用时的显示实际已做时长，不算出假的「99% · 剩 5m」
+function isAutoTask(t, autoKeys = null) {
+  if (!t || t.kind !== "task") return false;
+  return !!(t.auto || (t.label && t.label.startsWith(AUTO_MARK.trim())) || (autoKeys && autoKeys.has(workKey(t.label))));
+}
+function formatTaskDur(t, autoKeys = null) {
+  if (!t) return "";
+  const spent = (t.spentToday || 0) + (t.spentBefore || 0);
+  if (isAutoTask(t, autoKeys) && t.state === "open" && !t.explicitDur && t.progress == null && (spent >= 1 || (autoKeys && autoKeys.has(workKey(t.label))))) {
+    return T(`已做 ${dur(Math.max(1, Math.round(spent)))}`, `${dur(Math.max(1, Math.round(spent)))} done`);
+  }
+  const pct = t.progress != null ? Math.round(t.progress * 100) : spent >= 1 ? Math.min(99, Math.round(spent / (spent + t.remaining) * 100)) : null;
+  return pct == null ? dur(t.dur) : T(`${pct}% · 剩 ${dur(t.remaining)}`, `${pct}% · ${dur(t.remaining)} left`);
+}
+function formatTaskTip(t, autoKeys = null) {
+  if (!t || (isAutoTask(t, autoKeys) && !t.explicitDur && t.progress == null)) return "";
+  const spent = (t.spentToday || 0) + (t.spentBefore || 0);
+  const pct = t.progress != null ? Math.round(t.progress * 100) : spent >= 1 ? Math.min(99, Math.round(spent / (spent + t.remaining) * 100)) : null;
+  return pct == null ? "" : T(`预估 ${dur(t.dur)}${spent >= 1 ? ` · 已做 ${dur(spent)}（今天 ${dur(t.spentToday)}${t.spentBefore >= 1 ? `，之前 ${dur(t.spentBefore)}` : ""}）` : ""}${t.progress != null ? ` · 进度是你写的 ${pct}%` : ""}`, `Estimate ${dur(t.dur)}${spent >= 1 ? ` · ${dur(spent)} done (${dur(t.spentToday)} today${t.spentBefore >= 1 ? `, ${dur(t.spentBefore)} before` : ""})` : ""}${t.progress != null ? ` · progress ${pct}% as you wrote it` : ""}`);
 }
 
 // 当日复盘：这一天每件任务的预计和实际，按日记里的顺序逐件列。
@@ -2899,30 +2915,34 @@ class SpiralView extends ItemView {
   // 换到相对今天第 n 天：重画，并放一次入场动效
   go(n) { this.stopPlay(); this._agentHoverExpanded = null; this.offset = n; this._enter = true; return this.render(); }
 
-  // 回放一整天：6 秒里把「现在」从这天的开头扫到结尾，螺旋和列表按那个时刻重排，放完回到真实的现在。只是重画，不改日记
-  play() {
-    if (this._play != null) return;
+  // 回放一整天：2.8 秒里把「现在」从这天的开头干脆利落地扫到结尾，螺旋指针、拖尾、内圈与任务段按连续帧原地重排，放完回到真实的现在。只是重画，不改日记
+  async play() {
+    if (this._play != null) { this.stopPlay(); this.plugin.sound("stop"); this.render(); return; }
     const cfg = this.plugin.settings;
     const b = (cfg.dayBounds || {})[this.date().format(cfg.format)] || {};
     const S = b.start ?? cfg.dayStart * 60, E = b.end ?? cfg.dayEnd * 60;
-    const t0 = performance.now();
-    let busy = false;
+    const ease = (p) => 0.35 * p + 0.65 * (0.5 - 0.5 * Math.cos(Math.PI * p));
+    this._play = S;
+    this.plugin.sound("play");
+    await this.render();
+    if (this._play == null) return;
+    const t0 = performance.now(), durMs = 2800;
     const tick = (ts) => {
-      const p = Math.min(1, (ts - t0) / 6000);
-      if (p >= 1) { this.stopPlay(); this.plugin.sound("stop"); this._enter = true; this.render(); return; }   // 放完回到现在，再放一次入场
-      const m = Math.floor(S + p * (E - S));
-      if (m !== this._play && !busy) { this._play = m; busy = true; this.render().finally(() => { busy = false; }); }
+      if (this._play == null) return;
+      const p = Math.min(1, (ts - t0) / durMs);
+      if (p >= 1) { this.stopPlay(); this.plugin.sound("stop"); this.render(); return; }
+      const now = S + ease(p) * (E - S);
+      this._play = now;
+      if (this._playStep) this._playStep(now);
       this._playRaf = window.requestAnimationFrame(tick);
     };
-    this._play = S;
     this._playRaf = window.requestAnimationFrame(tick);
-    this.plugin.sound("play");
-    this.render();
   }
   stopPlay() {
     if (this._playRaf) window.cancelAnimationFrame(this._playRaf);
     this._playRaf = 0;
     this._play = null;
+    this._playStep = null;
   }
   _hideDotTip() {
     this._dotTipAc?.abort();
@@ -2964,7 +2984,7 @@ class SpiralView extends ItemView {
     const playing = this._play != null;
     const realRel = this.offset === 0 ? 0 : this.offset < 0 ? -1 : 1;
     const isPastStatic = realRel < 0 && !playing;
-    const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage({ skipScan: isPastStatic }) : null;
+    const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage({ skipScan: isPastStatic || playing }) : null;
     if (seq !== this._renderSeq) return;
     const gameLog = cfg.trackGames !== false ? await this.plugin.gameLog() : null;
     if (seq !== this._renderSeq) return;
@@ -3016,14 +3036,14 @@ class SpiralView extends ItemView {
       return;
     }
     {
-      const pb = head.createEl("button", { cls: "naut-playback", attr: { "aria-label": T("回放一整天（只是重画，不改日记）", "Play back the whole day (just redraws; the note is not changed)") } });
+      const pb = head.createEl("button", { cls: "naut-playback" + (playing ? " is-playing" : ""), attr: { "aria-label": playing ? T("停止回放", "Stop playback") : T("回放一整天（只是重画，不改日记）", "Play back the whole day (just redraws; the note is not changed)") } });
       if (OB.setIcon) OB.setIcon(pb, "play"); else pb.setText("⏵");
-      pb.disabled = this._play != null;
       pb.onclick = () => this.play();
     }
     const nowM = moment();
+    const realNow = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
     // 回放时 this._play 是模拟的「现在」：这一天按那个时刻重排、重画，像它就是今天一样
-    const now = playing ? this._play : normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
+    const now = playing ? this._play : realNow;
     const dayRel = playing ? 0 : realRel;
     const bounds = (cfg.dayBounds || {})[dayKey] || {};
     const S = cfg.dayStart * 60, E = cfg.dayEnd * 60;
@@ -3038,10 +3058,7 @@ class SpiralView extends ItemView {
       markMain(items, M);   // 主线块里的任务排程时排在 DOING 后面，螺旋上换主线的颜色
       cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
       const done = cfg.doneTimes[dayKey] || {};
-      orphans = applyWork(items, cfg, dayKey, now, dayRel, bounds);   // 这天做过、但任务行已经挪走的
-      // 回放：模拟的时刻以后才做的那些段先不算
-      if (playing) for (const t of items) if (t.worked) { t.worked = t.worked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
-      plan = schedule(items, cfg, now, dayRel, bounds);
+      orphans = applyWork(items, cfg, dayKey, realNow, realRel, bounds);   // 这天做过、但任务行已经挪走的
 
       for (const t of items) {
         if (t.kind === "task" && t.state === "done") {
@@ -3059,8 +3076,18 @@ class SpiralView extends ItemView {
             for (const [a, b] of all) { const last = t.segments.at(-1); if (last && a <= last[1]) last[1] = Math.max(last[1], b); else t.segments.push([a, b]); }
             t.dur = Math.round(unionMin(t.segments) + t.spentBefore);
           } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(S, at - t.dur), at]] : [];
+          if (playing) t._fullSegments = (t.segments || []).map(([a, b]) => [a, b]);
+        } else if (playing && t.worked) {
+          t._fullWorked = t.worked.map(([a, b]) => [a, b]);
         }
       }
+      if (playing) {
+        for (const o of orphans) o._fullSegs = o.segs.map(([a, b]) => [a, b]);
+        for (const t of items) if (t._fullWorked) { t.worked = t._fullWorked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
+        for (const o of orphans) if (o._fullSegs) o.segs = o._fullSegs.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a);
+      }
+      plan = schedule(items, cfg, now, dayRel, bounds);
+
       if (isPastStatic && computeSig != null && this.plugin.pastDayCache) {
         this.plugin.pastDayCache.delete(dayKey);
         this.plugin.pastDayCache.set(dayKey, { sig: computeSig, items, M, cal, orphans, plan });
@@ -3076,9 +3103,9 @@ class SpiralView extends ItemView {
     const total = Math.max(plan.available, plan.demand) || 1;
     const bar = cap.createDiv({ cls: "naut-bar" });
     const fit = Math.min(plan.demand, plan.available);
-    bar.createDiv({ cls: "naut-bar-task", attr: { style: `width:${(fit / total) * 100}%` } });
-    bar.createDiv({ cls: "naut-bar-free", attr: { style: `width:${((plan.available - fit) / total) * 100}%` } });
-    if (plan.overflow) bar.createDiv({ cls: "naut-bar-over", attr: { style: `width:${(plan.overflow / total) * 100}%` } });
+    const barTask = bar.createDiv({ cls: "naut-bar-task", attr: { style: `width:${(fit / total) * 100}%` } });
+    const barFree = bar.createDiv({ cls: "naut-bar-free", attr: { style: `width:${((plan.available - fit) / total) * 100}%` } });
+    const barOver = bar.createDiv({ cls: "naut-bar-over", attr: { style: `width:${plan.overflow ? (plan.overflow / total) * 100 : 0}%` } });
     // 进度条下面只留一眼能看完的几行，每行左边一格图标、文字对齐：
     //   📋 排得下吗（已计划 · 余量 / 超载 / 空档不足 · 剩余百分之几）；可安排的时间正在流逝时图标换成会闪的 🔥
     //   🤖 Agent 这一天干了多少（协作时长 · token）
@@ -3130,9 +3157,9 @@ class SpiralView extends ItemView {
       notes.push(T(`📝 已过去 ${dur(past)} · 有记录 ${dur(past - none)}（${Math.round((past - none) / past * 100)}%）· 没记录 ${dur(none)}：你记的 ${dur(byMe)}，只有机器记的 ${dur(past - none - byMe)}；没记录的画成斜纹`, `📝 ${dur(past)} gone · ${dur(past - none)} recorded (${Math.round((past - none) / past * 100)}%) · ${dur(none)} unrecorded: ${dur(byMe)} by you, ${dur(past - none - byMe)} only by the machine; unrecorded time is hatched`));
     }
     const plan1 = row("naut-cap-plan", C.burning === "available" ? "🔥" : "📋", notes.join("\n"), C.burning === "available" ? "naut-burn" : "");
-    plan1.createSpan({ text: T(`已计划 ${dur(C.demand)} · `, `Planned ${dur(C.demand)} · `) });
-    plan1.createSpan({ cls: C.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text", text: `${C.status.label} ${dur(C.status.value)}` });
-    plan1.createSpan({ cls: `naut-left is-${C.tone}`, text: T(` · 剩余 ${C.left}%`, ` · ${C.left}% free`) });
+    const planDemandEl = plan1.createSpan({ text: T(`已计划 ${dur(C.demand)} · `, `Planned ${dur(C.demand)} · `) });
+    const planStatusEl = plan1.createSpan({ cls: C.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text", text: `${C.status.label} ${dur(C.status.value)}` });
+    const planLeftEl = plan1.createSpan({ cls: `naut-left is-${C.tone}`, text: T(` · 剩余 ${C.left}%`, ` · ${C.left}% free`) });
 
     // 🎯 主线：做到第几件、下一件是什么；悬停看每一块和近 7 天的完成率；点一下跳到下一件。今天还没定主线的，直说
     if (cfg.showMain !== false && (M.blocks.length || dayRel >= 0)) {
@@ -3292,7 +3319,7 @@ class SpiralView extends ItemView {
     svg = svgEl("svg", { viewBox: `0 0 ${size} ${size}`, class: "naut-svg" });
     root.appendChild(svg);
     // 入场时各段按自己的时刻先后出来：从早上往夜里，跟着轨道一路画过去
-    const late = (el, t) => { if (enter && el) el.style.setProperty("--naut-d", `${Math.round(60 + 640 * (Math.min(Math.max(t, S), E) - S) / (E - S))}ms`); return el; };
+    const late = (el, t) => { if (enter && el) el.style.setProperty("--naut-d", `${Math.round(20 + 260 * (Math.min(Math.max(t, S), E) - S) / (E - S))}ms`); return el; };
     // 鼠标停在螺旋的一段或列表的一行上：同一件事的线段和那一行一起亮，其余的线段淡下去
     const linked = new Map();
     const link = (item, el) => {
@@ -3307,22 +3334,40 @@ class SpiralView extends ItemView {
     if (E1 < E) svgEl("path", { d: arc(E1, E), class: "naut-off" }, svg);
     let defsEl = null;
     const ensureDefs = () => defsEl || (defsEl = svgEl("defs", {}, svg));
-    // 没有记录的过去：斜纹
-    if (gaps.length) {
-      const pid = `naut-hatch-${++hatchSeq}`;
-      const pat = svgEl("pattern", { id: pid, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, ensureDefs());
+    let hatchId = null;
+    if (cfg.showUnrecorded !== false) {
+      hatchId = `naut-hatch-${++hatchSeq}`;
+      const pat = svgEl("pattern", { id: hatchId, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, ensureDefs());
       svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 7, class: "naut-hatch-stripe" }, pat);
-      for (const [a, b] of gaps) {
+    }
+    const gapsG = svgEl("g", { class: "naut-gaps-g" }, svg);
+    // 没有记录的过去（斜纹）与排完以后还空着的时段
+    const paintGapsAndSlots = (curPlan, simNow, curGaps = null) => {
+      gapsG.replaceChildren();
+      const gList = curGaps ?? (cfg.showUnrecorded !== false ? pastGaps(S1, E1, dayRel === 0 ? Math.min(Math.max(simNow, S1), E1) : dayRel < 0 ? E1 : S1, [
+        ...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
+        ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => (playing ? (t._fullSegments || t.segments || []).map(([a, b]) => [a, Math.min(b, simNow)]).filter(([a, b]) => b > a) : t.segments || [])),
+        ...curPlan.queue.flatMap((t) => t.segments.slice(0, t.workedN)),
+        ...curPlan.suspended.flatMap((t) => t.worked || []),
+        ...orphans.flatMap((o) => o.segs),
+        ...(ai ? ai.segs : []),
+        ...games.map(([a, b]) => [a, b]),
+      ]) : []);
+      if (hatchId) for (const [a, b] of gList) {
         const d = arc(a, b);
-        if (d) hov(svgEl("path", { d, class: "naut-gap", stroke: `url(#${pid})` }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T("没有记录", "Not recorded"));
+        if (!d) continue;
+        const el = svgEl("path", { d, class: "naut-gap", stroke: `url(#${hatchId})` }, gapsG);
+        if (!playing) hov(el, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T("没有记录", "Not recorded"));
       }
-    }
-    // 排完以后还空着的时段：鼠标划过去显示这段空档几点到几点、多长。过去的日子没有空档可用，不画
-    if (dayRel >= 0) for (const [a, b] of plan.free) {
-      const d = b - a >= 1 ? arc(a, b) : null;
-      const cur = dayRel === 0 && a <= now && now < b;
-      if (d) hov(svgEl("path", { d, class: "naut-slot" + (cur ? " is-now" : "") }, svg), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, cur ? T("当前可用", "Free now") : T("可用空档", "Free slot"));
-    }
+      if (dayRel >= 0) for (const [a, b] of curPlan.free) {
+        const d = b - a >= 1 ? arc(a, b) : null;
+        if (!d) continue;
+        const cur = dayRel === 0 && a <= simNow && simNow < b;
+        const el = svgEl("path", { d, class: "naut-slot" + (cur ? " is-now" : "") }, gapsG);
+        if (!playing) hov(el, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, cur ? T("当前可用", "Free now") : T("可用空档", "Free slot"));
+      }
+    };
+    paintGapsAndSlots(plan, now, gaps);
     for (let h = Math.ceil(S / 60); h <= E / 60; h++) {
       const [x, y] = pt(h * 60, 13);
       const tx = late(svgEl("text", { x, y, class: "naut-hour" }, svg), h * 60);
@@ -3337,6 +3382,7 @@ class SpiralView extends ItemView {
         svgEl("stop", { offset, "stop-color": color }, g);
       }
     }
+    const timedPaths = [], timedDots = [];
     // 内圈细线：各个 Agent 在干活的时段，一个 Agent 一圈、各用各的颜色
     agents.forEach(([k, g], lane) => {
       for (const [a, b] of g.segs) {
@@ -3344,6 +3390,7 @@ class SpiralView extends ItemView {
         if (!d) continue;
         const vis = late(svgEl("path", { d, class: `naut-ai naut-by-${k}`, pathLength: 1 }, svg), a);
         if (k === "antigravity" && agGradId) vis.style.stroke = `url(#${agGradId})`;
+        timedPaths.push([vis, a, Math.max(b, a + 3)]);
         const sessions = aiSegmentSessions(ai.list, k, a, b);
         const hit = fat(d, vis);
         hit.dataset.agent = k;
@@ -3417,6 +3464,7 @@ class SpiralView extends ItemView {
       const d = arc(a, Math.max(b, a + 3), -10 - 4.5 * Math.max(1, agents.length) - 1.5);
       if (!d) continue;
       const vis = late(svgEl("path", { d, class: "naut-game", pathLength: 1 }, svg), a);
+      timedPaths.push([vis, a, Math.max(b, a + 3)]);
       hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, `🎮 ${n}`);
     }
     // 再往里一圈：复习卡片（第二大脑每日回顾记进日记的那几段），和主轨道上的复习段同一个青色
@@ -3426,6 +3474,7 @@ class SpiralView extends ItemView {
       const d = arc(a, Math.max(b, a + 3), -10 - 4.5 * Math.max(1, agents.length) - 6);
       if (!d) continue;
       const vis = late(svgEl("path", { d, class: "naut-rev", pathLength: 1 }, svg), a);
+      timedPaths.push([vis, a, Math.max(b, a + 3)]);
       hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`🃏 复习卡片 ${revN(t)} 张`, `🃏 Review ${revN(t)} cards`));
     }
     // 这件任务做过的那几段里，Claude 在干什么
@@ -3467,29 +3516,43 @@ class SpiralView extends ItemView {
     };
     const LANE = [0, 5, -5, 9, -9, 13];   // 并行的几件 DOING 各画一条线，沿螺旋错开一点
     const perMin = (t) => 2 * Math.PI * rad(t) / 720;   // 这一圈上一分钟有几个像素
+    const segsG = svgEl("g", { class: "naut-segs-g" }, svg);
     const drawSeg = (a, b, cls, item) => {
       // 够长的段两头各让出 0.8 像素，挨着的两段之间留一条缝；太短的不让，免得缩没了
       const k = perMin((a + b) / 2), gap = (b - a) * k > 6 ? 0.8 / k : 0;
       const d = arc(a + gap, b - gap, LANE[item.lane || 0] ?? 0);
       if (!d) return;
-      const p = late(svgEl("path", { d, class: `naut-seg ${cls}${statusCls(item, "naut-kw-", deckStateOf(item))}`, pathLength: 1 }, svg), a);
-      link(item, p);
+      const p = late(svgEl("path", { d, class: `naut-seg ${cls}${statusCls(item, "naut-kw-", deckStateOf(item))}`, pathLength: 1 }, segsG), a);
       if (item.cal && item.cal.color) p.style.stroke = item.cal.color;   // 日历事件用日历自己的颜色
+      if (playing) return;
+      link(item, p);
       const rel = aiOf(item).filter((x) => x.related);
       // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
       hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join(T("、", ", "))}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
       p.addEventListener("click", () => this.plugin.openItem(file, item));
     };
-    for (const e of items.filter((i) => i.kind === "event")) drawSeg(e.start, e.end, e.state === "done" ? "naut-event naut-done-event" : e.prio ? "naut-prio" : "naut-event", e);
-    for (const t of items.filter((i) => i.kind === "task" && i.state === "done")) for (const [a, b] of t.segments) drawSeg(a, b, isReview(t) ? "naut-done naut-review" : t.mainA ? "naut-done naut-main-done" : "naut-done", t);
-    // 没做完的：做过的几段画淡一点，后面排的画实的
-    for (const t of plan.queue) t.segments.forEach(([a, b], i) => drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + (i < t.workedN ? " naut-worked" : t.doing && dayRel === 0 ? " naut-live" : ""), t));
-    for (const t of plan.suspended) for (const [a, b] of t.worked || []) drawSeg(a, b, "naut-task naut-worked", t);
-    for (const o of orphans) for (const [a, b] of o.segs) drawSeg(a, b, "naut-task naut-worked", o);
+    const paintSegs = (curPlan, simNow) => {
+      segsG.replaceChildren();
+      for (const e of items.filter((i) => i.kind === "event")) drawSeg(e.start, e.end, e.state === "done" ? "naut-event naut-done-event" : e.prio ? "naut-prio" : "naut-event", e);
+      for (const t of items.filter((i) => i.kind === "task" && i.state === "done")) {
+        const segs = playing ? (t._fullSegments || t.segments || []) : (t.segments || []);
+        for (const [a, b] of segs) {
+          const b1 = playing ? Math.min(b, simNow) : b;
+          if (b1 > a) drawSeg(a, b1, isReview(t) ? "naut-done naut-review" : t.mainA ? "naut-done naut-main-done" : "naut-done", t);
+        }
+      }
+      // 没做完的：做过的几段画淡一点，后面排的画实的
+      for (const t of curPlan.queue) t.segments.forEach(([a, b], i) => drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + (i < t.workedN ? " naut-worked" : t.doing && dayRel === 0 ? " naut-live" : ""), t));
+      for (const t of curPlan.suspended) for (const [a, b] of t.worked || []) drawSeg(a, b, "naut-task naut-worked", t);
+      for (const o of orphans) for (const [a, b] of o.segs) drawSeg(a, b, "naut-task naut-worked", o);
+    };
+    paintSegs(plan, now);
     for (const l of items.filter((i) => i.kind === "log")) {
       if (l.start < S || l.start > E) continue;
       const [x, y] = pt(l.start);
-      hov(late(svgEl("circle", { cx: x, cy: y, r: 2.6, class: "naut-log" }, svg), l.start), clock(l.start), l.label);
+      const cir = late(svgEl("circle", { cx: x, cy: y, r: 2.6, class: "naut-log" }, svg), l.start);
+      timedDots.push([cir, l.start]);
+      hov(cir, clock(l.start), l.label);
     }
     // 🍅 番茄钟外沿轨道（offset = +9.5）：已完成留淡色细弧，进行中拆为「已兑现实线 + 未实现预订虚线 + 终点圆点」
     const POMO_OFF = 9.5;
@@ -3502,6 +3565,7 @@ class SpiralView extends ItemView {
       const d = arc(a, b, POMO_OFF);
       if (!d) continue;
       const vis = late(svgEl("path", { d, class: "naut-pomo-hist", pathLength: 1 }, svg), a);
+      timedPaths.push([vis, a, b]);
       hov(fat(d, vis), `${clock(r[0])}–${clock(r[1])} · ${dur(h.minutes || Math.round(r[1] - r[0]))}`, h.label ? `🍅 ${h.label}` : T("🍅 已完成番茄钟", "🍅 Completed pomodoro"));
     }
     const activePomo = dayRel === 0 && !playing && cfg.pomodoro?.active && cfg.pomodoro.active.dayKey === dayKey ? cfg.pomodoro.active : null;
@@ -3538,16 +3602,43 @@ class SpiralView extends ItemView {
         }
       }
     }
-    if (dayRel === 0 && now >= S && now <= E) {
-      const nr = rad(now);
-      const [x0, y0] = [c + 27 * Math.cos(ang(now)), c + 27 * Math.sin(ang(now))];   // 从中间的时间外面起，不压着字
-      const [x1, y1] = [c + (nr + 9) * Math.cos(ang(now)), c + (nr + 9) * Math.sin(ang(now))];   // 停在当前轨道外沿，不穿出外圈
-      const g = svgEl("g", { class: "naut-now-g" }, svg);
-      svgEl("line", { x1: x0, y1: y0, x2: x1, y2: y1, class: "naut-now" }, g);
-      const [px, py] = pt(now);
-      svgEl("circle", { cx: px, cy: py, r: 3.5, class: "naut-now-halo" }, g);
-      svgEl("circle", { cx: px, cy: py, r: 3.5, class: "naut-now-dot" }, g);
-    }
+    let nowG = null, trailPath = null, nowLine = null, nowHalo = null, nowDot = null;
+    const paintNow = (simNow) => {
+      if (!(dayRel === 0 && simNow >= S && simNow <= E)) return;
+      if (!nowG) {
+        nowG = svgEl("g", { class: "naut-now-g" }, svg);
+        if (playing) trailPath = svgEl("path", { d: "", class: "naut-play-trail" }, nowG);
+        nowLine = svgEl("line", { class: "naut-now" }, nowG);
+        nowHalo = svgEl("circle", { r: 3.5, class: "naut-now-halo" }, nowG);
+        nowDot = svgEl("circle", { r: 3.5, class: "naut-now-dot" }, nowG);
+      }
+      const nr = rad(simNow), ca = Math.cos(ang(simNow)), sa = Math.sin(ang(simNow));
+      nowLine.setAttribute("x1", (c + 27 * ca).toFixed(2));
+      nowLine.setAttribute("y1", (c + 27 * sa).toFixed(2));
+      nowLine.setAttribute("x2", (c + (nr + 9) * ca).toFixed(2));
+      nowLine.setAttribute("y2", (c + (nr + 9) * sa).toFixed(2));
+      const [px, py] = pt(simNow);
+      nowHalo.setAttribute("cx", px.toFixed(2));
+      nowHalo.setAttribute("cy", py.toFixed(2));
+      nowDot.setAttribute("cx", px.toFixed(2));
+      nowDot.setAttribute("cy", py.toFixed(2));
+      if (trailPath) {
+        const td = simNow > S1 + 0.5 ? arc(Math.max(S1, simNow - 48), simNow) : null;
+        trailPath.setAttribute("d", td || "");
+      }
+    };
+    const paintTimed = (simNow) => {
+      if (!playing) return;
+      for (const [el, a, b] of timedPaths) {
+        const prog = simNow <= a ? 0 : simNow >= b ? 1 : (simNow - a) / Math.max(0.5, b - a);
+        el.style.opacity = prog <= 0 ? "0" : "";
+        el.style.strokeDasharray = prog < 1 ? "1" : "";
+        el.style.strokeDashoffset = prog < 1 ? (1 - prog).toFixed(4) : "";
+      }
+      for (const [el, at] of timedDots) el.style.opacity = simNow < at ? "0" : "";
+    };
+    paintTimed(now);
+    paintNow(now);
     // 起止把手：沿着螺旋拖 = 改这天实际的开始 / 结束时间（5 分钟一格），双击恢复默认
     const handle = (kind, t0) => {
       const [x, y] = pt(t0);
@@ -3591,13 +3682,15 @@ class SpiralView extends ItemView {
 
     // 列表
     const list = root.createDiv({ cls: "naut-list" });
+    let insertBeforeNode = null;
+    const placeInList = (el) => { if (insertBeforeNode) list.insertBefore(el, insertBeforeNode); return el; };
     const section = (title, rows) => {
       if (!rows.length) return;
-      list.createDiv({ cls: "naut-sec", text: title });
+      placeInList(list.createDiv({ cls: "naut-sec", text: title }));
       for (const r of rows) {
         const kwCls = statusCls(r.item, "is-kw-", deckStateOf(r.item));
-        const row = list.createDiv({ cls: `naut-row ${r.cls}${kwCls}${r.upNext ? " is-upnext" : ""}` });
-        link(r.item, row);
+        const row = placeInList(list.createDiv({ cls: `naut-row ${r.cls}${kwCls}${r.upNext ? " is-upnext" : ""}` }));
+        if (!playing) link(r.item, row);
         if (r.item.cal && r.item.cal.color) row.style.borderLeftColor = r.item.cal.color;
         if (r.upNext) {
           const curKw = canonKw(r.item.kw);
@@ -3635,82 +3728,128 @@ class SpiralView extends ItemView {
         }
       }
     };
-    // 进度：写了 40% / 1/3 按写的；没写但做过，按 已做 / 预估 估一个
-    const spentOf = (t) => (t.spentToday || 0) + (t.spentBefore || 0);
-    const pctOf = (t) => (t.progress != null ? Math.round(t.progress * 100) : spentOf(t) >= 1 ? Math.min(99, Math.round(spentOf(t) / (spentOf(t) + t.remaining) * 100)) : null);
-    // 自动记的行没有预估时长，不显示「百分之几 · 还剩多久」，只显示已经做了多久
+    // 进度：写了 40% / 1/3 按写的；没写但做过，按 已做 / 预估 估一个；自动记的行没有预估时长，只显示已经做了多久
     const autoKeys = this.plugin.autoKeys(dayKey);
-    const durText = (t) => (autoKeys.has(workKey(t.label)) && t.state === "open" ? T(`已做 ${dur(Math.max(1, Math.round(spentOf(t))))}`, `${dur(Math.max(1, Math.round(spentOf(t))))} done`) : pctOf(t) == null ? dur(t.dur) : T(`${pctOf(t)}% · 剩 ${dur(t.remaining)}`, `${pctOf(t)}% · ${dur(t.remaining)} left`));
-    const tipOf = (t) => (pctOf(t) == null ? "" : T(`预估 ${dur(t.dur)}${spentOf(t) >= 1 ? ` · 已做 ${dur(spentOf(t))}（今天 ${dur(t.spentToday)}${t.spentBefore >= 1 ? `，之前 ${dur(t.spentBefore)}` : ""}）` : ""}${t.progress != null ? ` · 进度是你写的 ${pctOf(t)}%` : ""}`, `Estimate ${dur(t.dur)}${spentOf(t) >= 1 ? ` · ${dur(spentOf(t))} done (${dur(t.spentToday)} today${t.spentBefore >= 1 ? `, ${dur(t.spentBefore)} before` : ""})` : ""}${t.progress != null ? ` · progress ${pctOf(t)}% as you wrote it` : ""}`));
-    // 🎯 主线：这一天最要紧的几件（主线块里 A 级的任务）放在列表最上面，一件一行：做完的打勾写几点做完，在做的写「进行中」，
-    // 没开始的写排到了几点（排程里主线排在 DOING 后面、别的待办前面），排不下的直说
-    if (M.blocks.length) {
-      const rows = [];
-      for (const t of M.tasks) {
-        const it = items.find((i) => i.line === t.line);
-        if (!it) {   // 排程不管的主线：交给 AI 的（TODO4AI [#A]）、没做成的（FAILED [#A]），照样列出来
-          rows.push({ item: { line: t.line, label: t.label, kind: "task", state: t.state, segs: [] }, inMain: true, cls: "is-main" + (t.state === "failed" ? " is-over" : t.state === "done" ? " is-done" : ""),
-            time: t.state === "failed" ? T("没做成", "Failed") : t.state === "done" ? "✓" : t.state === "doing" ? T("进行中", "Doing") : T("交给 AI", "Handed to AI"), dur: "" });
-          continue;
+    const durText = (t) => formatTaskDur(t, autoKeys);
+    const tipOf = (t) => formatTaskTip(t, autoKeys);
+    const paintTaskSections = (curPlan) => {
+      // 🎯 主线：这一天最要紧的几件（主线块里 A 级的任务）放在列表最上面，一件一行：做完的打勾写几点做完，在做的写「进行中」，
+      // 没开始的写排到了几点（排程里主线排在 DOING 后面、别的待办前面），排不下的直说
+      if (M.blocks.length) {
+        const rows = [];
+        for (const t of M.tasks) {
+          const it = items.find((i) => i.line === t.line);
+          if (!it) {   // 排程不管的主线：交给 AI 的（TODO4AI [#A]）、没做成的（FAILED [#A]），照样列出来
+            rows.push({ item: { line: t.line, label: t.label, kind: "task", state: t.state, segs: [] }, inMain: true, cls: "is-main" + (t.state === "failed" ? " is-over" : t.state === "done" ? " is-done" : ""),
+              time: t.state === "failed" ? T("没做成", "Failed") : t.state === "done" ? "✓" : t.state === "doing" ? T("进行中", "Doing") : T("交给 AI", "Handed to AI"), dur: "" });
+            continue;
+          }
+          const q = it.kind === "task" && it.state === "open" ? it : null, live = q && it.doing && dayRel === 0;
+          const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clock(it.doneAt) : "") : it.kind === "event" ? clock(it.start)
+            : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
+          rows.push({ item: it, inMain: true, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
+            time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "" });
         }
-        const q = it.kind === "task" && it.state === "open" ? it : null, live = q && it.doing && dayRel === 0;
-        const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clock(it.doneAt) : "") : it.kind === "event" ? clock(it.start)
-          : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
-        rows.push({ item: it, inMain: true, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
-          time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "" });
+        section(T(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, `🎯 Mainline ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`), rows);
       }
-      section(T(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, `🎯 Mainline ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`), rows);
-    }
-    const events = items.filter((i) => i.kind === "event").sort((a, b) => a.start - b.start);
-    section(T("固定事件", "Fixed events"), events.map((e) => ({ item: e, cls: e.state === "done" ? "is-done" : "is-event", time: `${clock(e.start)}–${clock(e.end)}`, dur: dur(e.end - e.start) })));
-    // 按排到的时间先后列（小任务补位到前面的空档，会排在列表里靠后的大任务前面）
-    const placed = plan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]);
-    const upNextRows = placed.map((t) => ({
-      item: t, cls: (t.mainA ? "is-main" : t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
-      time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clock(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
-      dur: durText(t), tip: tipOf(t), upNext: !playing,
-    }));
-    // 刚在「接下来」里点成 DONE / SUSPENDED 的项暂时留在原地，方便再点一下继续循环回原状态
-    const hold = this._upNextHold?.get(dayKey);
-    if (hold && hold.size && !playing) {
-      const seen = new Set();
-      for (const t of placed) { seen.add(t.line); if (t.inheritedFrom != null) seen.add(t.inheritedFrom); }
-      const extras = [];
-      for (const [ln, rec] of [...hold.entries()]) {
-        if (seen.has(ln)) { hold.delete(ln); continue; }
-        const it = items.find((i) => i.line === ln && i.kind === "task");
-        const curKw = canonKw(it?.kw);
-        if (!it || (rec.key && workKey(it.label) !== rec.key) || (curKw !== "DONE" && curKw !== "SUSPENDED")) { hold.delete(ln); continue; }
-        extras.push({
-          idx: rec.idx ?? upNextRows.length,
-          row: {
-            item: it,
-            cls: curKw === "DONE" ? "is-done" : "is-susp",
-            time: curKw === "DONE" ? (it.doneAt != null ? `✓ ${clock(it.doneAt)}` : "✓") : "💤",
-            dur: dur(it.dur),
-            upNext: true,
-          },
-        });
+      const events = items.filter((i) => i.kind === "event").sort((a, b) => a.start - b.start);
+      section(T("固定事件", "Fixed events"), events.map((e) => ({ item: e, cls: e.state === "done" ? "is-done" : "is-event", time: `${clock(e.start)}–${clock(e.end)}`, dur: dur(e.end - e.start) })));
+      // 按排到的时间先后列（小任务补位到前面的空档，会排在列表里靠后的大任务前面）
+      const placed = curPlan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]);
+      const upNextRows = placed.map((t) => ({
+        item: t, cls: (t.mainA ? "is-main" : t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
+        time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clock(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
+        dur: durText(t), tip: tipOf(t), upNext: !playing,
+      }));
+      // 刚在「接下来」里点成 DONE / SUSPENDED 的项暂时留在原地，方便再点一下继续循环回原状态
+      const hold = this._upNextHold?.get(dayKey);
+      if (hold && hold.size && !playing) {
+        const seen = new Set();
+        for (const t of placed) { seen.add(t.line); if (t.inheritedFrom != null) seen.add(t.inheritedFrom); }
+        const extras = [];
+        for (const [ln, rec] of [...hold.entries()]) {
+          if (seen.has(ln)) { hold.delete(ln); continue; }
+          const it = items.find((i) => i.line === ln && i.kind === "task");
+          const curKw = canonKw(it?.kw);
+          if (!it || (rec.key && workKey(it.label) !== rec.key) || (curKw !== "DONE" && curKw !== "SUSPENDED")) { hold.delete(ln); continue; }
+          extras.push({
+            idx: rec.idx ?? upNextRows.length,
+            row: {
+              item: it,
+              cls: curKw === "DONE" ? "is-done" : "is-susp",
+              time: curKw === "DONE" ? (it.doneAt != null ? `✓ ${clock(it.doneAt)}` : "✓") : "💤",
+              dur: dur(it.dur),
+              upNext: true,
+            },
+          });
+        }
+        extras.sort((a, b) => a.idx - b.idx);
+        for (const ex of extras) upNextRows.splice(Math.min(ex.idx, upNextRows.length), 0, ex.row);
       }
-      extras.sort((a, b) => a.idx - b.idx);
-      for (const ex of extras) upNextRows.splice(Math.min(ex.idx, upNextRows.length), 0, ex.row);
-    }
-    upNextRows.forEach((r, idx) => { r.upNextIdx = idx; });
-    section(T("接下来", "Up next"), upNextRows);
-    const over = plan.queue.filter((t) => t.overflow);
-    section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
-    section(T("💤 搁置", "💤 Parked"), plan.suspended.map((t) => ({ item: t, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
-    section(T("做过 · 已挪走", "Worked on · moved away"), orphans.map((o) => ({ item: o, cls: "is-done", time: `${clock(o.segs[0][0])}–${clock(o.segs.at(-1)[1])}`, dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
-    const doneTasks = items.filter((i) => i.kind === "task" && i.state === "done").sort((a, b) => (a.doneAt ?? 1e9) - (b.doneAt ?? 1e9));
-    section(T(`已完成 ${doneTasks.length}`, `Done ${doneTasks.length}`), doneTasks.map((t) => ({
-      item: t, cls: isReview(t) ? "is-done is-review" : "is-done",
-      time: t.actual ? `${clock(t.actual[0])}–${clock(t.actual[1])}` : t.doneAt != null ? clock(t.doneAt) : "—",
-      dur: dur(t.dur),
-    })));
+      upNextRows.forEach((r, idx) => { r.upNextIdx = idx; });
+      section(T("接下来", "Up next"), upNextRows);
+      const over = curPlan.queue.filter((t) => t.overflow);
+      section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: !isAutoTask(t, autoKeys) && t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
+      section(T("💤 搁置", "💤 Parked"), curPlan.suspended.map((t) => ({ item: t, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
+      section(T("做过 · 已挪走", "Worked on · moved away"), orphans.filter((o) => o.segs.length).map((o) => ({ item: o, cls: "is-done", time: `${clock(o.segs[0][0])}–${clock(o.segs.at(-1)[1])}`, dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
+      const doneTasks = items.filter((i) => i.kind === "task" && i.state === "done").sort((a, b) => (a.doneAt ?? 1e9) - (b.doneAt ?? 1e9));
+      section(T(`已完成 ${doneTasks.length}`, `Done ${doneTasks.length}`), doneTasks.map((t) => ({
+        item: t, cls: isReview(t) ? "is-done is-review" : "is-done",
+        time: t.actual ? `${clock(t.actual[0])}–${clock(t.actual[1])}` : t.doneAt != null ? clock(t.doneAt) : "—",
+        dur: dur(t.dur),
+      })));
+    };
+    paintTaskSections(plan);
+    const tailAnchor = document.createComment("naut-tail");
+    list.appendChild(tailAnchor);
 
     if (ai || aiStore && realRel === 0) this.renderAi(list, aiStore, date, ai);
     if (cfg.showDayReview !== false && realRel <= 0 && !playing) this.renderDayReview(list, items, file, dayKey, realRel === 0);
     if (cfg.showReview !== false && realRel === 0) this.renderReview(list);
+
+    if (playing) {
+      let lastMin = Math.floor(now), lastListBucket = Math.floor(now / 10);
+      this._playStep = (simNow) => {
+        for (const t of items) if (t._fullWorked) {
+          t.worked = t._fullWorked.map(([a, b]) => [a, Math.min(b, simNow)]).filter(([a, b]) => b > a);
+          t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0);
+        }
+        for (const o of orphans) if (o._fullSegs) {
+          o.segs = o._fullSegs.map(([a, b]) => [a, Math.min(b, simNow)]).filter(([a, b]) => b > a);
+        }
+        const curPlan = schedule(items, cfg, simNow, dayRel, bounds);
+        const tot = Math.max(curPlan.available, curPlan.demand) || 1;
+        const f = Math.min(curPlan.demand, curPlan.available);
+        barTask.style.width = `${(f / tot) * 100}%`;
+        barFree.style.width = `${((curPlan.available - f) / tot) * 100}%`;
+        barOver.style.width = curPlan.overflow ? `${(curPlan.overflow / tot) * 100}%` : "0%";
+        const curMin = Math.floor(simNow);
+        if (curMin !== lastMin) {
+          lastMin = curMin;
+          const curC = capacity(items, curPlan, cfg, simNow, dayRel, bounds);
+          planDemandEl.textContent = T(`已计划 ${dur(curC.demand)} · `, `Planned ${dur(curC.demand)} · `);
+          planStatusEl.className = curC.status.key === "remaining" ? "naut-cap-ok" : "naut-over-text";
+          planStatusEl.textContent = `${curC.status.label} ${dur(curC.status.value)}`;
+          planLeftEl.className = `naut-left is-${curC.tone}`;
+          planLeftEl.textContent = T(` · 剩余 ${curC.left}%`, ` · ${curC.left}% free`);
+          center.textContent = clock(curMin);
+        }
+        paintGapsAndSlots(curPlan, simNow);
+        paintSegs(curPlan, simNow);
+        paintTimed(simNow);
+        paintNow(simNow);
+        const bucket = Math.floor(simNow / 10);
+        if (bucket !== lastListBucket) {
+          lastListBucket = bucket;
+          while (list.firstChild && list.firstChild !== tailAnchor) list.firstChild.remove();
+          insertBeforeNode = tailAnchor;
+          paintTaskSections(curPlan);
+          insertBeforeNode = null;
+        }
+      };
+    } else {
+      this._playStep = null;
+    }
 
     // 入场时列表一行行浮上来（--naut-i = 第几行，最多错开到第 18 行）
     const stagger = () => { if (enter) Array.from(list.children).forEach((el, i) => { if (!el.style.getPropertyValue("--naut-i")) el.style.setProperty("--naut-i", String(Math.min(i, 18))); }); };
@@ -4002,8 +4141,11 @@ module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULTS, loaded);
-    // 老配置里没有 journalAuto：没动过目录/格式（还是「日记」+ YYYY_MM_DD）的当成没设过，交给自动检测；自己改过的保持手动
-    if (!loaded || !("journalAuto" in loaded)) this.settings.journalAuto = trimSlash(this.settings.folder) === "日记" && this.settings.format === "YYYY_MM_DD";
+    // 老配置里没有 journalAuto：没动过目录/格式（还是「日记」/ Journal + YYYY_MM_DD）的当成没设过，交给自动检测；自己改过的保持手动
+    if (loaded && !("journalAuto" in loaded)) {
+      const f = trimSlash(this.settings.folder);
+      this.settings.journalAuto = (f === "日记" || f === "Journal") && this.settings.format === "YYYY_MM_DD";
+    }
     const removedSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert", "focus", "focusMinutes", "focusCategories", "focusMode", "focusAutoComplete", "focusAsk", "focusSession"].filter(key => key in this.settings);
     for (const key of removedSettings) delete this.settings[key];
     if (removedSettings.length) await this.saveData(this.settings);
@@ -6826,4 +6968,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft };

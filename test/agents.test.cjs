@@ -6,7 +6,7 @@ const source = process.argv[2] || path.join(__dirname, '..', 'main.js');
 const OB = {Plugin:class{},ItemView:class{},PluginSettingTab:class{},Modal:class{},FuzzySuggestModal:class{},getLanguage:()=> 'zh'};
 const ctx = {require:(id)=>id==='obsidian'?OB:require(id),module:{exports:{}},console,process,Buffer,setTimeout,clearTimeout};
 vm.runInNewContext(fs.readFileSync(source,'utf8'), ctx, {filename:source});
-const {AiUsage,parseLink,DEFAULTS,parseJournal,applyWork,detectJournal,formatRegex} = ctx.module.exports.core;
+const {AiUsage,parseLink,DEFAULTS,parseJournal,applyWork,schedule,isAutoTask,formatTaskDur,formatTaskTip,detectJournal,formatRegex} = ctx.module.exports.core;
 const ai = new AiUsage(DEFAULTS);
 const tool = (name,input) => ({type:'assistant',message:{content:[{type:'tool_use',name,input}]}});
 ai.liveClaude({type:'user',message:{content:'实现设置'}},'claude-test',1);
@@ -125,6 +125,26 @@ applyWork(spanItems2, spanCfg, '2026_11_20', 23 * 60 + 20, 0, {});
 assert.equal(JSON.stringify(spanItems2[0].worked), JSON.stringify([[1319, 1446]]), 'worked 是整段');
 assert.equal(spanItems2[0].spentToday, 127);
 console.log('PASS 自动记的 🤖 区间按整段算时长与块（含跨分界）');
+
+// 自动记的 🤖 未完成任务在「没做完 / 接下来」列表的时长文案：不套默认 15m 预估，也不显示假的「99% · 剩 5m」
+const autoDurItems = parseJournal([
+  '- TOREVIEW 🤖 21:59-00:06 排查箭头',
+  '- TOREVIEW 🤖 确认步骤尺方案',
+  '\t- ⏱ 14:00–14:07 · 共 7m',
+  '- PAUSED 🤖 确认spec第一原则后再落地实现',
+  '- DOING 🤖 20:37-20:47 运行测试 30m',
+  '- TODO 普通手写任务 20m',
+].join('\n'), spanCfg);
+applyWork(autoDurItems, spanCfg, '2026_11_20', 23 * 60 + 20, -1, {});
+schedule(autoDurItems, spanCfg, 23 * 60 + 20, -1, {});
+assert.equal(isAutoTask(autoDurItems[0]), true);
+assert.equal(formatTaskDur(autoDurItems[0]), '已做 2h7m', '带 aiSpan 的历史 🤖 行应显示已做时长而非 96% · 剩 5m');
+assert.equal(formatTaskTip(autoDurItems[0]), '', '无手写预估的 🤖 行不提示假预估');
+assert.equal(formatTaskDur(autoDurItems[1]), '已做 7m', '只记了 ⏱ 的 🤖 行应显示已做 7m 而非 47% · 剩 8m');
+assert.equal(formatTaskDur(autoDurItems[2]), '15m', '无用时的任务保留默认时长显示');
+assert.equal(formatTaskDur(autoDurItems[3]), '33% · 剩 20m', '手写了 30m 预估的 🤖 行仍按预估展示进度');
+assert.equal(formatTaskDur(autoDurItems[4]), '20m', '普通手写未开始任务照常显示预估时长');
+console.log('PASS 自动记的 🤖 未完成任务时长展示（不弹假 99% · 剩 5m）');
 
 // 日记在哪：没手填就自动认出格式和目录（核心「日记」插件 → Periodic Notes → 翻库猜）
 assert.ok(formatRegex('YYYY-MM-DD').test('2026-11-20'), 'YYYY-MM-DD 认得出');
