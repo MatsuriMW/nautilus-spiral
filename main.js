@@ -2850,22 +2850,50 @@ class GoalModal extends OB.Modal {
 }
 
 class PomodoroDoneModal extends OB.Modal {
-  constructor(app, plugin, rec) { super(app); this.plugin = plugin; this.rec = rec; }
+  constructor(app, plugin, rec, opts = {}) { super(app); this.plugin = plugin; this.rec = rec; this.opts = opts || {}; }
   onOpen() {
     const { contentEl } = this;
     const rec = this.rec;
+    const early = !!this.opts.early;
+    const elapsedMin = Math.max(0, Math.floor(Number(this.opts.elapsedMin) || 0));
+    const logged = early ? (this.opts.logged !== false && elapsedMin >= 1) : (this.opts.logged !== false);
     this.modalEl.addClass("naut-pomo-modal");
-    contentEl.createDiv({ cls: "naut-fm-title", text: T(`🍅 番茄钟完成（${dur(rec.minutes)}）`, `🍅 Pomodoro done (${dur(rec.minutes)})`) });
-    const sub = rec.task
-      ? T(`刚才预订给「${rec.task.label}」的 ${dur(rec.minutes)} 已经走完，要标记为 DONE 还是再来一轮？`, `Your ${dur(rec.minutes)} block for "${rec.task.label}" is complete. Mark it DONE or start another round?`)
-      : T(`预订的 ${dur(rec.minutes)} 已经兑现，已记入今天的番茄轨迹。`, `Your ${dur(rec.minutes)} block is complete and recorded on today's spiral.`);
+    const title = early
+      ? (logged
+        ? T(`🍅 番茄钟已结束（已做 ${dur(elapsedMin)}）`, `🍅 Pomodoro stopped (${dur(elapsedMin)})`)
+        : T("🍅 番茄钟已结束", "🍅 Pomodoro stopped"))
+      : T(`🍅 番茄钟完成（${dur(rec.minutes)}）`, `🍅 Pomodoro done (${dur(rec.minutes)})`);
+    contentEl.createDiv({ cls: "naut-fm-title", text: title });
+    const sub = early && rec.task
+      ? (logged
+        ? T(`刚才在「${rec.task.label}」上做了 ${dur(elapsedMin)}，已写入实际用时。要标为 DONE、先停下还是保持进行中？`, `Logged ${dur(elapsedMin)} for "${rec.task.label}" to the note. Mark DONE, pause, or keep DOING?`)
+        : T(`刚才「${rec.task.label}」未满 1 分钟，未记入用时。要标为 DONE、先停下还是保持进行中？`, `Under 1 minute for "${rec.task.label}", not logged. Mark DONE, pause, or keep DOING?`))
+      : rec.task
+        ? (logged
+          ? T(`刚才预订给「${rec.task.label}」的 ${dur(rec.minutes)} 已经走完，已写入实际用时。要标为 DONE、先停下还是再来一轮？`, `Your ${dur(rec.minutes)} block for "${rec.task.label}" is complete and logged to the note. Mark DONE, pause, or start another round?`)
+          : T(`刚才预订给「${rec.task.label}」的 ${dur(rec.minutes)} 已经走完。要标为 DONE、先停下还是再来一轮？`, `Your ${dur(rec.minutes)} block for "${rec.task.label}" is complete. Mark DONE, pause, or start another round?`))
+        : T(`预订的 ${dur(rec.minutes)} 已经兑现，已记入今天的番茄轨迹。`, `Your ${dur(rec.minutes)} block is complete and recorded on today's spiral.`);
     contentEl.createDiv({ cls: "naut-fm-sub", text: sub });
     const bar = contentEl.createDiv({ cls: "naut-goal-btns" });
-    bar.createEl("button", { text: T("收工", "Close") }).onclick = () => this.close();
-    bar.createEl("button", { text: T("再来一轮", "Another round") }).onclick = async () => {
-      this.close();
-      await this.plugin.startPomodoro(rec.minutes, rec.task ? { ref: rec.task } : null);
-    };
+    if (rec.task) {
+      bar.createEl("button", { text: T("先停下", "Pause") }).onclick = async () => {
+        this.close();
+        await this.plugin.pausePomodoroTask(rec.task);
+      };
+    } else {
+      bar.createEl("button", { text: T("收工", "Close") }).onclick = () => this.close();
+    }
+    if (early) {
+      bar.createEl("button", { text: T("保持进行中", "Keep DOING") }).onclick = async () => {
+        this.close();
+        if (rec.task) await this.plugin.resumePomodoroDoing(rec.task, rec.dayKey);
+      };
+    } else {
+      bar.createEl("button", { text: T("再来一轮", "Another round") }).onclick = async () => {
+        this.close();
+        await this.plugin.startPomodoro(rec.minutes, rec.task ? { ref: rec.task } : null);
+      };
+    }
     if (rec.task) {
       bar.createEl("button", { cls: "mod-cta", text: T("标为 DONE", "Mark DONE") }).onclick = async () => {
         this.close();
@@ -2873,7 +2901,10 @@ class PomodoroDoneModal extends OB.Modal {
       };
     }
   }
-  onClose() { this.contentEl.empty(); }
+  onClose() {
+    if (this.plugin?._pomoModalTask?.key === this.rec?.task?.key) this.plugin._pomoModalTask = null;
+    this.contentEl.empty();
+  }
 }
 
 class QuickPanel extends OB.FuzzySuggestModal {
@@ -3222,8 +3253,8 @@ class SpiralView extends ItemView {
           const lbl = top.createSpan({ cls: "naut-pomo-task", text: a.task.label, attr: { title: a.task.label } });
           lbl.onclick = () => this.plugin.openPomodoroTask(a.task);
         }
-        const stopBtn = top.createEl("button", { cls: "naut-pomo-btn", text: T("结束", "Stop"), attr: { title: T("取消本次预订（不计入已完成）", "Cancel this reservation (won't be logged as completed)") } });
-        stopBtn.onclick = () => this.plugin.stopPomodoro(false);
+        const stopBtn = top.createEl("button", { cls: "naut-pomo-btn", text: T("结束", "Stop"), attr: { title: a.task ? T("结束本次番茄钟（满 1 分钟会写入实际用时）", "Stop Pomodoro (logs actual time if >= 1m)") : T("取消本次预订（不计入已完成）", "Cancel this reservation (won't be logged as completed)") } });
+        stopBtn.onclick = () => this.plugin.stopPomodoro(false, { ask: true });
         const prog = barEl.createDiv({ cls: "naut-pomo-prog" });
         const fillEl = prog.createDiv({ cls: "naut-pomo-fill" });
         const paint = () => {
@@ -4493,7 +4524,7 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "day-bounds", name: T("设置今天的起床 / 收工时间", "Set today's start / end of day"), run: () => new BoundsModal(this.app, this, this.today()).open() },
       { id: "open-today", name: T("打开今天的日记（凌晨按日界算前一天）", "Open today's daily note (before the day cutoff it's still yesterday)"), run: () => this.openToday() },
       { id: "pomodoro-start", name: T("开始番茄钟（预订接下来一段专注时间）", "Start Pomodoro (reserve an upcoming focus block)"), when: () => !this.settings.pomodoro?.active, run: () => this.startPomodoro() },
-      { id: "pomodoro-stop", name: T("结束当前番茄钟", "Stop current Pomodoro"), when: () => !!this.settings.pomodoro?.active, run: () => this.stopPomodoro(false) },
+      { id: "pomodoro-stop", name: T("结束当前番茄钟", "Stop current Pomodoro"), when: () => !!this.settings.pomodoro?.active, run: () => this.stopPomodoro(false, { ask: true }) },
       { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.pastDayCache?.clear(); this.gcal.cals = null; this.views().forEach((v) => v.render({ force: true })); } },
     ];
   }
@@ -5572,9 +5603,16 @@ module.exports = class NautilusSpiral extends Plugin {
   // 这一天由自动记日记管着的那些行：用时按会话在动的时段另记，不走「改成 DOING 就开始计时」那一套，也不受 DOING 上限和超时暂停管。
   // 写日记的是 Agent Deck，它的记录在自己的 settings.autoLogState 里，格式和螺旋原来的一样：{ 日记日: { 会话号: { key, label, status, … } } }
   autoKeys(dayKey) {
-    return new Set(Object.values(this.deckState(dayKey)).filter((r) => r.key && !r.skip && !r.gone).map((r) => r.key));
+    const out = new Set();
+    for (const r of Object.values(this.deckState(dayKey))) {
+      if (!r?.key || r.skip || r.gone) continue;
+      out.add(r.key);
+      const cleaned = workKey(cleanLabel(r.key));
+      if (cleaned) out.add(cleaned);
+    }
+    return out;
   }
-  agentDeck() { return this.app.plugins?.plugins?.["agent-deck"] || null; }
+  agentDeck() { return this.app?.plugins?.plugins?.["agent-deck"] || null; }
 
   deckState(dayKey) {
     const states = this.agentDeck()?.settings?.autoLogState;
@@ -5630,14 +5668,15 @@ module.exports = class NautilusSpiral extends Plugin {
   // 实际做的时段写在那一行下面的第一个子项里（⏱ 开头，解析日记时跳过这种行）：⏱ 00:45–00:58、04:02–05:10 · 共 1h21m
   // 隔了不到 10 分钟的两段并成一段写，免得太碎；太多段只写最后 8 段
   autoClock(text, key, segs) {
+    const merged = unionSegs(segs || []);
     const hits = parseJournal(text, this.settings).filter((i) => i.kind === "task" && workKey(i.label) === key);
     const it = hits.find((i) => i.state === "open") || hits[0];
-    if (!it || !segs.length) return text;
+    if (!it || !merged.length) return text;
     const lines = text.split("\n");
     const at = it.line;
     const shown = [];
-    for (const [a, b] of segs) { const last = shown[shown.length - 1]; if (last && a - last[1] <= 10) last[1] = Math.max(last[1], b); else shown.push([a, b]); }
-    const total = Math.round(segs.reduce((n, [a, b]) => n + b - a, 0));
+    for (const [a, b] of merged) { const last = shown[shown.length - 1]; if (last && a - last[1] <= 10) last[1] = Math.max(last[1], b); else shown.push([a, b]); }
+    const total = Math.round(merged.reduce((n, [a, b]) => n + b - a, 0));
     const indent = /^\s*/.exec(lines[at])[0] + "\t";
     const line = T(`${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join("、")} · 共 ${durTag(total)}`, `${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join(", ")} · total ${durTag(total)}`);
     const base = /^\s*/.exec(lines[at])[0].replace(/\t/g, "    ").length;
@@ -5794,7 +5833,11 @@ module.exports = class NautilusSpiral extends Plugin {
         const doingKeys = new Set([...cur].filter(([, c]) => c.doing).map(([l]) => workKey(l)));
         for (const k of Object.keys(work)) if (openSeg(k) && !doingKeys.has(k)) stop(k, Math.min(now, openSeg(k)[0] + 30));
         // 正在做、但没有开着的时段（Obsidian 关着的时候改成 DOING 的）：写了开始时间按写的，没写从现在算
-        for (const [label, c] of cur) if (c.doing && !openSeg(workKey(label)) && !auto.has(workKey(label))) { (work[workKey(label)] ||= []).push([c.startedAt ?? now, null]); changed = true; }
+        for (const [label, c] of cur) {
+          const k = workKey(label);
+          const modalHold = this._pomoModalTask && this._pomoModalTask.dayKey === dayKey && this._pomoModalTask.key === k;
+          if (c.doing && !modalHold && !openSeg(k) && !auto.has(k)) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; }
+        }
       } else {
         // 进行中的任务改了字：把记下的时段跟着挪到新名字下面，算同一件事
         const gone = [...prev].filter(([l, p]) => p.doing && !cur.has(l)).map(([l]) => l);
@@ -5807,7 +5850,8 @@ module.exports = class NautilusSpiral extends Plugin {
         }
         for (const [label, c] of cur) {
           const k = workKey(label), p = prev.get(label);
-          if (c.doing && !openSeg(k) && !auto.has(k) && !(renamed && renamed[1] === k && work[k])) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; }
+          const modalHold = this._pomoModalTask && this._pomoModalTask.dayKey === dayKey && this._pomoModalTask.key === k;
+          if (c.doing && !modalHold && !openSeg(k) && !auto.has(k) && !(renamed && renamed[1] === k && work[k])) { (work[k] ||= []).push([c.startedAt ?? now, null]); changed = true; }
           if (c.doing && c.startedAt != null && openSeg(k) && openSeg(k)[0] !== c.startedAt && (!p || p.startedAt !== c.startedAt)) { openSeg(k)[0] = c.startedAt; changed = true; }
           if (!c.doing && p && p.doing) stop(k, c.state === "done" && c.doneAt != null ? c.doneAt : now);
         }
@@ -5999,9 +6043,65 @@ module.exports = class NautilusSpiral extends Plugin {
     await this.saveData(this.settings);
   }
 
+  async activeDoingTaskRef(dayKey) {
+    if (!this.app?.vault || typeof this.journalPath !== "function") return null;
+    const file = this.app.vault.getAbstractFileByPath(this.journalPath(this.today()));
+    if (!(file instanceof TFile)) return null;
+    const content = await this.readLiveContent(file);
+    const auto = this.autoKeys(dayKey);
+    const work = (this.settings.workLog || {})[dayKey] || {};
+    const seen = new Set();
+    const candidates = [];
+    for (const item of parseJournal(content, this.settings)) {
+      if (item.kind !== "task" || item.state !== "open" || !item.doing || isAutoTask(item, auto)) continue;
+      const label = item.inheritedFrom != null ? (item.inheritedLabel || workKey(item.label)) : workKey(item.label);
+      const key = workKey(label);
+      if (!key || seen.has(key) || auto.has(key)) continue;
+      seen.add(key);
+      const openStart = ((work[key] || []).find((s) => s[1] == null) || [])[0];
+      candidates.push({ path: file.path, key, label, openStart: openStart ?? -1 });
+    }
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => b.openStart - a.openStart);
+    const { path, key, label } = candidates[0];
+    return { path, key, label };
+  }
+
+  async recordPomodoroWork(active, endMs) {
+    if (!active?.task?.key || !Number.isFinite(active.start) || !Number.isFinite(endMs)) return false;
+    if (endMs - active.start < 60e3) return false;
+    if (String(active.task.key).startsWith(AUTO_MARK.trim()) || this.autoKeys(active.dayKey).has(active.task.key)) return false;
+    const r = pomoTimeRange({ start: active.start, end: endMs }, this.settings);
+    if (!r) return false;
+    const segStart = Math.round(r[0]);
+    const segEnd = Math.max(segStart + 1, Math.round(r[1]));
+    const log = (this.settings.workLog ||= {});
+    const work = (log[active.dayKey] ||= {});
+    const segs = (work[active.task.key] ||= []);
+    const open = segs.find((s) => s[1] == null);
+    if (open) open[1] = Math.max(open[0] + 1, segEnd);
+    else segs.push([segStart, segEnd]);
+    const closed = unionSegs(segs.filter((s) => s[1] != null));
+    work[active.task.key] = closed;
+    if (closed.length && active.task.path && this.app?.vault) {
+      const file = this.app.vault.getAbstractFileByPath(active.task.path);
+      if (file instanceof TFile) {
+        await this.editFile(file, (lines) => {
+          const base = lines.join("\n");
+          const next = this.autoClock(base, active.task.key, closed);
+          if (next === base) return 0;
+          lines.splice(0, lines.length, ...next.split("\n"));
+          return 1;
+        });
+      }
+    }
+    return true;
+  }
+
   async startPomodoro(minutes = null, taskSpec = null) {
     const p = this.ensurePomodoro();
     const mins = minutes != null ? Math.min(240, Math.max(1, Math.round(Number(minutes) || 25))) : pomoMinutes(p);
+    const dayKey = this.today().format(this.settings.format);
     let taskRef = null;
     let switchedDoing = false;
     if (taskSpec?.ref) {
@@ -6028,9 +6128,10 @@ module.exports = class NautilusSpiral extends Plugin {
           if (hit && this.kwFresh(file.path, [hit]).length) this.kwSound("DOING");
         }
       }
+    } else if (taskSpec == null) {
+      taskRef = await this.activeDoingTaskRef(dayKey);
     }
     const nowMs = Date.now();
-    const dayKey = this.today().format(this.settings.format);
     p.active = { id: nowMs, dayKey, start: nowMs, end: nowMs + mins * 60e3, minutes: mins, task: taskRef };
     await this.saveData(this.settings);
     if (!switchedDoing) this.sound("play");
@@ -6038,18 +6139,40 @@ module.exports = class NautilusSpiral extends Plugin {
     return p.active;
   }
 
-  async stopPomodoro(completed = false) {
+  async resumePomodoroDoing(taskRef, dayKey = this.today().format(this.settings.format)) {
+    if (!taskRef?.key || String(taskRef.key).startsWith(AUTO_MARK.trim()) || this.autoKeys(dayKey).has(taskRef.key)) return false;
+    const work = ((this.settings.workLog ||= {})[dayKey] ||= {});
+    const segs = (work[taskRef.key] ||= []);
+    if (segs.some((s) => s[1] == null)) return false;
+    const d = new Date();
+    const nowMin = normalize(d.getHours() * 60 + d.getMinutes(), this.settings);
+    segs.push([nowMin, null]);
+    await this.saveData(this.settings);
+    this.refresh();
+    return true;
+  }
+
+  async stopPomodoro(completed = false, { ask = false } = {}) {
     const p = this.ensurePomodoro();
     const a = p.active;
     if (!a) return null;
     p.active = null;
+    const endMs = completed ? a.end : Math.min(Date.now(), a.end);
+    const elapsedMin = Math.max(0, Math.floor((endMs - a.start) / 60e3));
     if (completed) {
       const list = (this.settings.pomodoroHistory[a.dayKey] ||= []);
       list.push({ start: a.start, end: a.end, minutes: a.minutes, label: a.task?.label || "" });
     }
+    const willAsk = (completed || ask) && Boolean(a.task) && Boolean(this.app);
+    if (willAsk) this._pomoModalTask = { dayKey: a.dayKey, key: a.task.key };
+    const logged = a.task ? await this.recordPomodoroWork(a, endMs) : false;
+    a._logged = logged;
     await this.saveData(this.settings);
     this.sound(completed ? "DONE" : "stop");
     this.refresh();
+    if (!completed && ask && a.task && this.app) {
+      new PomodoroDoneModal(this.app, this, a, { early: true, elapsedMin, logged }).open();
+    }
     return a;
   }
 
@@ -6066,13 +6189,14 @@ module.exports = class NautilusSpiral extends Plugin {
   async completePomodoro(active) {
     const done = await this.stopPomodoro(true);
     if (!done) return;
+    if (!done.task) this._pomoModalTask = null;
     new OB.Notice(T(`🍅 番茄钟完成（${dur(done.minutes)}）${done.task ? ` · ${done.task.label}` : ""}`, `🍅 Pomodoro done (${dur(done.minutes)})${done.task ? ` · ${done.task.label}` : ""}`), 8000);
-    new PomodoroDoneModal(this.app, this, done).open();
+    new PomodoroDoneModal(this.app, this, done, { logged: done._logged }).open();
   }
 
-  async completePomodoroTask(taskRef) {
+  async setPomodoroTaskKeyword(taskRef, kw) {
     if (!taskRef?.path || !taskRef?.key) return false;
-    const file = this.app.vault.getAbstractFileByPath(taskRef.path);
+    const file = this.app?.vault?.getAbstractFileByPath(taskRef.path);
     if (!(file instanceof TFile)) return false;
     const content = await this.readLiveContent(file);
     const hit = parseJournal(content, this.settings).find((t) => t.kind === "task" && t.state !== "done" && workKey(t.label) === taskRef.key);
@@ -6082,20 +6206,23 @@ module.exports = class NautilusSpiral extends Plugin {
     const n = await this.editFile(file, (lines) => {
       const cur = lines[targetLine];
       if (cur == null) return 0;
-      const next = toKeyword(cur, "DONE");
+      const next = toKeyword(cur, kw);
       if (next === cur) return 0;
       lines[targetLine] = next;
       nextRaw = next;
       return 1;
     });
     if (n && nextRaw != null) {
-      const kw = kwLine(nextRaw);
-      if (kw && this.kwFresh(file.path, [kw]).length) this.kwSound("DONE");
+      const parsed = kwLine(nextRaw);
+      if (parsed && this.kwFresh(file.path, [parsed]).length) this.kwSound(kw);
       this.refresh();
       return true;
     }
     return false;
   }
+
+  async completePomodoroTask(taskRef) { return this.setPomodoroTaskKeyword(taskRef, "DONE"); }
+  async pausePomodoroTask(taskRef) { return this.setPomodoroTaskKeyword(taskRef, "PAUSED"); }
 
   async openPomodoroTask(taskRef) {
     if (!taskRef?.path) return;
