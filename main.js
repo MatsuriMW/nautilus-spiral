@@ -502,7 +502,13 @@ function parseJournal(content, cfg) {
     if (s.startsWith("⏱")) {
       // 任务下面的「⏱ 实际时段」是记录，不是事件也不是任务。读出来挂到它上面那件任务上（往上找缩进更浅的第一行）
       const c = parseClock(s, cfg), ind = lm[1].replace(/\t/g, "    ").length;
-      if (c) for (let j = items.length - 1; j >= 0; j--) if (items[j].indent < ind) { if (items[j].kind === "task" && !items[j].clock) items[j].clock = c; break; }
+      if (c) for (let j = items.length - 1; j >= 0; j--) if (items[j].indent < ind) {
+        if (items[j].kind === "task" && !items[j].clock) {
+          items[j].clock = c;
+          if (items[j].state === "done" && items[j].est == null && items[j].explicitDur && !items[j].actual) items[j].est = items[j].dur;
+        }
+        break;
+      }
       return;
     }
     const indent = lm[1].replace(/\t/g, "    ").length;
@@ -1130,6 +1136,7 @@ function formatTaskTip(t, autoKeys = null) {
 //   未预估 no-estimate = 这一行从来没进过计划（自动记的 🤖 行，或者「DONE 18:02 写稿 2h」这种直接记做了多久的），只列实际，不拿默认时长去比
 // 汇总只算「已对比」的那几件，两边是同一批任务；在做的、停着的不影响偏差。预计 = 行上写的时长，没写按默认任务时长（排程也是按它排的）
 // 固定事件不算（时间段是约定，不是预估）；带子任务的大项、复习卡片不算。live = 这一天是不是今天
+const useClockTotal = (t) => !t.aiSpan && t.clock && t.clock.total != null && !(t.doing && t.state === "open") && !(t.clock.partial && (t.worked || []).length) && !/←\s*\S+\s*$/.test(t.label);
 function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
   const rows = [];
   for (const t of items) {
@@ -1139,7 +1146,7 @@ function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
     const noPlan = auto.has(workKey(t.label)) || t.label.startsWith(AUTO_MARK.trim()) || (done && !(t.est > 0) && t.explicitDur === true && !t.actual);
     const planned = noPlan ? null : done ? (t.est > 0 ? t.est : cfg.defaultDur) : t.dur;
     // 实际：记下来的那几段和 DONE 后面写的时段合起来（重叠只算一次）；直接写了做多久的按写的
-    let actual = Math.floor(unionMin([...worked, ...(done && t.actual ? [t.actual] : [])]));
+    let actual = useClockTotal(t) ? Math.floor(t.clock.total) : Math.floor(unionMin([...worked, ...(done && t.actual ? [t.actual] : [])]));
     if (!actual && noPlan && done && t.explicitDur === true && !t.actual && !auto.has(workKey(t.label))) actual = Math.round(t.dur);
     const state = done ? (actual > 0 ? (planned == null ? "no-estimate" : "compared") : "not-tracked")
       : live && t.doing && actual > 0 ? "live" : actual > 0 ? "paused" : "not-started";
@@ -1254,7 +1261,7 @@ function toKeyword(raw, kw, nowStr = moment().format("HH:mm")) {
   const target = String(kw || "TODO").toUpperCase();
   if (p.kw && canonKw(p.kw) === canonKw(target)) return raw;
   if (target === "DOING") return `${p.prefix}DOING ${nowStr} ${p.rest}`;
-  if (target === "DONE") return `${p.prefix}DONE ${p.since ? `${p.since}-${nowStr}` : nowStr} ${p.rest}`;
+  if (target === "DONE") return `${p.prefix}DONE ${p.since && p.since !== nowStr ? `${p.since}-${nowStr}` : nowStr} ${p.rest}`;
   return `${p.prefix}${target} ${p.rest}`;
 }
 // 「接下来」面板点击循环：原状态 → DONE → SUSPENDED → 原状态
@@ -3753,7 +3760,7 @@ class SpiralView extends ItemView {
         }
         row.createSpan({ cls: "naut-dur", text: r.dur, attr: r.tip ? { title: r.tip } : {} });
         row.onclick = () => this.plugin.openItem(file, r.item);
-        if (r.upNext) {
+        if (r.upNext || r.canMenu) {
           const prioLine = r.item.inheritedFrom != null ? r.item.inheritedFrom : r.item.line;
           row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item, taskPriority(journalLines[prioLine]));
         }
@@ -3778,7 +3785,7 @@ class SpiralView extends ItemView {
           const q = it.kind === "task" && it.state === "open" ? it : null, live = q && it.doing && dayRel === 0;
           const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clock(it.doneAt) : "") : it.kind === "event" ? clock(it.start)
             : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
-          rows.push({ item: it, inMain: true, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
+          rows.push({ item: it, inMain: true, canMenu: !playing && it.kind === "task" && it.state === "open" && !it.container && it.line != null, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
             time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "" });
         }
         section(T(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, `🎯 Mainline ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`), rows);
@@ -3820,14 +3827,14 @@ class SpiralView extends ItemView {
       upNextRows.forEach((r, idx) => { r.upNextIdx = idx; });
       section(T("接下来", "Up next"), upNextRows);
       const over = curPlan.queue.filter((t) => t.overflow);
-      section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, cls: "is-over", time: "—", dur: !isAutoTask(t, autoKeys) && t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
-      section(T("💤 搁置", "💤 Parked"), curPlan.suspended.map((t) => ({ item: t, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
+      section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, canMenu: !playing && dayRel >= 0, cls: "is-over", time: "—", dur: !isAutoTask(t, autoKeys) && t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
+      section(T("💤 搁置", "💤 Parked"), curPlan.suspended.map((t) => ({ item: t, canMenu: !playing, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
       section(T("做过 · 已挪走", "Worked on · moved away"), orphans.filter((o) => o.segs.length).map((o) => ({ item: o, cls: "is-done", time: `${clock(o.segs[0][0])}–${clock(o.segs.at(-1)[1])}`, dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
       const doneTasks = items.filter((i) => i.kind === "task" && i.state === "done").sort((a, b) => (a.doneAt ?? 1e9) - (b.doneAt ?? 1e9));
       section(T(`已完成 ${doneTasks.length}`, `Done ${doneTasks.length}`), doneTasks.map((t) => ({
         item: t, cls: isReview(t) ? "is-done is-review" : "is-done",
         time: t.actual ? `${clock(t.actual[0])}–${clock(t.actual[1])}` : t.doneAt != null ? clock(t.doneAt) : "—",
-        dur: dur(t.dur),
+        dur: !t.actual && !isReview(t) && t.spentToday > 0 ? dur(t.spentToday) : dur(t.dur),
       })));
     };
     paintTaskSections(plan);
@@ -3889,15 +3896,25 @@ class SpiralView extends ItemView {
 
   // 「接下来」面板改写单行状态的统一入口：互斥锁 + 边界校验 + 音效去重 + 重绘
   async _mutateUpNext(file, dayKey, item, mutate) {
-    const targetLine = item?.inheritedFrom ?? item?.line;
+    let targetLine = item?.inheritedFrom ?? item?.line;
     if (!file || targetLine == null || this._upNextBusy) return;
     this._upNextBusy = true;
     try {
+      const targetKey = workKey(item?.inheritedFrom != null ? (item?.inheritedLabel || item?.label) : item?.label);
       let beforeRaw = null, out = null;
       const changed = await this.plugin.editFile(file, (lines) => {
+        const curItems = parseJournal(lines.join("\n"), this.plugin.settings);
+        let hit = null;
+        if (targetKey) {
+          const hits = curItems.filter((t) => t.kind === "task" && workKey(t.inheritedFrom != null ? (t.inheritedLabel || t.label) : t.label) === targetKey);
+          if (hits.length) {
+            hit = hits.find((t) => (t.inheritedFrom != null ? t.inheritedFrom : t.line) === targetLine) || hits.find((t) => t.state === "open") || hits[0];
+            targetLine = hit.inheritedFrom != null ? hit.inheritedFrom : hit.line;
+          }
+        }
         if (targetLine < 0 || targetLine >= lines.length) return 0;
         const cur = lines[targetLine];
-        out = mutate(cur, targetLine);
+        out = mutate(cur, targetLine, hit);
         if (!out || out.nextRaw === cur) return 0;
         beforeRaw = cur;
         lines[targetLine] = out.nextRaw;
@@ -3905,6 +3922,14 @@ class SpiralView extends ItemView {
       });
       if (!changed || !out) return;
       out.after?.(targetLine);
+      if (out.soundKw && canonKw(out.soundKw) !== "DOING") {
+        const active = this.plugin.settings.pomodoro?.active;
+        if (active && active.dayKey === dayKey && active.task?.key === targetKey) {
+          this.plugin._pomoModalTask = { dayKey: active.dayKey, key: targetKey };
+          try { await this.plugin.stopPomodoro(false, { ask: false, silent: true }); }
+          finally { if (this.plugin._pomoModalTask?.key === targetKey) this.plugin._pomoModalTask = null; }
+        }
+      }
       const ch = beforeRaw != null ? kwLineChange(beforeRaw, out.nextRaw) : null;
       const shouldSound = ch ? this.plugin.kwFresh(file.path, [ch]).length > 0 : true;
       if (shouldSound && out.soundKw) this.plugin.kwSound(KW_SOUND[out.soundKw] || "TODO");
@@ -3920,10 +3945,14 @@ class SpiralView extends ItemView {
     let hold = this._upNextHold.get(dayKey);
     if (!hold) { hold = new Map(); this._upNextHold.set(dayKey, hold); }
     const key = workKey(item.inheritedFrom != null ? (item.inheritedLabel || item.label) : item.label);
-    return this._mutateUpNext(file, dayKey, item, (cur, targetLine) => {
+    return this._mutateUpNext(file, dayKey, item, (cur, targetLine, hit) => {
       const rawPrev = hold.get(targetLine);
       const prev = rawPrev && (!rawPrev.lastRaw || rawPrev.lastRaw === cur) ? rawPrev : null;
       const res = cycleUpNextStatus(cur, prev?.origRaw ?? null);
+      if (res.nextKw === "DONE" && hit?.clock) {
+        const sp = splitTask(cur);
+        if (sp) res.nextRaw = `${sp.prefix}DONE ${moment().format("HH:mm")} ${sp.rest}`;
+      }
       return {
         nextRaw: res.nextRaw,
         soundKw: res.nextKw,
@@ -3938,11 +3967,18 @@ class SpiralView extends ItemView {
   // 「接下来」面板右键切到指定状态
   async setUpNextKeyword(file, dayKey, item, kw) {
     const target = String(kw || "TODO").toUpperCase();
-    return this._mutateUpNext(file, dayKey, item, (cur, targetLine) => ({
-      nextRaw: toKeyword(cur, target),
-      soundKw: target,
-      after: () => this._upNextHold?.get(dayKey)?.delete(targetLine),
-    }));
+    return this._mutateUpNext(file, dayKey, item, (cur, targetLine, hit) => {
+      let nextRaw = toKeyword(cur, target);
+      if (target === "DONE" && hit?.clock) {
+        const sp = splitTask(cur);
+        if (sp) nextRaw = `${sp.prefix}DONE ${moment().format("HH:mm")} ${sp.rest}`;
+      }
+      return {
+        nextRaw,
+        soundKw: target,
+        after: () => this._upNextHold?.get(dayKey)?.delete(targetLine),
+      };
+    });
   }
 
   // 「接下来」面板右键设置重要程度（[#A] / [#B] / [#C] / 清除）
@@ -3982,11 +4018,24 @@ class SpiralView extends ItemView {
       });
     }
     menu.addSeparator();
-    const pomoM = pomoMinutes(this.plugin.ensurePomodoro());
-    menu.addItem((mi) => {
-      mi.setTitle(T(`🍅 用番茄钟开始（${dur(pomoM)}）`, `🍅 Start Pomodoro (${dur(pomoM)})`));
-      mi.onClick(() => this.plugin.startPomodoro(pomoM, { file, dayKey, item }));
-    });
+    const isToday = dayKey === this.plugin.today().format(this.plugin.settings.format);
+    const isAuto = isAutoTask(item, this.plugin.autoKeys(dayKey));
+    if (isToday && item.state !== "done") {
+      const pomoM = pomoMinutes(this.plugin.ensurePomodoro());
+      menu.addItem((mi) => {
+        mi.setTitle(T(`🍅 用番茄钟开始（${dur(pomoM)}）`, `🍅 Start Pomodoro (${dur(pomoM)})`));
+        mi.onClick(() => this.plugin.startPomodoro(pomoM, { file, dayKey, item }));
+      });
+      if (!isAuto && item.explicitDur) {
+        const estM = Math.min(240, Math.max(1, Math.round(item.remaining != null && item.remaining > 0 ? item.remaining : item.dur)));
+        if (estM !== pomoM) {
+          menu.addItem((mi) => {
+            mi.setTitle(T(`🍅 按预估开始（${dur(estM)}）`, `🍅 Start with estimate (${dur(estM)})`));
+            mi.onClick(() => this.plugin.startPomodoro(estM, { file, dayKey, item }));
+          });
+        }
+      }
+    }
     menu.addItem((mi) => {
       mi.setTitle(T("定位到日记", "Show in journal"));
       mi.onClick(() => this.plugin.openItem(file, item));
@@ -4525,6 +4574,7 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "open-today", name: T("打开今天的日记（凌晨按日界算前一天）", "Open today's daily note (before the day cutoff it's still yesterday)"), run: () => this.openToday() },
       { id: "pomodoro-start", name: T("开始番茄钟（预订接下来一段专注时间）", "Start Pomodoro (reserve an upcoming focus block)"), when: () => !this.settings.pomodoro?.active, run: () => this.startPomodoro() },
       { id: "pomodoro-stop", name: T("结束当前番茄钟", "Stop current Pomodoro"), when: () => !!this.settings.pomodoro?.active, run: () => this.stopPomodoro(false, { ask: true }) },
+      { id: "pomodoro-cursor", name: T("用番茄钟开始光标所在任务", "Start Pomodoro on task at cursor"), editor: true, run: (editor, view) => this.startPomodoroAtCursor(editor, view) },
       { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.pastDayCache?.clear(); this.gcal.cals = null; this.views().forEach((v) => v.render({ force: true })); } },
     ];
   }
@@ -4662,9 +4712,10 @@ module.exports = class NautilusSpiral extends Plugin {
       const fileRows = [];
       for (const t of items) {
         if (t.kind !== "task" || t.state !== "done" || !(t.est > 0)) continue;
+        const clockTot = useClockTotal(t);
         const segs = [...(t.worked || []), ...(t.actual ? [t.actual] : [])];
-        if (!segs.length) continue;
-        const actual = Math.round(unionMin(segs) + (t.spentBefore || 0));
+        if (!segs.length && !clockTot) continue;
+        const actual = Math.round((clockTot ? t.clock.total : unionMin(segs)) + (t.spentBefore || 0));
         if (actual < 1) continue;
         const raw = lines[t.line] || "";
         // 分类：行里的 #标签 和 [[链接]]（日记日期的链接不算）
@@ -5563,8 +5614,9 @@ module.exports = class NautilusSpiral extends Plugin {
   async flushClock(file, tries = 0) {
     const keys = [...(this._clockKeys || [])];
     if (!keys.length) return;
-    const work = (this.settings.workLog || {})[file.basename] || {};
-    const auto = this.autoKeys(this.journalKey(file));   // 自动记着的行由自动记日记自己写
+    const dayKey = this.journalKey(file) || file.basename;
+    const work = (this.settings.workLog || {})[dayKey] || {};
+    const auto = this.autoKeys(dayKey);   // 自动记着的行由自动记日记自己写
     const base = await this.readJournal(file);
     let text = base;
     for (const k of keys) {
@@ -5642,6 +5694,7 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   journalView(file) {
+    if (!this.app?.workspace?.iterateAllLeaves) return null;
     let view = null;
     this.app.workspace.iterateAllLeaves((l) => { if (!view && l.view instanceof OB.MarkdownView && l.view.file?.path === file.path && l.view.getMode() === "source") view = l.view; });
     return view;
@@ -5668,10 +5721,14 @@ module.exports = class NautilusSpiral extends Plugin {
   // 实际做的时段写在那一行下面的第一个子项里（⏱ 开头，解析日记时跳过这种行）：⏱ 00:45–00:58、04:02–05:10 · 共 1h21m
   // 隔了不到 10 分钟的两段并成一段写，免得太碎；太多段只写最后 8 段
   autoClock(text, key, segs) {
-    const merged = unionSegs(segs || []);
+    let merged = unionSegs(segs || []);
     const hits = parseJournal(text, this.settings).filter((i) => i.kind === "task" && workKey(i.label) === key);
     const it = hits.find((i) => i.state === "open") || hits[0];
     if (!it || !merged.length) return text;
+    if (it.clock && !it.clock.partial && !it.clock.who && !/←\s*\S+\s*$/.test(it.label)) {
+      const extra = (it.clock.segs || []).filter(([ea, eb]) => merged.every(([a, b]) => eb <= a || ea >= b));
+      if (extra.length) merged = unionSegs([...merged, ...extra]);
+    }
     const lines = text.split("\n");
     const at = it.line;
     const shown = [];
@@ -5809,7 +5866,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this.states.set(file.path, cur);
     const nowM = moment();
     const now = normalize(nowM.hours() * 60 + nowM.minutes(), this.settings);
-    const dayKey = this.journalKey(file);
+    const dayKey = this.journalKey(file) || file.basename;
     const isToday = dayKey === this.today().format(this.settings.format);
     let changed = false;
 
@@ -5818,7 +5875,10 @@ module.exports = class NautilusSpiral extends Plugin {
       const log = (this.settings.workLog ||= {});
       const work = (log[dayKey] ||= {});
       const openSeg = (k) => (work[k] || []).find((x) => x[1] == null);
+      const hasClockKeys = new Set();
+      for (const i of items) if (i.kind === "task" && i.clock && !i.clock.who && !/←\s*\S+\s*$/.test(i.label)) hasClockKeys.add(workKey(i.label));
       const closed = new Set();   // 这一回收掉了哪几件的时段
+      const forceClock = new Set();
       const stop = (k, at) => {
         const seg = openSeg(k);
         if (!seg) return;
@@ -5848,6 +5908,11 @@ module.exports = class NautilusSpiral extends Plugin {
           delete work[renamed[0]];
           changed = true;
         }
+        if (renamed && this.settings.pomodoro?.active?.dayKey === dayKey && this.settings.pomodoro.active.task?.key === renamed[0]) {
+          this.settings.pomodoro.active.task.key = renamed[1];
+          this.settings.pomodoro.active.task.label = renamed[1];
+          changed = true;
+        }
         for (const [label, c] of cur) {
           const k = workKey(label), p = prev.get(label);
           const modalHold = this._pomoModalTask && this._pomoModalTask.dayKey === dayKey && this._pomoModalTask.key === k;
@@ -5861,7 +5926,37 @@ module.exports = class NautilusSpiral extends Plugin {
           if (seg) stop(k, now - seg[0] > 360 ? seg[0] + prev.get(l).dur : now);
         }
       }
-      if (closed.size && record && this.settings.clockToNote) this.queueClock(file, [...closed]);
+      const activePomo = this.settings.pomodoro?.active;
+      if (activePomo && activePomo.dayKey === dayKey && activePomo.task?.key) {
+        const liveView = typeof this.journalView === "function" ? this.journalView(file) : null;
+        const liveItems = liveView?.editor ? parseJournal(liveView.editor.getValue(), this.settings) : null;
+        const stillDoing = [...cur].some(([l, c]) => c.doing && workKey(l) === activePomo.task.key)
+          || (liveItems ? liveItems.some((i) => i.kind === "task" && i.state === "open" && i.doing && workKey(i.label) === activePomo.task.key) : false);
+        if (!stillDoing) {
+          this.settings.pomodoro.active = null;
+          changed = true;
+          const pk = activePomo.task.key;
+          const endMs = Math.min(Date.now(), activePomo.end);
+          if (endMs - activePomo.start >= 60e3 && !String(pk).startsWith(AUTO_MARK.trim()) && !auto.has(pk)) {
+            const r = pomoTimeRange({ start: activePomo.start, end: endMs }, this.settings);
+            if (r) {
+              const segStart = Math.round(r[0]), segEnd = Math.max(segStart + 1, Math.round(r[1]));
+              const segs = (work[pk] ||= []);
+              const open = segs.find((s) => s[1] == null);
+              if (open) open[1] = Math.max(open[0] + 1, segEnd);
+              else segs.push([segStart, segEnd]);
+              work[pk] = unionSegs(segs.filter((s) => s[1] != null));
+              if (work[pk].length) forceClock.add(pk);
+            }
+          }
+        }
+      }
+      const clockKeys = new Set();
+      if (record) {
+        for (const k of closed) if (this.settings.clockToNote || hasClockKeys.has(k)) clockKeys.add(k);
+        for (const k of forceClock) clockKeys.add(k);
+      }
+      if (clockKeys.size) this.queueClock(file, [...clockKeys]);
       if (!Object.keys(work).length) delete log[dayKey];
     }
 
@@ -6102,6 +6197,20 @@ module.exports = class NautilusSpiral extends Plugin {
     const p = this.ensurePomodoro();
     const mins = minutes != null ? Math.min(240, Math.max(1, Math.round(Number(minutes) || 25))) : pomoMinutes(p);
     const dayKey = this.today().format(this.settings.format);
+    let nextKey = null;
+    if (taskSpec?.ref) nextKey = taskSpec.ref.key;
+    else if (taskSpec?.file && taskSpec?.item) {
+      const label = taskSpec.item.inheritedFrom != null ? (taskSpec.item.inheritedLabel || workKey(taskSpec.item.label)) : workKey(taskSpec.item.label);
+      nextKey = workKey(label);
+    }
+    if (p.active) {
+      const prevActive = p.active;
+      await this.stopPomodoro(false, { ask: false, silent: true });
+      if (prevActive.task?.key && prevActive.task.key !== nextKey) {
+        const paused = await this.pausePomodoroTask(prevActive.task);
+        if (!paused) this.refresh();
+      }
+    }
     let taskRef = null;
     let switchedDoing = false;
     if (taskSpec?.ref) {
@@ -6114,11 +6223,18 @@ module.exports = class NautilusSpiral extends Plugin {
       if (targetLine != null && canonKw(item.kw) !== "DOING") {
         let nextRaw = null;
         const n = await this.editFile(file, (lines) => {
-          const cur = lines[targetLine];
+          let ln = targetLine;
+          const parsed = parseJournal(lines.join("\n"), this.settings).filter((t) => t.kind === "task" && t.state !== "done" && workKey(t.inheritedFrom != null ? (t.inheritedLabel || t.label) : t.label) === taskRef.key);
+          if (parsed.length) {
+            const exact = parsed.find((t) => (t.inheritedFrom != null ? t.inheritedFrom : t.line) === ln);
+            const pick = exact || parsed[0];
+            ln = pick.inheritedFrom != null ? pick.inheritedFrom : pick.line;
+          }
+          const cur = lines[ln];
           if (cur == null) return 0;
           const next = toKeyword(cur, "DOING");
           if (next === cur) return 0;
-          lines[targetLine] = next;
+          lines[ln] = next;
           nextRaw = next;
           return 1;
         });
@@ -6139,6 +6255,23 @@ module.exports = class NautilusSpiral extends Plugin {
     return p.active;
   }
 
+  async startPomodoroAtCursor(editor, view) {
+    const file = view?.file;
+    const todayPath = this.journalPath(this.today());
+    if (!(file instanceof TFile) || file.path !== todayPath) {
+      new OB.Notice(T("请在今天的日记任务行上使用", "Use this on a task line in today's daily note"));
+      return null;
+    }
+    const line = editor.getCursor().line;
+    const dayKey = this.today().format(this.settings.format);
+    const item = parseJournal(editor.getValue(), this.settings).find((i) => i.kind === "task" && i.line === line);
+    if (!item || item.state === "done" || isAutoTask(item, this.autoKeys(dayKey))) {
+      new OB.Notice(T("当前行不是可计时的手动未完成任务", "Current line is not an open manual task"));
+      return null;
+    }
+    return this.startPomodoro(null, { file, dayKey, item });
+  }
+
   async resumePomodoroDoing(taskRef, dayKey = this.today().format(this.settings.format)) {
     if (!taskRef?.key || String(taskRef.key).startsWith(AUTO_MARK.trim()) || this.autoKeys(dayKey).has(taskRef.key)) return false;
     const work = ((this.settings.workLog ||= {})[dayKey] ||= {});
@@ -6152,7 +6285,7 @@ module.exports = class NautilusSpiral extends Plugin {
     return true;
   }
 
-  async stopPomodoro(completed = false, { ask = false } = {}) {
+  async stopPomodoro(completed = false, { ask = false, silent = false } = {}) {
     const p = this.ensurePomodoro();
     const a = p.active;
     if (!a) return null;
@@ -6168,8 +6301,8 @@ module.exports = class NautilusSpiral extends Plugin {
     const logged = a.task ? await this.recordPomodoroWork(a, endMs) : false;
     a._logged = logged;
     await this.saveData(this.settings);
-    this.sound(completed ? "DONE" : "stop");
-    this.refresh();
+    if (!silent) this.sound(completed ? "DONE" : "stop");
+    if (!silent) this.refresh();
     if (!completed && ask && a.task && this.app) {
       new PomodoroDoneModal(this.app, this, a, { early: true, elapsedMin, logged }).open();
     }
@@ -6199,14 +6332,19 @@ module.exports = class NautilusSpiral extends Plugin {
     const file = this.app?.vault?.getAbstractFileByPath(taskRef.path);
     if (!(file instanceof TFile)) return false;
     const content = await this.readLiveContent(file);
-    const hit = parseJournal(content, this.settings).find((t) => t.kind === "task" && t.state !== "done" && workKey(t.label) === taskRef.key);
+    const hit = parseJournal(content, this.settings).find((t) => t.kind === "task" && t.state !== "done" && workKey(t.inheritedFrom != null ? (t.inheritedLabel || t.label) : t.label) === taskRef.key);
     if (!hit || hit.line == null) return false;
     const targetLine = hit.inheritedFrom != null ? hit.inheritedFrom : hit.line;
+    const hasClock = !!hit.clock;
     let nextRaw = null;
     const n = await this.editFile(file, (lines) => {
       const cur = lines[targetLine];
       if (cur == null) return 0;
-      const next = toKeyword(cur, kw);
+      let next = toKeyword(cur, kw);
+      if (kw === "DONE" && hasClock) {
+        const sp = splitTask(cur);
+        if (sp) next = `${sp.prefix}DONE ${moment().format("HH:mm")} ${sp.rest}`;
+      }
       if (next === cur) return 0;
       lines[targetLine] = next;
       nextRaw = next;
@@ -7095,4 +7233,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, SpiralView };

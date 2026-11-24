@@ -5,14 +5,26 @@ const path = require('node:path');
 
 const source = process.argv[2] || path.join(__dirname, '..', 'main.js');
 const openedModals = [];
+const builtMenus = [];
+const notices = [];
 const OB = {
   Plugin: class {},
   ItemView: class {},
   PluginSettingTab: class {},
   Modal: class { constructor() { this.contentEl = { empty() {} }; } open() { openedModals.push(this); } close() {} },
   FuzzySuggestModal: class {},
-  TFile: class TFile { constructor(p) { this.path = p; } },
-  Notice: class {},
+  Menu: class {
+    constructor() { this.items = []; builtMenus.push(this); }
+    addSeparator() { this.items.push({ sep: true }); }
+    addItem(fn) {
+      const it = { title: '', checked: false, setTitle(t) { this.title = t; }, setChecked(v) { this.checked = v; }, onClick(cb) { this.cb = cb; } };
+      fn(it);
+      this.items.push(it);
+    }
+    showAtMouseEvent() {}
+  },
+  TFile: class TFile { constructor(p) { this.path = p; this.basename = path.basename(p, '.md'); this.stat = { mtime: 1 }; } },
+  Notice: class { constructor(msg) { notices.push(msg); } },
   getLanguage: () => 'zh',
   moment: (input) => {
     const d = input ? new Date(input) : new Date(2026, 10, 21, 20, 30, 0);
@@ -22,7 +34,7 @@ const OB = {
       minutes: () => d.getMinutes(),
       isValid: () => true,
       isBefore: () => false,
-      subtract: () => ({ valueOf: () => 0 }),
+      subtract: () => ({ valueOf: () => 0, format: () => '2026_11_21' }),
     };
   },
 };
@@ -46,7 +58,10 @@ const {
   pomoSplit,
   pomoFormatLeft,
   parseJournal,
+  applyWork,
+  dayReview,
   schedule,
+  SpiralView,
 } = Plugin.core;
 
 // 1. Preset resolution & clamping
@@ -248,10 +263,312 @@ assert.equal(pomoFormatLeft(-5000), '00:00');
   assert.equal(paused, true);
   assert.match(noteLines[0], /^- PAUSED /);
 
-  // Complete task switches to DONE
-  const ok = await p.completePomodoroTask(a3.task);
+  // Complete task with existing ⏱ writes single timestamp DONE HH:mm (no fabricated multi-hour span)
+  noteLines = ['- DOING 14:00 写周报 1h', '\t- ⏱ 14:00–14:25、19:00–19:25 · 共 50m'];
+  const ok = await p.completePomodoroTask({ path: fakeFile.path, key: '写周报', label: '写周报' });
   assert.equal(ok, true);
-  assert.match(noteLines[0], /^- DONE /);
+  assert.equal(noteLines[0], '- DONE 20:30 写周报 1h');
+
+  // Task-switch settlement: switching Pomodoro from Task A to Task B settles A (⏱ + PAUSED) and binds B even with line shift
+  {
+    let lines = ['- TODO 任务A 1h', '- TODO 任务B 30m'];
+    const swFile = new OB.TFile('日记/2026_11_21.md');
+    const sp = Object.create(Plugin.prototype);
+    sp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    sp.settings.folder = '日记';
+    sp.settings.format = 'YYYY_MM_DD';
+    sp.states = new Map();
+    sp.today = () => ({ format: () => '2026_11_21' });
+    sp.saveData = async () => {};
+    sp.saveSoon = () => {};
+    sp.sound = () => {};
+    sp.kwSound = () => {};
+    sp.kwFresh = () => [];
+    sp.refresh = () => {};
+    sp.app = { vault: { getAbstractFileByPath: (fp) => (fp === swFile.path ? swFile : null) } };
+    sp.readLiveContent = async () => lines.join('\n');
+    sp.editFile = async (_f, fn) => {
+      const next = [...lines];
+      const n = fn(next);
+      if (n) lines = next;
+      return n;
+    };
+    const it0 = parseJournal(lines.join('\n'), sp.settings);
+    await sp.startPomodoro(25, { file: swFile, dayKey: '2026_11_21', item: it0[0] });
+    const tAStart = new Date(2026, 10, 21, 16, 0, 0).getTime();
+    sp.settings.pomodoro.active.start = tAStart;
+    sp.settings.pomodoro.active.end = tAStart + 25 * 60e3;
+    const realNow2 = Date.now;
+    Date.now = () => tAStart + 10 * 60e3;
+    try {
+      const it1 = parseJournal(lines.join('\n'), sp.settings);
+      await sp.startPomodoro(25, { file: swFile, dayKey: '2026_11_21', item: it1[1] });
+    } finally {
+      Date.now = realNow2;
+    }
+    assert.match(lines[0], /^- PAUSED 任务A 1h$/);
+    assert.match(lines[1], /^\t- ⏱ 16:00–16:10 · 共 10m$/);
+    assert.match(lines[2], /^- DOING .* 任务B 30m$/);
+    assert.equal(sp.settings.pomodoro.active.task?.key, '任务B');
+  }
+
+  // Manual status leave via observe() stops active Pomodoro & queues ⏱ even when clockToNote=false; rename migrates active task
+  {
+    const oFile = new OB.TFile('日记/2026_11_21.md');
+    const op = Object.create(Plugin.prototype);
+    op.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    op.settings.folder = '日记';
+    op.settings.format = 'YYYY_MM_DD';
+    op.settings.clockToNote = false;
+    op.states = new Map();
+    op.today = () => ({ format: () => '2026_11_21' });
+    op.saveData = async () => {};
+    op.saveSoon = () => {};
+    op.sound = () => {};
+    op.kwSound = () => {};
+    op.kwFresh = () => [];
+    op.refresh = () => {};
+    const queued = [];
+    op.queueClock = (f, keys) => queued.push({ path: f.path, keys });
+    let doc = '- DOING 原名称 30m';
+    op.observe(oFile, doc, false);
+    const startMs = new Date(2026, 10, 21, 17, 0, 0).getTime();
+    op.settings.pomodoro = { preset: '25', customMinutes: 45, active: { id: startMs, dayKey: '2026_11_21', start: startMs, end: startMs + 25 * 60e3, minutes: 25, task: { path: oFile.path, key: '原名称', label: '原名称' } } };
+    // Rename while DOING -> keeps active Pomodoro and migrates task key
+    op.observe(oFile, '- DOING 新名称 30m', true);
+    assert.ok(op.settings.pomodoro.active);
+    assert.equal(op.settings.pomodoro.active.task.key, '新名称');
+    assert.equal(queued.length, 0);
+    // Mark DONE manually -> auto-stops Pomodoro and queues ⏱
+    const realNow3 = Date.now;
+    Date.now = () => startMs + 8 * 60e3;
+    try {
+      op.observe(oFile, '- DONE 17:08 新名称 30m', true);
+    } finally {
+      Date.now = realNow3;
+    }
+    assert.equal(op.settings.pomodoro.active, null);
+    assert.equal(queued.length, 1);
+    assert.deepEqual(Array.from(queued[0].keys), ['新名称']);
+    assert.ok(op.settings.workLog['2026_11_21']['新名称'].length >= 1);
+
+    // Keep DOING after early stop (task already has ⏱) -> later DONE still queues clock update even when clockToNote=false
+    const kFile = new OB.TFile('日记/2026_11_21.md');
+    const kp = Object.create(Plugin.prototype);
+    kp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    kp.settings.folder = '日记';
+    kp.settings.format = 'YYYY_MM_DD';
+    kp.settings.clockToNote = false;
+    kp.states = new Map();
+    kp.today = () => ({ format: () => '2026_11_21' });
+    kp.saveData = async () => {};
+    kp.saveSoon = () => {};
+    kp.sound = () => {};
+    kp.kwSound = () => {};
+    kp.kwFresh = () => [];
+    kp.refresh = () => {};
+    let kLines = ['- DOING 续做任务 1h', '\t- ⏱ 14:00–14:12 · 共 12m'];
+    kp.settings.workLog['2026_11_21'] = { 续做任务: [[14 * 60, 14 * 60 + 12], [14 * 60 + 12, null]] };
+    let kQueued = [];
+    kp.queueClock = (_f, keys) => { kQueued = keys; };
+    kp.observe(kFile, kLines.join('\n'), false);
+    kp.observe(kFile, '- DONE 14:40 续做任务 1h\n\t- ⏱ 14:00–14:12 · 共 12m', true);
+    assert.deepEqual(Array.from(kQueued), ['续做任务']);
+
+    // Stale disk snapshot during an open editor switch preserves active Pomodoro if live editor still shows DOING
+    const sFile = new OB.TFile('日记/2026_11_21.md');
+    const sp = Object.create(Plugin.prototype);
+    sp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    sp.settings.folder = '日记';
+    sp.settings.format = 'YYYY_MM_DD';
+    sp.states = new Map();
+    sp.today = () => ({ format: () => '2026_11_21' });
+    sp.saveData = async () => {};
+    sp.saveSoon = () => {};
+    sp.queueClock = () => {};
+    let liveEditorVal = '- DOING 16:15 切换新任务 30m';
+    sp.journalView = () => ({ editor: { getValue: () => liveEditorVal } });
+    sp.settings.pomodoro.active = {
+      id: 1,
+      dayKey: '2026_11_21',
+      start: startMs,
+      end: startMs + 25 * 60e3,
+      minutes: 25,
+      task: { path: sFile.path, key: '切换新任务', label: '切换新任务' },
+    };
+    sp.observe(sFile, '- TODO 切换新任务 30m', false);
+    sp.observe(sFile, '- TODO 切换新任务 30m', true);
+    assert.ok(sp.settings.pomodoro.active, 'stale disk snapshot must not clear active Pomodoro while editor is DOING');
+    liveEditorVal = '- PAUSED 切换新任务 30m';
+    sp.observe(sFile, '- PAUSED 切换新任务 30m', true);
+    assert.equal(sp.settings.pomodoro.active, null);
+  }
+
+  // autoClock preserves disjoint pre-existing ⏱ segments without double-counting merged short-gap spans
+  {
+    const mergedText = p.autoClock(
+      '- PAUSED 跨设备任务 2h\n\t- ⏱ 09:00–10:00 · 共 1h',
+      '跨设备任务',
+      [[14 * 60, 14 * 60 + 25]]
+    );
+    assert.match(mergedText, /09:00–10:00、14:00–14:25 · 共 1h25m$/);
+    const shortGapText = p.autoClock(
+      '- PAUSED 短间隔任务 1h\n\t- ⏱ 14:00–14:42 · 共 37m',
+      '短间隔任务',
+      [[14 * 60, 14 * 60 + 25], [14 * 60 + 30, 14 * 60 + 42]]
+    );
+    assert.match(shortGapText, /14:00–14:42 · 共 37m$/);
+  }
+
+  // parseJournal + applyWork + dayReview + computeReview with DONE HH:mm + ⏱ child line
+  {
+    const revNote = [
+      '- DONE 21:25 写周报 1h',
+      '\t- ⏱ 16:00–16:25、21:00–21:25 · 共 50m',
+      '- DONE 14:42 短间隙复核 30m',
+      '\t- ⏱ 14:00–14:42 · 共 37m',
+      '- DONE 18:02 写稿 2h',
+    ].join('\n');
+    const revItems = parseJournal(revNote, p.settings);
+    assert.equal(revItems[0].est, 60);
+    assert.equal(revItems[2].est ?? null, null);
+    applyWork(revItems, p.settings, '2026_11_21', 22 * 60, 0);
+    const dr = dayReview(revItems, p.settings, { live: true });
+    assert.equal(dr.rows[0].state, 'compared');
+    assert.equal(dr.rows[0].plannedMinutes, 60);
+    assert.equal(dr.rows[0].actualMinutes, 50);
+    assert.equal(dr.rows[0].varianceMinutes, -10);
+    assert.equal(dr.rows[1].state, 'compared');
+    assert.equal(dr.rows[1].actualMinutes, 37);
+    assert.equal(dr.rows[2].state, 'no-estimate');
+    assert.equal(dr.rows[2].actualMinutes, 120);
+
+    // computeReview also honors clock.total and preserved est
+    const rp = Object.create(Plugin.prototype);
+    rp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    rp.settings.folder = '日记';
+    rp.settings.format = 'YYYY_MM_DD';
+    rp.today = () => OB.moment();
+    const rf = new OB.TFile('日记/2026_11_21.md');
+    rp.app = { vault: { getAbstractFileByPath: (fp) => (fp === rf.path ? rf : null), cachedRead: async () => revNote } };
+    const rData = await rp.computeReview(1);
+    assert.equal(rData.n, 2);
+    assert.equal(rData.sumE, 90);
+    assert.equal(rData.sumA, 87);
+
+    // zero-span DONE HH:mm-HH:mm and DONE HH:mm-HH:mm + multi-segment ⏱ preserve est & use clock.total
+    const extraItems = parseJournal([
+      '- DONE 21:20-21:20 零时长标记 30m',
+      '\t- ⏱ 21:03–21:21 · 共 18m',
+      '- DONE 16:15-16:33 多段任务 30m',
+      '\t- ⏱ 16:00–16:10、16:15–16:33 · 共 28m',
+    ].join('\n'), p.settings);
+    assert.equal(extraItems[0].est, 30);
+    assert.equal(extraItems[1].est, 30);
+    applyWork(extraItems, p.settings, '2026_11_21', 22 * 60, 0);
+    const edr = dayReview(extraItems, p.settings, { live: true });
+    assert.equal(edr.rows[0].state, 'compared');
+    assert.equal(edr.rows[0].plannedMinutes, 30);
+    assert.equal(edr.rows[0].actualMinutes, 18);
+    assert.equal(edr.rows[1].state, 'compared');
+    assert.equal(edr.rows[1].plannedMinutes, 30);
+    assert.equal(edr.rows[1].actualMinutes, 28);
+
+    // same-minute DONE transition writes single HH:mm instead of HH:mm-HH:mm
+    let sameMinNote = '- DOING 20:30 同分钟完成 30m';
+    const smFile = new OB.TFile('日记/2026_11_21.md');
+    const smp = Object.create(Plugin.prototype);
+    smp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    smp.app = { vault: { getAbstractFileByPath: (fp) => (fp === smFile.path ? smFile : null) } };
+    smp.readLiveContent = async () => sameMinNote;
+    smp.editFile = async (_f, fn) => {
+      const lines = sameMinNote.split('\n');
+      const changed = fn(lines);
+      if (changed) sameMinNote = lines.join('\n');
+      return changed;
+    };
+    smp.kwFresh = () => [];
+    smp.kwSound = () => {};
+    smp.refresh = () => {};
+    await smp.setPomodoroTaskKeyword({ path: smFile.path, key: '同分钟完成' }, 'DONE');
+    assert.equal(sameMinNote, '- DONE 20:30 同分钟完成 30m');
+  }
+
+  // startPomodoroAtCursor binds manual open task and rejects 🤖 / DONE
+  {
+    let curLines = ['- TODO 光标任务 20m', '- TODO 🤖 自动任务 10m', '- DONE 10:00 已完成 10m'];
+    const cFile = new OB.TFile('日记/2026_11_21.md');
+    const cp = Object.create(Plugin.prototype);
+    cp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    cp.settings.folder = '日记';
+    cp.settings.format = 'YYYY_MM_DD';
+    cp.today = () => ({ format: () => '2026_11_21' });
+    cp.saveData = async () => {};
+    cp.sound = () => {};
+    cp.kwSound = () => {};
+    cp.kwFresh = () => [];
+    cp.refresh = () => {};
+    cp.app = { vault: { getAbstractFileByPath: (fp) => (fp === cFile.path ? cFile : null) } };
+    cp.readLiveContent = async () => curLines.join('\n');
+    cp.editFile = async (_f, fn) => { const next = [...curLines]; const n = fn(next); if (n) curLines = next; return n; };
+    const mkEd = (line) => ({ getCursor: () => ({ line }), getValue: () => curLines.join('\n') });
+    assert.equal(await cp.startPomodoroAtCursor(mkEd(1), { file: cFile }), null);
+    assert.equal(await cp.startPomodoroAtCursor(mkEd(2), { file: cFile }), null);
+    const activeCur = await cp.startPomodoroAtCursor(mkEd(0), { file: cFile });
+    assert.equal(activeCur?.task?.key, '光标任务');
+    assert.match(curLines[0], /^- DOING /);
+  }
+
+  // openUpNextMenu keeps Pomodoro start on 🤖 tasks, hides 按预估开始 on 🤖 tasks, and hides Pomodoro on non-today dates
+  {
+    const view = Object.create(SpiralView.prototype);
+    view.plugin = p;
+    view._hideDotTip = () => {};
+    const f = new OB.TFile('日记/2026_11_21.md');
+    const ev = { preventDefault() {}, stopPropagation() {} };
+    await p.setPomodoroPreset('25');
+    builtMenus.length = 0;
+    view.openUpNextMenu(ev, f, '2026_11_21', { kind: 'task', state: 'open', kw: 'TODO', dur: 45, explicitDur: true, label: '写方案 45m' });
+    const titles1 = builtMenus.at(-1).items.filter((x) => !x.sep).map((x) => x.title);
+    assert.ok(titles1.some((t) => t.includes('用番茄钟开始（25m）')));
+    assert.ok(titles1.some((t) => t.includes('按预估开始（45m）')));
+
+    builtMenus.length = 0;
+    view.openUpNextMenu(ev, f, '2026_11_21', { kind: 'task', state: 'open', kw: 'TODO', dur: 25, explicitDur: true, auto: true, label: '🤖 AI任务' });
+    const titles2 = builtMenus.at(-1).items.filter((x) => !x.sep).map((x) => x.title);
+    assert.ok(titles2.some((t) => t.includes('用番茄钟开始（25m）')));
+    assert.ok(!titles2.some((t) => t.includes('按预估')));
+
+    builtMenus.length = 0;
+    view.openUpNextMenu(ev, f, '2026_11_20', { kind: 'task', state: 'open', kw: 'TODO', dur: 45, explicitDur: true, label: '昨天任务 45m' });
+    const titles3 = builtMenus.at(-1).items.filter((x) => !x.sep).map((x) => x.title);
+    assert.ok(!titles3.some((t) => t.includes('番茄钟') || t.includes('按预估')));
+  }
+
+  // _mutateUpNext recovers when a ⏱ line inserted above shifted item.line by +1
+  {
+    let mLines = ['- PAUSED 任务A 1h', '\t- ⏱ 16:00–16:15 · 共 15m', '- DOING 16:15 任务B 30m'];
+    const mf = new OB.TFile('日记/2026_11_21.md');
+    const mp = Object.create(Plugin.prototype);
+    mp.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    mp.settings.folder = '日记';
+    mp.settings.format = 'YYYY_MM_DD';
+    mp.today = () => ({ format: () => '2026_11_21' });
+    mp.saveData = async () => {};
+    mp.sound = () => {};
+    mp.kwSound = () => {};
+    mp.kwFresh = () => [];
+    mp.refresh = () => {};
+    mp.app = { vault: { getAbstractFileByPath: (fp) => (fp === mf.path ? mf : null) } };
+    mp.editFile = async (_f, fn) => { const next = [...mLines]; const n = fn(next); if (n) mLines = next; return n; };
+    const mv = Object.create(SpiralView.prototype);
+    mv.plugin = mp;
+    mv.render = async () => {};
+    // Stale item.line = 1 (before ⏱ was inserted at line 1) still mutates line 2 (- DOING 16:15 任务B 30m) instead of corrupting the ⏱ child line
+    await mv.cycleUpNext(mf, '2026_11_21', { kind: 'task', state: 'open', kw: 'DOING', line: 1, label: '任务B' }, 0);
+    assert.equal(mLines[1], '\t- ⏱ 16:00–16:15 · 共 15m');
+    assert.match(mLines[2], /^- DONE .* 任务B 30m$/);
+  }
 
   // No open DOING task -> starting from top bar stays independent (no note edit, no early-stop modal)
   const beforeNoDoing = noteLines.join('\n');

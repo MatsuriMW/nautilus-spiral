@@ -173,7 +173,8 @@ There is no separate "Start" button: making a task `DOING` in the note is starti
 
 On today's view, the compact bar under capacity offers `15m` / `25m` / `Custom` presets and a play button:
 
-- **Independent or task-bound**: click play to reserve an upcoming block without touching the note, or right-click a task in "Up next" → "🍅 Start Pomodoro" to switch it to `DOING` and get a completion prompt offering "Mark DONE / Another round / Close".
+- **Independent or task-bound**: click play to reserve an upcoming block independently (or auto-bind your active manual `DOING` task), right-click any open manual task in "Mainline", "Up next", "Won't fit", or "Parked" → "🍅 Start Pomodoro" (or "🍅 Start with estimate" when the task has an explicit estimate), or run the command "Start Pomodoro on task at cursor" in today's daily note.
+- **Automatic `⏱` time logging**: when a task-bound Pomodoro finishes or stops early after ≥1 minute, it automatically writes and accumulates `- ⏱ HH:MM–HH:MM · total Xm` under the task block (even if "Write actual time into the note" is off) and prompts "Pause / Another round (or Keep DOING) / Mark DONE". Switching to another task settles and pauses the previous task; marking the task `DONE` or `PAUSED` manually automatically ends the active Pomodoro and writes its `⏱` span.
 - **On the spiral's outer rail**: an active Pomodoro splits into a solid arc for elapsed time and a dashed arc with a hollow end dot for the unrealized reservation, without pushing scheduled tasks back; completed rounds stay as subtle arcs on the outer rail (cancelling early leaves no trace).
 
 ## Timing: how long something actually took
