@@ -39,7 +39,7 @@ The interface switches automatically between English and Chinese based on Obsidi
 ### Spiral Day Planner & Capacity at a Glance
 - **12-hour spiral dial**: The outer ring starts your day and spirals inward to the end. Fixed events, scheduled to-dos, completed blocks, and the "now" pointer live on one view—hover any segment for instant details.
 - **Automatic scheduling & time budget**: Write events and to-dos in your daily note and let Nautilus Spiral place them into free gaps, continuously showing planned time, spare/overload, and remaining percentage.
-- **Mainline tasks (`[#A]`)**: Mark up to 3 top-priority blocks a day to schedule them first, highlight them in their own color, and track progress at the top.
+- **Mainline tasks (`[#A]`) & priority badges**: Mark up to 3 top-priority blocks a day to schedule them first and track progress at the top; `[#A]` / `[#B]` / `[#C]` (and fuzzy shortcuts like `todo a`, `todoa`, `[ ] b`, `DOING 14:05 a`, or `- a` under `todos:`) auto-normalize on line leave and render as red `A` / amber `B` / blue `C` square badges in both the editor and the spiral sidebar.
 - **Unrecorded time & day playback**: Past stretches with no records appear hatched; click Play in the header to replay the whole day in 6 seconds without touching your note.
 - **Automatic timing & reviews**: Switching a task to `DOING` starts timing automatically, feeding today's plan-vs-actual review, a 30-day estimate calibration, and a status bar indicator.
 - **Read-only calendar sync**: Optionally pull events from macOS Calendar or Google Calendar into the spiral as fixed blocks.

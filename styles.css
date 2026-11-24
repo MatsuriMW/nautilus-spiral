@@ -495,3 +495,38 @@ body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: ru
 .naut-pomo-plan { fill: none; stroke: var(--naut-pomo); stroke-width: 2.8; stroke-dasharray: 4 3.5; stroke-linecap: round; opacity: 0.58; transition: stroke-width .16s var(--naut-ease), opacity .16s ease-out; }
 .naut-pomo-plan.is-hot { stroke-width: 4; opacity: 0.9; }
 .naut-pomo-end-dot { fill: var(--background-primary); stroke: var(--naut-pomo); stroke-width: 1.6; cursor: pointer; }
+
+/* 优先级小方块（[#A] / [#B] / [#C] 及模糊简写）：同时作用于编辑器、阅读视图与螺旋面板，变量不限于 .naut-root */
+.naut-prio-badge, .naut-prio-raw {
+  --naut-prio-a: var(--naut-c-main, #cf4d4a);
+  --naut-prio-b: #cf9430;
+  --naut-prio-c: #5c86b4;
+}
+.naut-prio-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.45em;
+  height: 1.45em;
+  padding: 0 0.28em;
+  border-radius: 3.5px;
+  color: #fff;
+  font-size: 0.75em;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: 0.08em;
+  text-shadow: 0 0.5px 0 rgba(0, 0, 0, .14);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .12);
+  user-select: none;
+}
+.naut-prio-badge.is-prio-a { background: var(--naut-prio-a); }
+.naut-prio-badge.is-prio-b { background: var(--naut-prio-b); }
+.naut-prio-badge.is-prio-c { background: var(--naut-prio-c); }
+.cm-line .naut-prio-badge { cursor: pointer; }
+.cm-line .naut-prio-badge.is-attached, .markdown-reading-view .naut-prio-badge.is-attached { margin-left: 0.22em; }
+.naut-prio-raw { font-family: var(--font-monospace); font-weight: 600; border-radius: 3px; padding: 0 1px; }
+.naut-prio-raw.is-prio-a { color: var(--naut-prio-a); background: color-mix(in srgb, var(--naut-prio-a) 12%, transparent); }
+.naut-prio-raw.is-prio-b { color: var(--naut-prio-b); background: color-mix(in srgb, var(--naut-prio-b) 12%, transparent); }
+.naut-prio-raw.is-prio-c { color: var(--naut-prio-c); background: color-mix(in srgb, var(--naut-prio-c) 12%, transparent); }
+.naut-row .naut-prio-badge, .naut-st-row .naut-prio-badge { margin-right: 5px; border-radius: 3px; min-width: 1.38em; height: 1.38em; }
+.naut-row.is-done .naut-prio-badge { opacity: 0.65; }

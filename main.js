@@ -79,14 +79,203 @@ const CHECKBOX_RE = /^\[([ xX\/\-])\]\s*/;
 const KW_ALT = "TODO|DOING|LATER|NOW|PAUSED|TOREVIEW|HITLIMIT|NEEDOK|QUEUED|ERRORED|DELEGATED|WAITING|WAIT|SUSPENDED|IN-PROGRESS|DONE|CANCELED|CANCELLED|FAILED|YES|NO|MAYBE";   // 认得的状态关键词，下面几个正则共用。YES 同 DONE、NO 同 CANCELLED、MAYBE 同 WAITING（和 TODOseq、块去向、日记整理一致）
 const KEYWORD_RE = new RegExp(`^(${KW_ALT})\\s+`);
 const SHORT_KW_RE = new RegExp(`^(${KW_ALT})`, "i");
-// 优先级简写：关键字后面紧跟 a / b / c（todoa 写稿），或者隔空格（todo a 写稿、doing b）。隔空格的，字母后面要么没字了、要么紧跟中文、
-// 要么空格后面不是英文字母（todo a book 是英文句子，不算）。和块去向的 prioShort 同一条规则；TODOseq 在光标离开那一行时才改成 TODO [#A]
+const PRIO_TAG_RE = /\[#([ABC])\](?!\s*[\[(])/i;
+const PRIO_TAG_G_RE = /\[#([ABC])\](?!\s*[\[(])/gi;
+const ATTACHED_PRIO_RE = /^([abcABC])(?=$|[\s:：]|[^\x00-\x7f])/;
+const FUZZY_PRIO_RE = /^(?:([aA])(?=$|[:：]|[^\x00-\x7f]|[ \t]+(?![ \tA-Za-z]))|([bBcC])(?=$|[\s:：]|[^\x00-\x7f]))/;
+const PRIO_LEAD_PART_RE = /^(?:\d{1,2}[:：]\d{2}(?:\s*[-–~～到至]\s*\d{1,2}[:：]\d{2})?|🤖)[ \t]+/;
+const MAIN_KW_RE_SRC = `TODOFORAI|TODO4AI|TODO2AI|TODOTOAI|${KW_ALT}`;
+const MAIN_KW_SPACE_I_RE = new RegExp(`^(${MAIN_KW_RE_SRC})[ \\t]+`, "i");
+const isShortKwAllowed = (rawKw) => rawKw.length > 2 || rawKw === rawKw.toUpperCase();
+function inlineCodeRanges(line) {
+  const ranges = [];
+  const re = /(`+)([\s\S]*?)\1/g;
+  let m;
+  while ((m = re.exec(line))) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}
+function inRanges(pos, end, ranges) {
+  for (const [a, b] of ranges) if (pos < b && end > a) return true;
+  return false;
+}
+const stripInlineCode = (s) => String(s || "").replace(/(`+)[\s\S]*?\1/g, (m) => " ".repeat(m.length));
+// 优先级简写：关键字后紧跟 a / b / c（todoa 写稿），或隔空格（todo a 写稿、todo b fix bug、doing c cleanup）；
+// 英文冠词 a/A 后面隔空格再接英文字母（todo a book）不算；行内已有 [#A/B/C] 时不再匹配模糊单字母
 function prioShort(s, re) {
+  if (PRIO_TAG_RE.test(stripInlineCode(s))) return null;
   const k = re.exec(s);
-  if (!k) return null;
+  if (!k || !isShortKwAllowed(k[1])) return null;
   const r = s.slice(k[0].length);
-  const m = /^([abcABC])(?=$|[\s:：]|[^\x00-\x7f])/.exec(r) || /^[ \t]+([abcABC])(?=$|[^\x00-\x7f]|[ \t]+(?![ \tA-Za-z]))/.exec(r);
-  return m && { kw: k[1].toUpperCase(), prio: m[1].toUpperCase(), rest: r.slice(m[0].length).replace(/^[\s:：]+/, "") };
+  if (k[1].length > 2) {
+    const am = ATTACHED_PRIO_RE.exec(r);
+    if (am) return { kw: k[1].toUpperCase(), prio: am[1].toUpperCase(), rest: r.slice(am[0].length).replace(/^[\s:：]+/, ""), prioOffset: k[0].length, attached: true };
+  }
+  const sp = /^[ \t]+/.exec(r);
+  if (!sp) return null;
+  const fm = FUZZY_PRIO_RE.exec(r.slice(sp[0].length));
+  if (!fm) return null;
+  return { kw: k[1].toUpperCase(), prio: (fm[1] || fm[2]).toUpperCase(), rest: r.slice(sp[0].length + fm[0].length).replace(/^[\s:：]+/, ""), prioOffset: k[0].length + sp[0].length, attached: false };
+}
+function stripFuzzyPrioLead(s) {
+  if (PRIO_TAG_RE.test(stripInlineCode(s))) return null;
+  let lead = "", leadLen = 0;
+  for (let i = 0; i < 3; i++) {
+    const lm = PRIO_LEAD_PART_RE.exec(s.slice(leadLen));
+    if (!lm) break;
+    lead += lm[0];
+    leadLen += lm[0].length;
+  }
+  const m = FUZZY_PRIO_RE.exec(s.slice(leadLen));
+  if (!m) return null;
+  const prio = (m[1] || m[2]).toUpperCase();
+  const body = s.slice(leadLen + m[0].length).replace(/^[\s:：]+/, "");
+  return { prio, lead, body, rest: `${lead}[#${prio}]${body ? " " + body : ""}`, prioOffset: leadLen };
+}
+function placePrioAfterLead(prio, rest) {
+  let lead = "", off = 0;
+  for (let i = 0; i < 3; i++) {
+    const lm = PRIO_LEAD_PART_RE.exec(rest.slice(off));
+    if (!lm) break;
+    lead += lm[0];
+    off += lm[0].length;
+  }
+  const body = rest.slice(off).replace(/^\s+/, "");
+  return `${lead}[#${prio}]${body ? " " + body : ""}`;
+}
+function analyzePriorityLine(raw, inTodos = false) {
+  const m = /^(\s*(?:[-*+]|\d+[.)])\s+)(\*\*\d{1,2}[:：]\d{2}\*\*\s*)?(.*)$/.exec(String(raw || ""));
+  if (!m) return null;
+  const [, listPrefix, stamp = "", rest] = m;
+  if (/^-{3,}\s*$/.test(rest) || isMarkText(rest)) return null;
+  if (PRIO_TAG_RE.test(stripInlineCode(rest))) return null;
+  const head = `${listPrefix}${stamp}`, headLen = head.length;
+  const cb = CHECKBOX_RE.exec(rest);
+  if (cb) {
+    const afterCb = rest.slice(cb[0].length), cbBase = headLen + cb[0].length;
+    const ps = prioShort(afterCb, MAIN_KW_RE);
+    if (ps) return { prio: ps.prio, start: cbBase + ps.prioOffset, end: cbBase + ps.prioOffset + 1, attached: ps.attached, expanded: `${head}${cb[0]}${ps.kw} ${placePrioAfterLead(ps.prio, ps.rest)}` };
+    const kw = MAIN_KW_SPACE_I_RE.exec(afterCb);
+    if (kw && isShortKwAllowed(kw[1])) {
+      const fp = stripFuzzyPrioLead(afterCb.slice(kw[0].length));
+      if (fp) {
+        const start = cbBase + kw[0].length + fp.prioOffset;
+        return { prio: fp.prio, start, end: start + 1, attached: false, expanded: `${head}${cb[0]}${kw[1].toUpperCase()} ${fp.rest}` };
+      }
+    }
+    const fp = stripFuzzyPrioLead(afterCb);
+    if (fp) {
+      const start = cbBase + fp.prioOffset;
+      return { prio: fp.prio, start, end: start + 1, attached: false, expanded: `${head}${cb[0]}${fp.rest}` };
+    }
+    return null;
+  }
+  const ps = prioShort(rest, MAIN_KW_RE);
+  if (ps) return { prio: ps.prio, start: headLen + ps.prioOffset, end: headLen + ps.prioOffset + 1, attached: ps.attached, expanded: `${head}${ps.kw} ${placePrioAfterLead(ps.prio, ps.rest)}` };
+  const kw = MAIN_KW_SPACE_I_RE.exec(rest);
+  if (kw && isShortKwAllowed(kw[1])) {
+    const fp = stripFuzzyPrioLead(rest.slice(kw[0].length));
+    if (fp && fp.lead) {
+      const start = headLen + kw[0].length + fp.prioOffset;
+      return { prio: fp.prio, start, end: start + 1, attached: false, expanded: `${head}${kw[1].toUpperCase()} ${fp.rest}` };
+    }
+  }
+  if (inTodos && todosKidRest(rest)) {
+    const fp = stripFuzzyPrioLead(rest);
+    if (fp) {
+      const start = headLen + fp.prioOffset;
+      return { prio: fp.prio, start, end: start + 1, attached: false, expanded: `${head}${fp.rest}` };
+    }
+  }
+  return null;
+}
+function findFuzzyPrioInLine(lineText, inTodos = false) {
+  const a = analyzePriorityLine(lineText, inTodos);
+  return a ? { start: a.start, end: a.end, prio: a.prio, attached: a.attached } : null;
+}
+function expandPriorityLine(raw, inTodos = false) {
+  const s = String(raw || "");
+  const m = /^(\s*(?:[-*+]|\d+[.)])\s+)(\*\*\d{1,2}[:：]\d{2}\*\*\s*)?(.*)$/.exec(s);
+  if (!m) return null;
+  const rest = m[3];
+  if (/^-{3,}\s*$/.test(rest) || isMarkText(rest)) return null;
+  if (PRIO_TAG_RE.test(stripInlineCode(rest))) {
+    const codeRanges = inlineCodeRanges(s);
+    const next = s.replace(PRIO_TAG_G_RE, (tag, p, off) => (inRanges(off, off + tag.length, codeRanges) ? tag : `[#${p.toUpperCase()}]`));
+    return next !== s ? next : null;
+  }
+  const a = analyzePriorityLine(s, inTodos);
+  return a && a.expanded !== s ? a.expanded : null;
+}
+function findPriorityTokens(text) {
+  const tokens = [];
+  const str = String(text || "");
+  const len = str.length;
+  let pos = 0, lineNo = 0;
+  let inFrontmatter = false, fenceChar = "", fenceLen = 0;
+  const todoStack = [];
+  while (pos <= len) {
+    let nl = str.indexOf("\n", pos);
+    if (nl === -1) nl = len;
+    const rawEnd = nl > pos && str.charCodeAt(nl - 1) === 13 ? nl - 1 : nl;
+    const line = str.slice(pos, rawEnd);
+    if (lineNo === 0 && /^---\s*$/.test(line) && nl < len && /^(?:---|\.\.\.)\s*$/m.test(str.slice(nl + 1))) {
+      inFrontmatter = true;
+    } else if (inFrontmatter) {
+      if (/^(?:---|\.\.\.)\s*$/.test(line)) inFrontmatter = false;
+    } else {
+      const fm = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (!fenceChar && fm && !(fm[1][0] === "`" && line.slice(fm[0].length).includes("`"))) {
+        fenceChar = fm[1][0];
+        fenceLen = fm[1].length;
+      } else if (fenceChar) {
+        if (new RegExp(`^\\s*${fenceChar}{${fenceLen},}\\s*$`).test(line)) { fenceChar = ""; fenceLen = 0; }
+      } else {
+        let inTodos = false;
+        const lm = TODOS_KID_RE.exec(line);
+        if (lm) {
+          const w = indW(line);
+          while (todoStack.length && todoStack[todoStack.length - 1].w >= w) todoStack.pop();
+          inTodos = !!(todoStack.length && todoStack[todoStack.length - 1].head);
+          todoStack.push({ w, head: TODOS_HEAD_RE.test(line) });
+        } else if (line.trim() && !BLOCK_ID_RE.test(line)) {
+          todoStack.length = 0;
+        }
+        const codeRanges = inlineCodeRanges(line);
+        let lineHasExplicit = false;
+        PRIO_TAG_G_RE.lastIndex = 0;
+        let tm;
+        while ((tm = PRIO_TAG_G_RE.exec(line))) {
+          const s = tm.index, e = s + tm[0].length;
+          if (inRanges(s, e, codeRanges)) continue;
+          lineHasExplicit = true;
+          tokens.push({ line: lineNo, from: pos + s, to: pos + e, prio: tm[1].toUpperCase(), raw: tm[0], fuzzy: false, attached: false });
+        }
+        if (!lineHasExplicit) {
+          const fz = findFuzzyPrioInLine(line, inTodos);
+          if (fz && !inRanges(fz.start, fz.end, codeRanges)) {
+            tokens.push({ line: lineNo, from: pos + fz.start, to: pos + fz.end, prio: fz.prio, raw: line.slice(fz.start, fz.end), fuzzy: true, attached: !!fz.attached });
+          }
+        }
+      }
+    }
+    if (nl === len) break;
+    pos = nl + 1;
+    lineNo++;
+  }
+  return tokens;
+}
+function createPriorityBadgeEl(doc, prio, attached = false) {
+  const p = String(prio || "").toUpperCase();
+  const el = doc.createElement("span");
+  el.className = `naut-prio-badge is-prio-${p.toLowerCase()}${attached ? " is-attached" : ""}`;
+  el.setAttribute("data-priority", p);
+  el.setAttribute("aria-label", T(`优先级 ${p}`, `Priority ${p}`));
+  el.textContent = p;
+  return el;
+}
+function appendPriorityBadge(parent, prio) {
+  if (!prio || !parent) return;
+  parent.appendChild(createPriorityBadgeEl(parent.ownerDocument || document, prio, false));
 }
 const TIME = String.raw`(\d{1,2})(?:[:：](\d{2})|点(?:(半)|(\d{1,2})分?)?)`;
 const RANGE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}\s*(?:-|–|—|~|～|到|至)\s*(?:${TIME}|(\d{1,2})(?![\d:：点]))`);
@@ -103,7 +292,7 @@ const TODOS_KW_RE = new RegExp(`^(?:${KW_ALT}|TODOFORAI|TODO4AI|TODO2AI|TODOTOAI
 function todosKidRest(rest) {
   const s = rest.replace(STAMP_RE, "");
   return !!s.trim() && !CHECKBOX_RE.test(s) && !TODOS_KW_RE.test(s)
-    && !/^-{3,}\s*$/.test(s) && !isMarkText(s);
+    && !prioShort(s, MAIN_KW_RE) && !/^-{3,}\s*$/.test(s) && !isMarkText(s);
 }
 // 读的时候在这些子条目的列表符号后面补一个 TODO（只在内存里补，不写回）
 const withTodo = (l) => l.replace(/^(\s*(?:[-*+]|\d+[.)])\s+(?:\*\*\d{1,2}[:：]\d{2}\*\*\s*)?)/, "$1TODO ");
@@ -198,7 +387,7 @@ function cleanLabel(s) {
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[[^\[\]]+::[^\]]*\]/g, "")
     .replace(/\s\^[A-Za-z0-9-]+\s*$/, "")
-    .replace(/\[#[ABC]\]\s*/g, "")   // TODOseq / Logseq 的优先级
+    .replace(/\[#[ABC]\]\s*/gi, "")   // TODOseq / Logseq 的优先级
     .replace(/==|\*\*|~~|`/g, "")
     .replace(/[📅🛫✅⭐⏳]\s*\d{4}-\d{2}-\d{2}/gu, "")
     .replace(/\s+/g, " ")
@@ -343,6 +532,14 @@ function parseStatusPrefix(s, kwRe = KEYWORD_RE, shortRe = SHORT_KW_RE) {
     break;
   }
   const kwName = kw ? kw[1].toUpperCase() : (cb ? (cb[1] === "/" ? "DOING" : cb[1] === " " ? "TODO" : cb[1] === "-" ? "CANCELLED" : "DONE") : null);
+  if (kwName && !prio) {
+    const tm = PRIO_TAG_RE.exec(stripInlineCode(s));
+    if (tm) prio = tm[1].toUpperCase();
+    else {
+      const fp = stripFuzzyPrioLead(s);
+      if (fp) { prio = fp.prio; s = fp.rest; }
+    }
+  }
   return { rest: s, stamp, cb, kw, kwName, prio };
 }
 // 共享祖先栈推进：同缩进或更浅时出栈，取最顶层非 TODO 祖先控制源
@@ -521,7 +718,7 @@ function parseJournal(content, cfg) {
     let suspended = !!(kwName && /^(WAIT|SUSPENDED|MAYBE)/.test(kwName));   // WAITING / SUSPENDED / MAYBE = 搁置：短期不推，今天不排、不占容量，做过的时间和进度留着
     let paused = !!(kwName && (kwName === "PAUSED" || AGENT_KW_RE.test(kwName)));   // PAUSED = 暂停：只是停一下，照常排，接着做时剩余时间扣掉做过的；TOREVIEW / NEEDOK / ERRORED / HITLIMIT / QUEUED 同
     let agentKw = kwName && AGENT_KW_RE.test(kwName) ? kwName : null;
-    if (p.kw) s = s.replace(/^\[#[ABC]\]\s*/, "");   // 优先级（TODO [#A] …）不挡住后面的时刻
+    if (p.kwName) s = s.replace(/^\[#[ABC]\]\s*/i, "");   // 优先级（TODO [#A] … / [ ] [#A] …）不挡住后面的时刻
     let labelPreview = state === "none" ? s : stripProgress(s);
     for (const pr of prio) labelPreview = labelPreview.split(pr).join("");
     labelPreview = cleanLabel(labelPreview) || s.trim();
@@ -544,12 +741,12 @@ function parseJournal(content, cfg) {
     if (state === "drop") return;
     const progress = state === "none" ? null : parseProgress(s);
     const label = labelPreview;
-    const auto = state !== "none" && /^(?:\[#[ABC]\]\s*)*🤖/.test(s);   // 这一行是自动记的（Agent 回写的）
-    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), stamp, ...(auto ? { auto: true } : {}), ...(inheritedFrom != null ? { inheritedFrom, inheritedLabel } : {}) };
+    const auto = state !== "none" && /^(?:\[#[ABC]\]\s*)*🤖/i.test(s);   // 这一行是自动记的（Agent 回写的）
+    const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), ...(p.prio ? { priority: p.prio } : {}), stamp, ...(auto ? { auto: true } : {}), ...(inheritedFrom != null ? { inheritedFrom, inheritedLabel } : {}) };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
-      const ts = s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/, "");   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
+      const ts = s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/i, "");   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
       const lr = new RegExp("^" + RANGE_RE.source).exec(ts);
       const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
       if (state === "done" && lr) {
@@ -640,9 +837,8 @@ function mainTask(raw) {
   const lm = LIST_RE.exec(raw);
   if (!lm) return null;
   const p = parseStatusPrefix(lm[2], MAIN_KW_FULL_RE, MAIN_KW_RE);
-  if (!p.kwName) return null;
-  if (p.prio ? p.prio !== "A" : !p.rest.includes("[#A]")) return null;
-  return { state: mainStateOf(p.kwName), label: cleanLabel(stripProgress(p.rest.replace(/\[#A\]\s*/g, ""))) || p.rest.trim() };
+  if (!p.kwName || p.prio !== "A") return null;
+  return { state: mainStateOf(p.kwName), label: cleanLabel(stripProgress(p.rest.replace(/\[#[ABC]\]\s*/gi, ""))) || p.rest.trim() };
 }
 // 返回 { blocks: [{ line, end, label, tasks: [{ line, label, state }], done, total }], over: [多出来的块的标题], tasks: 各块的 A 级任务拍平, done, total }
 function mainOf(content) {
@@ -1024,11 +1220,17 @@ function kwLine(raw) {
   let kw = "";
   const cb = CHECKBOX_RE.exec(s);
   if (cb) { kw = cb[1] === " " ? "TODO" : cb[1] === "/" ? "DOING" : cb[1] === "-" ? "CANCELLED" : "DONE"; s = s.slice(cb[0].length); }
+  const ps = prioShort(s, SHORT_KW_RE);
+  if (ps) s = `${ps.kw} [#${ps.prio}] ${ps.rest}`;
   const m = KW_LINE_RE.exec(s);
   if (m) { kw = m[1]; s = s.slice(m[0].length); }
+  if ((cb || m) && !PRIO_TAG_RE.test(stripInlineCode(s))) {
+    const fp = stripFuzzyPrioLead(s);
+    if (fp) s = fp.rest;
+  }
   // 关键词后面跟着的时刻 / 时间段是记录，会跟着状态一起变，不算正文
   // 优先级（[#A]）在时刻前后都可能出现，也不算正文
-  s = s.replace(/^\[#[ABC]\]\s*/, "").replace(/^\d{1,2}[:：]\d{2}(?:\s*[-–~～]\s*\d{1,2}[:：]\d{2})?\s*/, "").replace(/^\[#[ABC]\]\s*/, "").trim();
+  s = s.replace(/^\[#[ABC]\]\s*/i, "").replace(/^\d{1,2}[:：]\d{2}(?:\s*[-–~～]\s*\d{1,2}[:：]\d{2})?\s*/, "").replace(/^\[#[ABC]\]\s*/i, "").trim();
   if (!s || isMarkText(s)) return null;
   return { kw, body: s };
 }
@@ -1226,11 +1428,18 @@ function splitTask(raw) {
   if (kw) rest = rest.slice(kw[0].length);
   const kwUpper = kw ? kw[1].toUpperCase() : null;
   const kwCanon = kwUpper ? canonKw(kwUpper) : null;
+  if ((kw || cb) && !PRIO_TAG_RE.test(stripInlineCode(rest))) {
+    const fp = stripFuzzyPrioLead(rest);
+    if (fp) rest = fp.rest;
+  }
   // 🤖 与优先级（[#A]）先暂存，剥完紧跟的记录时刻/时段后再放回正文开头：改状态时写成 DOING 14:05 🤖 [#A] …
   const leads = [];
-  if (kw) {
+  if (kw || cb) {
     let lm;
-    while ((lm = /^(🤖|\[#[ABC]\])\s*/.exec(rest))) { leads.push(lm[1]); rest = rest.slice(lm[0].length); }
+    while ((lm = /^(🤖|\[#[ABC]\])\s*/i.exec(rest))) {
+      leads.push(lm[1].startsWith("[#") ? lm[1].toUpperCase() : lm[1]);
+      rest = rest.slice(lm[0].length);
+    }
   }
   let since = null, range = null;
   // 仅非 TODO 状态（DONE / DOING / PAUSED / SUSPENDED / WAITING 等）紧跟的时刻/时段是状态记录，切状态时剥离；TODO 后的时刻属于固定事件预约时间，保留不动
@@ -1282,16 +1491,13 @@ function cycleUpNextStatus(raw, origRaw = null, nowStr = moment().format("HH:mm"
   }
   return { nextRaw: toKeyword(raw, "DONE", nowStr), nextKw: "DONE", origRaw: raw };
 }
-function taskPriority(raw) {
-  const m = /\[#([ABC])\]/.exec(String(raw || ""));
-  if (m) return m[1];
-  const lm = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/.exec(String(raw || ""));
-  if (!lm) return "";
-  let rest = lm[2].replace(STAMP_RE, "").replace(CHECKBOX_RE, "");
-  const ps = prioShort(rest, SHORT_KW_RE);
-  return ps ? ps.prio : "";
+function taskPriority(raw, inTodos = false) {
+  const a = analyzePriorityLine(raw, inTodos);
+  if (a) return a.prio;
+  const m = PRIO_TAG_RE.exec(stripInlineCode(String(raw || "")));
+  return m ? m[1].toUpperCase() : "";
 }
-function toPriority(raw, prio) {
+function toPriority(raw, prio, bareTask = false) {
   const m = /^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/.exec(String(raw || ""));
   if (!m) return raw;
   let [, head, rest] = m;
@@ -1299,24 +1505,29 @@ function toPriority(raw, prio) {
   if (st) { head += st[0]; rest = rest.slice(st[0].length); }
   const cb = CHECKBOX_RE.exec(rest);
   if (cb) { head += cb[0]; rest = rest.slice(cb[0].length); }
-  const ps = prioShort(rest, SHORT_KW_RE);
+  const ps = prioShort(rest, MAIN_KW_RE);
   if (ps) rest = `${ps.kw} [#${ps.prio}] ${ps.rest}`;
-  const kw = KEYWORD_RE.exec(rest);
+  const kw = MAIN_KW_FULL_RE.exec(rest);
   if (kw) {
     head += kw[0];
     rest = rest.slice(kw[0].length);
-    const rg = /^(\d{1,2}[:：]\d{2}\s*[-–~～到至]\s*\d{1,2}[:：]\d{2}\s*)/.exec(rest);
-    if (rg) { head += rg[0]; rest = rest.slice(rg[0].length); }
-    else {
-      const tm = /^(\d{1,2}[:：]\d{2}(?![\d:：]|\s*[-–~～到至])\s*)/.exec(rest);
-      if (tm) { head += tm[0]; rest = rest.slice(tm[0].length); }
-    }
-    const ai = /^(🤖\s*)/.exec(rest);
-    if (ai) { head += ai[0]; rest = rest.slice(ai[0].length); }
   }
-  rest = rest.replace(/\[#[ABC]\]\s*/g, "").trimStart();
+  if (kw || cb || bareTask) {
+    for (let i = 0; i < 3; i++) {
+      const lm = PRIO_LEAD_PART_RE.exec(rest);
+      if (!lm) break;
+      head += lm[0];
+      rest = rest.slice(lm[0].length);
+    }
+    if (!PRIO_TAG_RE.test(stripInlineCode(rest))) {
+      const fp = stripFuzzyPrioLead(rest);
+      if (fp) rest = fp.rest;
+    }
+  }
+  const codeRanges = inlineCodeRanges(rest);
+  rest = rest.replace(PRIO_TAG_G_RE, (tag, _p, off) => (inRanges(off, off + tag.length, codeRanges) ? tag : "")).replace(/\s{2,}/g, " ").trimStart();
   const target = ["A", "B", "C"].includes(String(prio || "").toUpperCase()) ? String(prio).toUpperCase() : "";
-  return target ? `${head}[#${target}] ${rest}` : `${head}${rest}`;
+  return target ? `${head}[#${target}]${rest ? " " + rest : ""}` : `${head}${rest}`;
 }
 const UP_NEXT_MENU_GROUPS = [
   [
@@ -2711,10 +2922,12 @@ class StatusModal extends OB.Modal {
 
       // 在做的
       const sec = (title, n) => rise(contentEl.createDiv({ cls: "naut-st-sec" })).createSpan({ text: n != null ? `${title} ${n}` : title });
-      const row = (cls, left, label, right, item) => {
+      const row = (cls, left, label, right, item, prio = null) => {
         const r = rise(contentEl.createDiv({ cls: `naut-st-row ${cls}` }));
         r.createSpan({ cls: "naut-st-left", text: left });
-        r.createSpan({ cls: "naut-st-label", text: label });
+        const lb = r.createSpan({ cls: "naut-st-label" });
+        if (prio) appendPriorityBadge(lb, prio);
+        lb.appendText(label);
         const rt = r.createSpan({ cls: "naut-st-right", text: right });
         if (item) r.onclick = () => go(item);
         return rt;
@@ -2722,7 +2935,7 @@ class StatusModal extends OB.Modal {
       this.timers = [];
       if (d.doing.length) sec(T("在做", "Doing"), d.doing.length);
       for (const x of d.doing) {
-        const el = row("is-doing" + (x.auto ? " is-auto" : ""), "", short(x.item.label), "", x.item);
+        const el = row("is-doing" + (x.auto ? " is-auto" : ""), "", short(x.item.label), "", x.item, x.item.priority);
         if (x.since) this.timers.push(() => el.setText(elapsedText(Date.now() - x.since)));
         else el.setText(x.spent >= 1 ? T(`已做 ${dur(x.spent)}`, `${dur(x.spent)} done`) : T("进行中", "In progress"));
       }
@@ -2731,7 +2944,7 @@ class StatusModal extends OB.Modal {
       const upcoming = [...d.events.map((e) => ({ at: Math.max(e.start, d.now), kind: "event", item: e, right: `${clock(e.start)}–${clock(e.end)}` })),
         ...d.next.map((t) => ({ at: t.segments[t.workedN][0], kind: t.prio ? "prio" : "task", item: t, right: t.remaining < t.dur - 1 ? T(`剩 ${dur(t.remaining)}`, `${dur(t.remaining)} left`) : dur(t.dur) }))].sort((a, b) => a.at - b.at).slice(0, 6);
       if (upcoming.length) sec(T("接下来", "Up next"));
-      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? T("进行中", "Now") : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item);
+      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? T("进行中", "Now") : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item, u.item.priority);
       if (d.over.length) row("is-over", "—", T(`排不下 ${d.over.length} 件：${d.over.slice(0, 3).map((t) => short(t.label)).join("、")}${d.over.length > 3 ? "…" : ""}`, `${d.over.length} won't fit: ${d.over.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.over.length > 3 ? "…" : ""}`), "", d.over[0]);
       if (d.suspended.length) row("is-paused", "💤", T(`搁置 ${d.suspended.length} 件：${d.suspended.slice(0, 3).map((t) => short(t.label)).join("、")}${d.suspended.length > 3 ? "…" : ""}`, `${d.suspended.length} parked: ${d.suspended.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.suspended.length > 3 ? "…" : ""}`), "", d.suspended[0]);
       if (!d.doing.length && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: T("今天没有排着的事了", "Nothing else scheduled today") }));
@@ -3749,8 +3962,15 @@ class SpiralView extends ItemView {
           dot.onclick = (e) => { e.stopPropagation(); this._hideDotTip(); this.cycleUpNext(file, dayKey, r.item, r.upNextIdx); };
         }
         row.createSpan({ cls: "naut-time", text: r.time });
-        row.createSpan({ cls: "naut-label", text: (r.item.paused ? "⏸ " : "") + (r.item.mainA && !r.inMain ? "🎯 " : "") + (r.item.cal ? "📅 " : "") + r.item.label,
-          attr: r.item.cal ? { title: T(`日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`, `Calendar: ${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`) } : {} });
+        const labelEl = row.createSpan({
+          cls: "naut-label",
+          attr: r.item.cal ? { title: T(`日历：${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`, `Calendar: ${r.item.cal.calendar}${r.item.cal.location ? " · " + r.item.cal.location : ""}`) } : {},
+        });
+        if (r.item.paused) labelEl.appendText("⏸ ");
+        if (r.item.priority) appendPriorityBadge(labelEl, r.item.priority);
+        else if (r.item.mainA && !r.inMain) labelEl.appendText("🎯 ");
+        if (r.item.cal) labelEl.appendText("📅 ");
+        labelEl.appendText(r.item.label);
         const sess = aiOf(r.item);
         if (sess.length) {
           const rel = sess.filter((x) => x.related).length;
@@ -3762,7 +3982,8 @@ class SpiralView extends ItemView {
         row.onclick = () => this.plugin.openItem(file, r.item);
         if (r.upNext || r.canMenu) {
           const prioLine = r.item.inheritedFrom != null ? r.item.inheritedFrom : r.item.line;
-          row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item, taskPriority(journalLines[prioLine]));
+          const curPrio = r.item.inheritedFrom != null ? taskPriority(journalLines[prioLine]) : (r.item.priority || taskPriority(journalLines[prioLine]));
+          row.oncontextmenu = (e) => this.openUpNextMenu(e, file, dayKey, r.item, curPrio);
         }
       }
     };
@@ -3778,7 +3999,7 @@ class SpiralView extends ItemView {
         for (const t of M.tasks) {
           const it = items.find((i) => i.line === t.line);
           if (!it) {   // 排程不管的主线：交给 AI 的（TODO4AI [#A]）、没做成的（FAILED [#A]），照样列出来
-            rows.push({ item: { line: t.line, label: t.label, kind: "task", state: t.state, segs: [] }, inMain: true, cls: "is-main" + (t.state === "failed" ? " is-over" : t.state === "done" ? " is-done" : ""),
+            rows.push({ item: { line: t.line, label: t.label, kind: "task", state: t.state, priority: "A", segs: [] }, inMain: true, cls: "is-main" + (t.state === "failed" ? " is-over" : t.state === "done" ? " is-done" : ""),
               time: t.state === "failed" ? T("没做成", "Failed") : t.state === "done" ? "✓" : t.state === "doing" ? T("进行中", "Doing") : T("交给 AI", "Handed to AI"), dur: "" });
             continue;
           }
@@ -3984,7 +4205,7 @@ class SpiralView extends ItemView {
   // 「接下来」面板右键设置重要程度（[#A] / [#B] / [#C] / 清除）
   async setUpNextPriority(file, dayKey, item, prio) {
     return this._mutateUpNext(file, dayKey, item, (cur, targetLine) => ({
-      nextRaw: toPriority(cur, prio),
+      nextRaw: toPriority(cur, prio, true),
       soundKw: null,
       after: () => {
         this._upNextHold?.get(dayKey)?.delete(targetLine);
@@ -4297,7 +4518,10 @@ module.exports = class NautilusSpiral extends Plugin {
     this.kw = new Map();   // path -> kwSnapshot
     this.registerEvent(this.app.vault.on("modify", (f) => this.onAnyModify(f)));
     this.registerEditorExtension(this.kwLiveExtension());   // 编辑器里一改就响，不等写盘
+    this.registerEditorExtension(this.priorityAutoExtension());   // 优先级简写（todo a / [ ] a / DOING 14:05 b / [#a]）离开该行时自动规范化
+    this.registerEditorExtension(this.priorityBadgeExtension());   // 编辑器里 [#A]/[#B]/[#C] 与未展开简写渲染成彩色小方块
     this.registerEditorExtension(this.mainSliderExtension());   // 主线块下面能拖的进度条
+    this.registerPriorityPostProcessor();   // 阅读视图渲染优先级小方块
     this.registerEvent(this.app.workspace.on("file-open", (f) => this.kwBaseline(f)));
     this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
@@ -5987,6 +6211,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const { EditorView } = require("@codemirror/view");
     return EditorView.updateListener.of((u) => {
       if (!u.docChanged || this.settings.uiSound === false) return;
+      if (u.transactions.length && u.transactions.every((tr) => tr.isUserEvent("input.naut-priority"))) return;
       const a = u.startState.doc, b = u.state.doc, changes = [];
       let lines = 0;
       u.changes.iterChangedRanges((fa, ta, fb, tb) => {
@@ -6074,7 +6299,7 @@ module.exports = class NautilusSpiral extends Plugin {
       let parsed = mainDocCache.get(doc);
       if (!parsed) {
         const text = doc.toString();
-        parsed = text.includes("#A") || /\b(?:TODO|DOING|DONE|LATER|NOW|WAITING|WAIT|HOLD|PAUSED)\s+a\b/i.test(text)
+        parsed = /\[#[aA]\]/.test(text) || /(?:^|\n)\s*(?:[-*+]|\d+[.)])\s+[^\n]*(?:\b(?:TODO|DOING|DONE|LATER|NOW|WAITING|WAIT|SUSPENDED|PAUSED|TODOFORAI|TODO4AI|TODO2AI|TODOTOAI|\[ \]|\[\/\]|\[[xX]\])\s*(?:\d{1,2}[:：]\d{2}(?:\s*[-–~～到至]\s*\d{1,2}[:：]\d{2})?\s+|🤖\s+)*a\b|\b(?:TODO|DOING|DONE|LATER|NOW|WAITING|WAIT|SUSPENDED|PAUSED|TODOFORAI|TODO4AI|TODO2AI|TODOTOAI)a|\btodos?\s*[:：])/i.test(text)
           ? mainOf(text)
           : { blocks: [] };
         mainDocCache.set(doc, parsed);
@@ -6090,6 +6315,219 @@ module.exports = class NautilusSpiral extends Plugin {
       constructor(view) { this.decorations = build(view); }
       update(u) { if (u.docChanged) this.decorations = build(u.view); }
     }, { decorations: (v) => v.decorations });
+  }
+  // Logseq Style Tasks 已开启关键词/优先级徽章渲染时，让出编辑器与阅读视图渲染以免重复
+  hasExternalPriorityRender() {
+    const plugins = this.app?.plugins;
+    if (!plugins?.enabledPlugins?.has("logseq-style-tasks")) return false;
+    return plugins.plugins?.["logseq-style-tasks"]?.settings?.formatTaskKeywords === true;
+  }
+  // 光标离开该行时把合法的模糊优先级（todo a / [ ] a / DOING 14:05 b / [#a] / todos: 子项 - a）规范化为 [#A]/[#B]/[#C]
+  priorityAutoExtension() {
+    const { EditorView } = require("@codemirror/view");
+    return EditorView.updateListener.of((u) => {
+      if (!u.selectionSet && !u.docChanged) return;
+      if (u.view.composing) return;
+      if (u.transactions.some((tr) => tr.isUserEvent("undo") || tr.isUserEvent("redo") || tr.isUserEvent("input.paste") || tr.isUserEvent("input.naut-priority"))) return;
+      const doc = u.state.doc;
+      const curLine = doc.lineAt(u.state.selection.main.head);
+      const prevHead = u.docChanged ? u.changes.mapPos(u.startState.selection.main.head, -1) : u.startState.selection.main.head;
+      if (prevHead < 0 || prevHead > doc.length) return;
+      const prevLine = doc.lineAt(prevHead);
+      if (prevLine.number === curLine.number) return;
+      if (!TODOS_KID_RE.test(prevLine.text) || expandPriorityLine(prevLine.text, true) == null) return;
+      let inFrontmatter = false, fenceChar = "", fenceLen = 0, inTodos = false;
+      const todoStack = [];
+      for (let ln = 1; ln <= prevLine.number; ln++) {
+        const lineText = doc.line(ln).text;
+        if (ln === 1 && /^---\s*$/.test(lineText)) {
+          let hasClose = false;
+          for (let k = 2; k <= doc.lines; k++) {
+            if (/^(?:---|\.\.\.)\s*$/.test(doc.line(k).text)) { hasClose = true; break; }
+          }
+          if (hasClose) { inFrontmatter = true; continue; }
+        }
+        if (inFrontmatter) {
+          if (/^(?:---|\.\.\.)\s*$/.test(lineText)) inFrontmatter = false;
+          if (ln === prevLine.number) return;
+          continue;
+        }
+        const fm = /^\s*(`{3,}|~{3,})/.exec(lineText);
+        if (!fenceChar && fm && !(fm[1][0] === "`" && lineText.slice(fm[0].length).includes("`"))) {
+          fenceChar = fm[1][0];
+          fenceLen = fm[1].length;
+          if (ln === prevLine.number) return;
+          continue;
+        }
+        if (fenceChar) {
+          if (new RegExp(`^\\s*${fenceChar}{${fenceLen},}\\s*$`).test(lineText)) { fenceChar = ""; fenceLen = 0; }
+          if (ln === prevLine.number) return;
+          continue;
+        }
+        const lm = TODOS_KID_RE.exec(lineText);
+        if (lm) {
+          const w = indW(lineText);
+          while (todoStack.length && todoStack[todoStack.length - 1].w >= w) todoStack.pop();
+          inTodos = !!(todoStack.length && todoStack[todoStack.length - 1].head);
+          todoStack.push({ w, head: TODOS_HEAD_RE.test(lineText) });
+        } else if (lineText.trim() && !BLOCK_ID_RE.test(lineText)) {
+          todoStack.length = 0;
+          inTodos = false;
+        }
+      }
+      const next = expandPriorityLine(prevLine.text, inTodos);
+      if (!next || next === prevLine.text) return;
+      const { from, text } = prevLine, view = u.view;
+      window.setTimeout(() => {
+        if (from + text.length > view.state.doc.length) return;
+        if (view.state.doc.sliceString(from, from + text.length) !== text) return;
+        view.dispatch({ changes: { from, to: from + text.length, insert: next }, userEvent: "input.naut-priority" });
+      }, 0);
+    });
+  }
+  // 编辑器（Live Preview / Source Mode）里将优先级标记渲染为彩色小方块；光标碰到标记或源码模式时展开高亮原文
+  priorityBadgeExtension() {
+    const { ViewPlugin, Decoration, WidgetType } = require("@codemirror/view");
+    const { RangeSetBuilder } = require("@codemirror/state");
+    const plugin = this;
+    class PriorityBadgeWidget extends WidgetType {
+      constructor(prio, attached = false) { super(); this.prio = prio; this.attached = attached; }
+      eq(other) { return other.prio === this.prio && other.attached === this.attached; }
+      toDOM(view) { return createPriorityBadgeEl(view.dom.ownerDocument, this.prio, this.attached); }
+      ignoreEvent() { return false; }
+    }
+    const tokenDocCache = new WeakMap();
+    const isLiveMode = (view) => {
+      if (OB.editorLivePreviewField) {
+        const v = view.state.field(OB.editorLivePreviewField, false);
+        if (typeof v === "boolean") return v;
+      }
+      return !!view.dom.parentElement?.classList.contains("is-live-preview");
+    };
+    const build = (view) => {
+      if (plugin.hasExternalPriorityRender()) return Decoration.none;
+      const b = new RangeSetBuilder();
+      const doc = view.state.doc;
+      let tokens = tokenDocCache.get(doc);
+      if (!tokens) {
+        tokens = findPriorityTokens(doc.toString());
+        tokenDocCache.set(doc, tokens);
+      }
+      if (!tokens.length) return b.finish();
+      const live = isLiveMode(view);
+      const ranges = view.state.selection.ranges;
+      const curLines = new Set();
+      for (const r of ranges) {
+        const l1 = doc.lineAt(r.from).number - 1, l2 = doc.lineAt(r.to).number - 1;
+        for (let ln = l1; ln <= l2; ln++) curLines.add(ln);
+      }
+      const vis = view.visibleRanges;
+      let vi = 0;
+      for (const t of tokens) {
+        while (vi < vis.length && vis[vi].to < t.from) vi++;
+        if (vi >= vis.length) break;
+        if (t.to < vis[vi].from) continue;
+        if (!live) {
+          if (!t.fuzzy) b.add(t.from, t.to, Decoration.mark({ class: `naut-prio-raw is-prio-${t.prio.toLowerCase()}` }));
+          continue;
+        }
+        if (t.fuzzy) {
+          if (!curLines.has(t.line)) b.add(t.from, t.to, Decoration.replace({ widget: new PriorityBadgeWidget(t.prio, t.attached) }));
+          continue;
+        }
+        const touched = ranges.some((r) => r.from <= t.to && r.to >= t.from);
+        if (touched) b.add(t.from, t.to, Decoration.mark({ class: `naut-prio-raw is-prio-${t.prio.toLowerCase()}` }));
+        else b.add(t.from, t.to, Decoration.replace({ widget: new PriorityBadgeWidget(t.prio, false) }));
+      }
+      return b.finish();
+    };
+    return ViewPlugin.fromClass(class {
+      constructor(view) {
+        this.wasLive = isLiveMode(view);
+        this.wasExt = plugin.hasExternalPriorityRender();
+        this.decorations = build(view);
+      }
+      update(u) {
+        const live = isLiveMode(u.view), ext = plugin.hasExternalPriorityRender();
+        const modeChanged = live !== this.wasLive || ext !== this.wasExt;
+        if (modeChanged) { this.wasLive = live; this.wasExt = ext; }
+        if (u.docChanged || u.selectionSet || u.viewportChanged || modeChanged) this.decorations = build(u.view);
+      }
+    }, { decorations: (v) => v.decorations });
+  }
+  // 阅读视图渲染优先级小方块
+  registerPriorityPostProcessor() {
+    this.registerMarkdownPostProcessor((el) => {
+      if (this.hasExternalPriorityRender()) return;
+      const doc = el.ownerDocument;
+      const walk = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const textNodes = [];
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        if (!n.nodeValue || !PRIO_TAG_RE.test(n.nodeValue)) continue;
+        const p = n.parentElement;
+        if (!p || p.closest("code, pre, script, style, textarea, input, .naut-prio-badge, .todoseq-priority-badge")) continue;
+        textNodes.push(n);
+      }
+      for (const node of textNodes) {
+        const val = node.nodeValue;
+        const frag = doc.createDocumentFragment();
+        let last = 0, m;
+        PRIO_TAG_G_RE.lastIndex = 0;
+        while ((m = PRIO_TAG_G_RE.exec(val))) {
+          if (m.index > last) frag.appendChild(doc.createTextNode(val.slice(last, m.index)));
+          frag.appendChild(createPriorityBadgeEl(doc, m[1].toUpperCase(), false));
+          last = m.index + m[0].length;
+        }
+        if (last) {
+          if (last < val.length) frag.appendChild(doc.createTextNode(val.slice(last)));
+          node.replaceWith(frag);
+        }
+      }
+      for (const li of el.querySelectorAll("li")) {
+        const ownHasBadge = [...li.querySelectorAll(".naut-prio-badge, .todoseq-priority-badge")].some((b) => b.closest("li") === li);
+        if (ownHasBadge) continue;
+        const parentLi = li.parentElement?.closest("li");
+        let inTodos = false;
+        if (parentLi) {
+          let headTxt = "";
+          for (const ch of parentLi.childNodes) {
+            if (ch.nodeType === 1 && (ch.tagName === "UL" || ch.tagName === "OL")) break;
+            headTxt += ch.textContent || "";
+          }
+          inTodos = /^(?:\*\*)?todos(?:\*\*)?\s*(?:[:：]|$)/i.test(headTxt.trim());
+        }
+        const container = li.firstElementChild?.tagName === "P" ? li.firstElementChild : li;
+        let hasCb = li.classList.contains("task-list-item") || !!container.querySelector(":scope > input.task-list-item-checkbox");
+        let firstText = null;
+        for (const ch of container.childNodes) {
+          if (ch.nodeType === 1) {
+            if (ch.tagName === "UL" || ch.tagName === "OL") break;
+            if (ch.tagName === "INPUT" && ch.type === "checkbox") { hasCb = true; continue; }
+            if (ch.tagName === "STRONG" && /^\d{1,2}[:：]\d{2}$/.test(ch.textContent.trim())) continue;
+            break;
+          }
+          if (ch.nodeType === 3) {
+            if (!ch.nodeValue.trim()) continue;
+            firstText = ch;
+            break;
+          }
+        }
+        if (!firstText) continue;
+        const val = firstText.nodeValue;
+        const leadWs = /^\s*/.exec(val)[0];
+        const trimmed = val.slice(leadWs.length);
+        const synth = (hasCb ? "- [ ] " : "- ") + trimmed;
+        const fz = findFuzzyPrioInLine(synth, inTodos);
+        if (!fz) continue;
+        const off = leadWs.length + fz.start - (hasCb ? 6 : 2);
+        if (off < 0 || off >= val.length) continue;
+        const frag = doc.createDocumentFragment();
+        if (off > 0) frag.appendChild(doc.createTextNode(val.slice(0, off)));
+        frag.appendChild(createPriorityBadgeEl(doc, fz.prio, !!fz.attached));
+        if (off + 1 < val.length) frag.appendChild(doc.createTextNode(val.slice(off + 1)));
+        firstText.replaceWith(frag);
+      }
+    });
   }
   // 进度行上点开会话：Agent Deck 开着就交给它（命令行会话切到跑它的终端标签，桌面版的走各家深链接）；没有才自己开 Claude 桌面版
   openAgentSession(sid, agent = "claude") {
@@ -7233,4 +7671,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, SpiralView };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, SpiralView };
