@@ -46,14 +46,18 @@ The interface switches automatically between English and Chinese based on Obsidi
 - **Subtle motion & sound cues**: Gentle synthesized feedback on clicks and task status changes (can be muted in settings).
 
 ### Lightweight Pomodoro & Up Next Quick Actions
-- **Three-preset Pomodoro (`15m` / `25m` / `Custom`)**: Right under capacity on today's view, pick a preset and click the play icon to reserve an upcoming focus block—independently without editing your note, or linked to a task via the "Up next" right-click menu (switches it to `DOING` and prompts "Mark DONE / Another round / Close" when time's up).
+- **Three-preset Pomodoro (`15m` / `25m` / `Custom`)**: Right under capacity on today's view, pick a preset and click play to reserve an upcoming focus block—independently, auto-bound to your current manual `DOING` task, or linked to a specific task via right-click (`🍅 Start Pomodoro` or `🍅 Start with estimate`, plus the editor command for the task at cursor). When a round finishes (or stops early after ≥1 min), actual time is automatically written back under the task as `- ⏱ HH:MM–HH:MM · total Xm` for day review and AI planning; switching tasks settles and pauses the previous task cleanly.
 - **Reserved time on the spiral**: An active Pomodoro renders on the spiral's outer rail as a **solid arc for elapsed time + dashed arc with a hollow end dot for the unrealized reservation**, without pushing scheduled tasks back; completed rounds stay as subtle arcs.
-- **Fast status & priority actions**: Click a task's status dot in "Up next" to cycle `DONE → SUSPENDED → original state`; right-click to pick a human status (`TODO` / `DOING` / `DONE` / `PAUSED` / `WAITING` / `SUSPENDED` / `CANCELLED`), set priority (`[#A]` / `[#B]` / `[#C]` / clear), or start a Pomodoro.
+- **Fast status & priority actions**: Click a task's status dot in "Up next" to cycle `DONE → SUSPENDED → original state`; right-click tasks in "Up next", "Mainline", "Won't fit", or "Parked" to pick a human status (`TODO` / `DOING` / `DONE` / `PAUSED` / `WAITING` / `SUSPENDED` / `CANCELLED`), set priority (`[#A]` / `[#B]` / `[#C]` / clear), or start a Pomodoro.
 
 <p align="center">
   <img src="./assets/pomodoro.png" width="360" alt="Active Pomodoro bar and spiral outer rail showing elapsed solid arc and unrealized dashed reservation">
   <img src="./assets/upnext-menu.png" width="360" alt="Up Next context menu with human statuses, A/B/C priority, and Start Pomodoro">
 </p>
+
+A walkthrough of Pomodoro timing, multi-segment actual-time logging, and daily review (English captions):
+
+https://github.com/user-attachments/assets/253781c1-fbfe-43d4-9c41-cc9446c6a369
 
 ---
 
