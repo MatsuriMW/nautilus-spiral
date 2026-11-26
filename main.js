@@ -3923,8 +3923,36 @@ function truncDisplay(s, maxCols = 20) {
 function msToNextMinute(nowMs = Date.now()) {
   return Math.max(250, 60000 - (nowMs % 60000) + 50);
 }
+function formatSpiralLabel(entry, maxCols = 18, compact = false) {
+  const rawLabel = String(entry?.label || "").trim();
+  const hadBot = /^🤖\s*/.test(rawLabel);
+  let body = rawLabel.replace(/^🤖\s*/, "").trim();
+  const pm = /^([^\s].{0,48}?)\s*->\s*(.+)$/.exec(body);
+  if (pm && pm[2].trim()) body = pm[2].trim();
+  const isDone = !!entry?.done;
+  const isMirror = !!entry?.isMirror;
+  const isAi = !!entry?.isAi || hadBot;
+  const pfx = isDone ? "✓ " : isMirror ? "↗ " : "";
+  const title = truncDisplay(body, Math.max(8, (Number(maxCols) || 18) - (pfx ? 2 : 0)));
+  const text = `${pfx}${title}`;
+  const hasSpan = entry?.start != null && entry?.end != null && Number.isFinite(entry.start) && Number.isFinite(entry.end);
+  const spanMin = hasSpan ? Math.max(1, Math.round(entry.end - entry.start)) : 0;
+  const showMin = entry?.totalDur > 0 ? Math.round(entry.totalDur) : spanMin;
+  const durText = showMin > 0 ? dur(showMin) : "";
+  const pctText = entry?.progress > 0 && entry.progress < 1 ? `${Math.round(entry.progress * 100)}%` : "";
+  let meta = "";
+  if (!compact) {
+    if (hasSpan) {
+      meta = `${isAi ? "🤖 " : ""}${clock(entry.start)}–${clock(entry.end)}${durText ? ` · ${durText}` : ""}${pctText ? ` · ${pctText}` : ""}`;
+    } else if (isAi || durText || pctText) {
+      meta = [isAi ? "🤖" : "", durText, pctText].filter(Boolean).join(" · ");
+    }
+  }
+  const inlineDur = compact ? [pctText, durText].filter(Boolean).join(" ") : "";
+  return { text, meta, durText: inlineDur, isAi, isMirror };
+}
 function layoutSpiralLabels(entries, opts = {}) {
-  const { cx = 160, cy = 160, padX = 135, padY = 44, fontSize = 10.5, lineH = 15, maxCols = 18, maxLabels = 14 } = opts;
+  const { cx = 160, cy = 160, padY = 48, fontSize = 10.5, maxCols = 18, maxLabels = 10 } = opts;
   if (!Array.isArray(entries) || !entries.length) return [];
   const bestByItem = new Map();
   for (const e of entries) {
@@ -3938,44 +3966,111 @@ function layoutSpiralLabels(entries, opts = {}) {
     .sort((a, b) => (b.prioWeight || 0) - (a.prioWeight || 0) || b._span - a._span)
     .slice(0, maxLabels)
     .sort((a, b) => (a.midAngle ?? 0) - (b.midAngle ?? 0));
-  const minY = cy - 160 - padY + 4, maxY = cy + 160 + padY - lineH - 4;
-  const placed = [];
-  const collides = (cand) => placed.some((p) => cand.x < p.x + p.w + 4 && cand.x + cand.w + 4 > p.x && cand.y < p.y + p.h + 3 && cand.y + cand.h + 3 > p.y);
-  const offsets = [0, 16, -16, 32, -32, 48, -48, 64, -64, 80, -80, 96, -96];
+  const counts = { left: 0, right: 0, vertex: 0 };
   for (const e of picked) {
+    const cosA = Math.cos(e.midAngle ?? 0);
+    if (Math.abs(cosA) < 0.22) counts.vertex++;
+    else if (cosA < 0) counts.left++;
+    else counts.right++;
+  }
+  const bothSides = counts.left > 0 && counts.right > 0;
+  const effCols = bothSides ? Math.min(Number(maxCols) || 18, 12) : (Number(maxCols) || 18);
+  const padX = opts.padX ?? (bothSides ? 124 : 148);
+  const maxBoxW = bothSides ? 116 : 148;
+  const minY = cy - 160 - padY + 4, maxY = cy + 160 + padY - 4;
+  const placed = [];
+  const hitsRing = (cand) => {
+    const nx = Math.max(cand.x, Math.min(cx, cand.x + cand.w));
+    const ny = Math.max(cand.y, Math.min(cy, cand.y + cand.h));
+    return Math.hypot(nx - cx, ny - cy) < 163;
+  };
+  const collides = (cand, gapY) => hitsRing(cand) || placed.some((p) => (
+    cand.x < p.x + p.w + 4 && cand.x + cand.w + 4 > p.x
+    && cand.y < p.y + p.h + Math.max(gapY, p.gapY || 3) && cand.y + cand.h + Math.max(gapY, p.gapY || 3) > p.y
+  ));
+  const sideOffsets = [0, 18, -18, 36, -36, 54, -54, 72, -72, 90, -90, 108, -108, 126, -126];
+  const ordered = [
+    ...picked.filter((e) => Math.abs(Math.cos(e.midAngle ?? 0)) < 0.22),
+    ...picked.filter((e) => Math.abs(Math.cos(e.midAngle ?? 0)) >= 0.22),
+  ];
+  for (const e of ordered) {
     const a = e.midAngle ?? 0;
     const cosA = Math.cos(a), sinA = Math.sin(a);
     const atVertex = Math.abs(cosA) < 0.22;
     const onLeft = !atVertex && cosA < 0;
-    const text = truncDisplay(e.label, maxCols);
-    const w = Math.min(126, Math.max(36, displayWidth(text) * (fontSize * 0.54) + 10));
-    const h = lineH;
+    const side = atVertex ? "vertex" : (onLeft ? "left" : "right");
+    const hasRichMeta = (e.start != null && e.end != null) || (e.totalDur > 0) || e.isAi || (e.progress > 0 && e.progress < 1);
+    const wantCompact = (counts[side] > 5) || !hasRichMeta;
+    const fmt = formatSpiralLabel(e, effCols, wantCompact);
+    const compact = wantCompact || !fmt.meta;
+    const h = compact ? 16 : 27;
+    const gapY = compact ? 3 : 5;
+    const line1W = displayWidth(fmt.text + (fmt.durText ? `  ${fmt.durText}` : "")) * (fontSize * 0.56);
+    const line2W = !compact && fmt.meta ? displayWidth(fmt.meta) * (8.6 * 0.52) : 0;
+    const w = Math.min(maxBoxW, Math.max(52, Math.max(line1W, line2W) + 14));
     const rIdeal = Math.max(168, (e.segR ?? 141) + 28);
-    let x, idealY;
+    const xForY = (yPos) => {
+      const yc = yPos + h / 2;
+      const dyC = yc - cy;
+      const ringClearX = Math.abs(dyC) < 166 ? Math.sqrt(Math.max(0, 166 * 166 - dyC * dyC)) : 0;
+      const offX = Math.max(58, ringClearX + 9);
+      return onLeft
+        ? Math.max(cx - 160 - padX + 4, cx - offX - w)
+        : Math.min(cx + 160 + padX - 4 - w, cx + offX);
+    };
+    let chosenY = null, chosenX = null;
     if (atVertex) {
-      x = Math.min(cx + 160 + padX - w - 4, Math.max(cx - 160 - padX + 4, cx + rIdeal * cosA - w / 2));
-      idealY = sinA < 0 ? cy - 178 - h : cy + 178;
+      const baseY = sinA < 0 ? Math.max(minY, cy - 174 - h) : Math.min(maxY - h, cy + 174);
+      const baseX = Math.min(cx + 160 + padX - w - 4, Math.max(cx - 160 - padX + 4, cx + rIdeal * cosA - w / 2));
+      const vSteps = sinA < 0 ? [0, -14, -28] : [0, 14, 28];
+      const hSteps = [0, -34, 34, -68, 68];
+      for (const dy of vSteps) {
+        const y = Math.min(maxY - h, Math.max(minY, baseY + dy));
+        for (const dx of hSteps) {
+          const x = Math.min(cx + 160 + padX - w - 4, Math.max(cx - 160 - padX + 4, baseX + dx));
+          if (!collides({ x, y, w, h }, gapY)) { chosenY = y; chosenX = x; break; }
+        }
+        if (chosenY != null) break;
+      }
     } else {
-      const colAnchor = onLeft ? Math.max(cx - 160 - padX + 4 + w, cx - 174) : Math.min(cx + 160 + padX - 4 - w, cx + 174);
-      x = onLeft ? Math.max(cx - 160 - padX + 4, colAnchor - w) : colAnchor;
-      idealY = cy + rIdeal * sinA - h / 2;
-    }
-    let chosenY = null;
-    for (const dy of offsets) {
-      const y = Math.min(maxY, Math.max(minY, idealY + dy));
-      if (!collides({ x, y, w, h })) { chosenY = y; break; }
+      const sideMinY = cy - 154, sideMaxY = cy + 154 - h;
+      const idealY = Math.min(sideMaxY, Math.max(sideMinY, cy + rIdeal * sinA - h / 2));
+      for (const dy of sideOffsets) {
+        const y = Math.min(sideMaxY, Math.max(sideMinY, idealY + dy));
+        const x = xForY(y);
+        if (!collides({ x, y, w, h }, gapY)) { chosenY = y; chosenX = x; break; }
+      }
     }
     if (chosenY == null) continue;
-    const endX = atVertex ? x + w / 2 : (onLeft ? x + w + 3 : x - 3);
-    const endY = atVertex ? (sinA < 0 ? chosenY + h + 2 : chosenY - 2) : chosenY + h / 2;
-    const midR = Math.max((e.segR ?? 141) + 24, 156);
     const ax = e.anchorX ?? (cx + (e.segR ?? 141) * cosA);
     const ay = e.anchorY ?? (cy + (e.segR ?? 141) * sinA);
-    const ctrlX = atVertex ? (ax + endX) / 2 : (cx + midR * cosA + endX) / 2;
-    const ctrlY = atVertex ? (ay + endY) / 2 : (cy + midR * sinA + endY) / 2 + 6;
-    const pathD = `M ${ax.toFixed(1)},${ay.toFixed(1)} Q ${ctrlX.toFixed(1)},${ctrlY.toFixed(1)} ${endX.toFixed(1)},${endY.toFixed(1)}`;
+    let endX, endY, pathD;
+    if (atVertex) {
+      endX = chosenX + w / 2;
+      endY = sinA < 0 ? chosenY + h + 4 : chosenY - 4;
+      const ctrlX = (ax + endX) / 2, ctrlY = (ay + endY) / 2;
+      pathD = `M ${ax.toFixed(1)},${ay.toFixed(1)} Q ${ctrlX.toFixed(1)},${ctrlY.toFixed(1)} ${endX.toFixed(1)},${endY.toFixed(1)}`;
+    } else {
+      endX = onLeft ? chosenX + w + 5 : chosenX - 5;
+      endY = chosenY + h / 2;
+      const kx = onLeft ? Math.min(ax - 6, endX + 12) : Math.max(ax + 6, endX - 12);
+      const ky = endY;
+      const distA = Math.hypot(kx - ax, ky - ay);
+      const distB = Math.abs(endX - kx);
+      if (distA >= 10 && distB >= 6) {
+        const cr = Math.min(5, distA * 0.4, distB * 0.5);
+        const p1x = kx - ((kx - ax) / distA) * cr;
+        const p1y = ky - ((ky - ay) / distA) * cr;
+        const p2x = kx + Math.sign(endX - kx) * cr;
+        const p2y = ky;
+        pathD = `M ${ax.toFixed(1)},${ay.toFixed(1)} L ${p1x.toFixed(1)},${p1y.toFixed(1)} Q ${kx.toFixed(1)},${ky.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)} L ${endX.toFixed(1)},${endY.toFixed(1)}`;
+      } else {
+        pathD = `M ${ax.toFixed(1)},${ay.toFixed(1)} Q ${kx.toFixed(1)},${ky.toFixed(1)} ${endX.toFixed(1)},${endY.toFixed(1)}`;
+      }
+    }
     placed.push({
-      item: e.item, text, x, y: chosenY, w, h, onLeft, atVertex,
+      item: e.item, text: fmt.text, meta: fmt.meta, durText: fmt.durText, compact, gapY,
+      x: chosenX, y: chosenY, w, h, onLeft, atVertex, sinA,
       anchorX: ax, anchorY: ay, endX, endY, pathD,
       toneCls: e.toneCls || "", done: !!e.done, color: e.color || "",
     });
@@ -3983,7 +4078,7 @@ function layoutSpiralLabels(entries, opts = {}) {
   return placed;
 }
 function computeSpiralViewBox(placedLabels, opts = {}) {
-  const padX = opts.padX ?? 10, padY = opts.padY ?? 8;
+  const padX = opts.padX ?? 8, padY = opts.padY ?? 6;
   let minX = -10, maxX = 330, minY = -10, maxY = 330;
   for (const lb of placedLabels || []) {
     minX = Math.min(minX, Math.floor(lb.x - padX));
@@ -4716,7 +4811,7 @@ class SpiralView extends ItemView {
     const perMin = (t) => 2 * Math.PI * rad(t) / 720;   // 这一圈上一分钟有几个像素
     const segsG = svgEl("g", { class: "naut-segs-g" }, svg);
     const labelsG = showLabels ? svgEl("g", { class: "naut-labels-g" }, svg) : null;
-    const labelCands = [];
+    const labelSegsByItem = new Map();
     const toneClassOf = (item) => {
       if (item.kind === "event") return item.prio ? "is-prio" : "is-event";
       if (isReview(item) && item.state === "done") return "is-review";
@@ -4737,24 +4832,10 @@ class SpiralView extends ItemView {
       }
       if (playing) return;
       link(item, p);
-      if (showLabels && (item.kind === "task" || item.kind === "event") && item.label && !cls.includes("naut-worked")) {
-        const mid = (a + b) / 2;
-        const laneOff = LANE[item.lane || 0] ?? 0;
-        const [ax, ay] = pt(mid, laneOff + 8.5);
-        labelCands.push({
-          item,
-          start: a,
-          end: b,
-          label: workKey(item.label),
-          midAngle: ang(mid),
-          segR: rad(mid) + laneOff,
-          anchorX: ax,
-          anchorY: ay,
-          toneCls: toneClassOf(item),
-          done: item.state === "done" || (item.kind === "event" && dayRel === 0 && item.end <= now),
-          color: item.cal?.color || "",
-          prioWeight: item.doing ? 4 : item.main ? 3 : item.kind === "event" ? 2 : item.state === "open" ? 1 : 0,
-        });
+      if (showLabels && (item.kind === "task" || item.kind === "event") && item.label) {
+        let recs = labelSegsByItem.get(item);
+        if (!recs) labelSegsByItem.set(item, recs = []);
+        recs.push({ a, b, laneOff: LANE[item.lane || 0] ?? 0 });
       }
       const rel = aiOf(item).filter((x) => x.related);
       // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
@@ -4786,7 +4867,7 @@ class SpiralView extends ItemView {
     const shallowTop = (arr) => [...arr].sort((a, b) => (b.indent || 0) - (a.indent || 0));
     paintSegs = (curPlan, simNow) => {
       segsG.replaceChildren();
-      labelCands.length = 0;
+      labelSegsByItem.clear();
       const hideDone = !!cfg.hideDoneOnSpiral;
       const altTasks = new Set(curPlan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).filter((_, idx) => idx % 2 === 1));
       const altEvents = new Set(items.filter((i) => i.kind === "event" && i.state !== "done" && !i.cal).sort((a, b) => a.start - b.start).filter((_, idx) => idx % 2 === 1));
@@ -4817,27 +4898,108 @@ class SpiralView extends ItemView {
       });
       if (labelsG) {
         labelsG.replaceChildren();
+        const labelCands = [];
+        for (const [item, rawRecs] of labelSegsByItem) {
+          const sorted = [...rawRecs].sort((x, y) => x.a - y.a);
+          const merged = [];
+          for (const r of sorted) {
+            const prev = merged[merged.length - 1];
+            if (prev && r.a - prev.b <= 15) prev.b = Math.max(prev.b, r.b);
+            else merged.push({ a: r.a, b: r.b, laneOff: r.laneOff });
+          }
+          let best = merged[0], spanSum = 0;
+          for (const m of merged) {
+            spanSum += Math.max(1, m.b - m.a);
+            if ((m.b - m.a) > (best.b - best.a)) best = m;
+          }
+          const mid = (best.a + best.b) / 2;
+          const [ax, ay] = pt(mid, best.laneOff + 8.5);
+          labelCands.push({
+            item,
+            start: best.a,
+            end: best.b,
+            totalDur: item.clock?.total > 0 ? item.clock.total : Math.max(1, Math.round(spanSum)),
+            label: workKey(item.label),
+            isAi: !!item.auto || /^🤖\s*/.test(item.label || ""),
+            isMirror: !!item.mirror,
+            progress: item.progress,
+            doing: !!item.doing && dayRel === 0,
+            midAngle: ang(mid),
+            segR: rad(mid) + best.laneOff,
+            anchorX: ax,
+            anchorY: ay,
+            toneCls: toneClassOf(item),
+            done: item.state === "done" || (item.kind === "event" && dayRel === 0 && item.end <= now),
+            color: item.cal?.color || "",
+            prioWeight: item.doing ? 4 : item.main ? 3 : item.kind === "event" ? 2 : item.state === "open" ? 1 : 0,
+          });
+        }
         const placed = layoutSpiralLabels(labelCands, { cx: c, cy: c, maxCols: Number(cfg.spiralLabelMaxCols) || 18 });
         const vb = computeSpiralViewBox(placed);
         svg.setAttribute("viewBox", vb.viewBox);
         svg.style.maxWidth = `${vb.maxWidth}px`;
         for (const lb of placed) {
           const dirCls = lb.atVertex ? "is-vertex" : lb.onLeft ? "is-left" : "is-right";
-          const g = svgEl("g", { class: `naut-label-group ${lb.toneCls}${lb.done ? " is-done" : ""} ${dirCls}` }, labelsG);
+          const g = svgEl("g", { class: `naut-label-group ${lb.toneCls}${lb.done ? " is-done" : ""}${lb.compact ? " is-compact" : ""} ${dirCls}` }, labelsG);
           if (lb.color) g.style.setProperty("--naut-lbl-c", lb.color);
           svgEl("path", { d: lb.pathD, class: "naut-link-line" }, g);
-          svgEl("circle", { cx: lb.anchorX.toFixed(1), cy: lb.anchorY.toFixed(1), r: 2.1, class: "naut-link-dot" }, g);
-          const tx = lb.atVertex ? lb.x + lb.w / 2 : (lb.onLeft ? lb.x + lb.w : lb.x);
+          svgEl("circle", { cx: lb.anchorX.toFixed(1), cy: lb.anchorY.toFixed(1), r: 2.0, class: "naut-link-dot" }, g);
+          const body = svgEl("g", { class: "naut-label-body" }, g);
+          if (lb.atVertex) {
+            svgEl("rect", {
+              x: (lb.x + lb.w / 2 - 8).toFixed(1),
+              y: (lb.sinA < 0 ? lb.y + lb.h - 2 : lb.y).toFixed(1),
+              width: "16",
+              height: "2",
+              rx: "1",
+              class: "naut-label-bar",
+            }, body);
+          } else {
+            svgEl("rect", {
+              x: (lb.onLeft ? lb.x + lb.w - 2.2 : lb.x).toFixed(1),
+              y: (lb.y + (lb.compact ? 2.5 : 3)).toFixed(1),
+              width: "2.2",
+              height: lb.compact ? "11" : "21",
+              rx: "1.1",
+              class: "naut-label-bar",
+            }, body);
+          }
+          const tx = lb.atVertex ? lb.x + lb.w / 2 : (lb.onLeft ? lb.x + lb.w - 6 : lb.x + 6);
           const ta = lb.atVertex ? "middle" : (lb.onLeft ? "end" : "start");
+          const titleY = lb.atVertex
+            ? (lb.compact ? lb.y + lb.h / 2 : (lb.sinA < 0 ? lb.y + 6.5 : lb.y + 9.5))
+            : (lb.compact ? lb.y + lb.h / 2 : lb.y + 7.5);
           const txt = svgEl("text", {
             x: tx.toFixed(1),
-            y: (lb.y + lb.h / 2).toFixed(1),
+            y: titleY.toFixed(1),
             "text-anchor": ta,
             "dominant-baseline": "central",
             class: "naut-label-text",
-          }, g);
+          }, body);
           txt.textContent = lb.text;
+          if (lb.compact && lb.durText) {
+            svgEl("tspan", { class: "naut-label-dur" }, txt).textContent = `  ${lb.durText}`;
+          }
+          if (!lb.compact && lb.meta) {
+            const metaEl = svgEl("text", {
+              x: tx.toFixed(1),
+              y: (titleY + 12.5).toFixed(1),
+              "text-anchor": ta,
+              "dominant-baseline": "central",
+              class: "naut-label-meta",
+            }, body);
+            metaEl.textContent = lb.meta;
+          }
           link(lb.item, g);
+          const relLbl = aiOf(lb.item).filter((x) => x.related);
+          const spanTip = `${clock(lb.item.start ?? labelCands.find((c) => c.item === lb.item)?.start ?? 0)}–${clock(lb.item.end ?? labelCands.find((c) => c.item === lb.item)?.end ?? 0)}`;
+          const itemSpan = labelCands.find((c) => c.item === lb.item);
+          hov(
+            g,
+            itemSpan ? `${clock(itemSpan.start)}–${clock(itemSpan.end)} · ${dur(itemSpan.totalDur)}` : spanTip,
+            workKey(lb.item.label),
+            [lb.item.cal ? `📅 ${lb.item.cal.calendar}` : "", relLbl.length ? `🤖 ${relLbl.map(aiName).slice(0, 2).join(T("、", ", "))}` : lb.item.clock && lb.item.clock.who ? `🤖 ${lb.item.clock.who}` : ""].filter(Boolean).join(" · ")
+          );
           g.addEventListener("click", (e) => {
             if (e.shiftKey && lb.item.kind === "task" && lb.item.state === "open" && !lb.item.container && !isAutoTask(lb.item, autoKeys) && lb.item.line != null) {
               e.preventDefault();
@@ -4847,6 +5009,20 @@ class SpiralView extends ItemView {
             }
             this.plugin.openItem(file, lb.item);
           });
+          const lblLabel = workKey(lb.item.label);
+          const lblParentHint = lb.item.inheritedFrom != null && lb.item.inheritedLabel
+            ? T(` · 随母块「${trunc(lb.item.inheritedLabel, 14)}」`, ` · parent "${trunc(lb.item.inheritedLabel, 14)}"`)
+            : "";
+          const lblHeader = `${trunc(lblLabel, 24)}${itemSpan ? ` · ${clock(itemSpan.start)}–${clock(itemSpan.end)}` : ""}${lblParentHint}`;
+          if (lb.item.kind === "task" && lb.item.state === "open" && !lb.item.container && lb.item.line != null) {
+            const prioLine = lb.item.inheritedFrom != null ? lb.item.inheritedFrom : lb.item.line;
+            const curPrio = lb.item.inheritedFrom != null ? taskPriority(journalLines[prioLine]) : (lb.item.priority || taskPriority(journalLines[prioLine]));
+            g.addEventListener("contextmenu", (e) => this.openUpNextMenu(e, file, dayKey, lb.item, curPrio, { header: lblHeader }));
+          } else if (lb.item.kind === "event") {
+            g.addEventListener("contextmenu", (e) => this.openEventMenu(e, file, dayKey, lb.item, { header: lblHeader }));
+          } else if (lb.item.kind === "task" && lb.item.state === "done" && lb.item.line != null) {
+            g.addEventListener("contextmenu", (e) => this.openDoneMenu(e, file, lb.item, { header: lblHeader }));
+          }
         }
       }
     };
@@ -9517,4 +9693,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };

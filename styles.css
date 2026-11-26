@@ -628,16 +628,24 @@ body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: ru
 .naut-label-group.is-kw-hitlimit { --naut-lbl-c: var(--naut-kw-hitlimit); }
 .naut-label-group.is-kw-queued { --naut-lbl-c: var(--naut-kw-queued); }
 .naut-label-group.is-kw-delegated { --naut-lbl-c: var(--naut-kw-delegated); }
-.naut-link-line { fill: none; stroke: var(--naut-lbl-c); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.42; transition: opacity .18s, stroke-width .15s, stroke-dasharray .18s; }
-.naut-link-dot { fill: var(--naut-lbl-c); opacity: 0.6; transition: opacity .18s, transform .18s; }
-.naut-label-text { font-size: 10.5px; fill: color-mix(in srgb, var(--naut-lbl-c) 68%, var(--text-normal)); transition: fill .15s, transform .18s cubic-bezier(.175, .885, .32, 1.275), opacity .15s; user-select: none; }
-.naut-label-group.is-done .naut-label-text { text-decoration: line-through; opacity: 0.52; }
-.naut-label-group.is-done .naut-link-line, .naut-label-group.is-done .naut-link-dot { opacity: 0.28; }
+.naut-link-line { fill: none; stroke: var(--naut-lbl-c); stroke-width: 0.9; stroke-dasharray: 2.5 2.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.30; transition: opacity .18s, stroke-width .15s, stroke-dasharray .18s; }
+.naut-link-dot { fill: var(--naut-lbl-c); opacity: 0.48; transition: opacity .18s, transform .18s; }
+.naut-label-body { transition: transform .18s cubic-bezier(.175, .885, .32, 1.275), opacity .15s; }
+.naut-label-bar { fill: var(--naut-lbl-c); opacity: 0.72; transition: opacity .15s; }
+.naut-label-text { font-size: 10.5px; font-weight: 500; fill: color-mix(in srgb, var(--naut-lbl-c) 40%, var(--text-normal)); transition: fill .15s, opacity .15s; user-select: none; }
+.naut-label-dur { font-size: 9px; font-weight: 400; fill: var(--text-muted); font-variant-numeric: tabular-nums; }
+.naut-label-meta { font-size: 8.6px; fill: var(--text-muted); font-variant-numeric: tabular-nums; opacity: 0.88; transition: fill .15s, opacity .15s; user-select: none; }
+.naut-label-group.is-done .naut-label-body { opacity: 0.58; }
+.naut-label-group.is-done .naut-label-bar { opacity: 0.36; }
+.naut-label-group.is-done .naut-link-line, .naut-label-group.is-done .naut-link-dot { opacity: 0.22; }
 .naut-label-group:hover .naut-link-line, .naut-label-group.is-hot .naut-link-line { stroke-dasharray: none; stroke-width: 1.5; opacity: 0.92; }
 .naut-label-group:hover .naut-link-dot, .naut-label-group.is-hot .naut-link-dot { opacity: 1; }
+.naut-label-group:hover .naut-label-bar, .naut-label-group.is-hot .naut-label-bar { opacity: 1; }
+.naut-label-group:hover .naut-label-body, .naut-label-group.is-hot .naut-label-body { opacity: 1; }
 .naut-label-group:hover .naut-label-text, .naut-label-group.is-hot .naut-label-text { fill: var(--naut-lbl-c); font-weight: 600; opacity: 1; }
-.naut-label-group.is-right:hover .naut-label-text, .naut-label-group.is-right.is-hot .naut-label-text { transform: translateX(3px); }
-.naut-label-group.is-left:hover .naut-label-text, .naut-label-group.is-left.is-hot .naut-label-text { transform: translateX(-3px); }
+.naut-label-group:hover .naut-label-meta, .naut-label-group.is-hot .naut-label-meta { opacity: 1; }
+.naut-label-group.is-right:hover .naut-label-body, .naut-label-group.is-right.is-hot .naut-label-body { transform: translateX(3px); }
+.naut-label-group.is-left:hover .naut-label-body, .naut-label-group.is-left.is-hot .naut-label-body { transform: translateX(-3px); }
 .naut-collapsed-bar { margin: 6px 0 4px; padding: 6px 10px; border: 1px dashed var(--background-modifier-border); border-radius: 6px; font-size: var(--font-ui-small); color: var(--text-muted); text-align: center; cursor: pointer; }
 .naut-collapsed-bar:hover { color: var(--text-normal); border-color: var(--text-faint); }
 .naut-mirror-tag { display: inline-block; margin-left: 4px; font-size: 0.8em; color: var(--text-faint); vertical-align: baseline; }

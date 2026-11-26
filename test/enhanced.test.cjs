@@ -275,19 +275,52 @@ const { DEFAULTS } = C;
     const backDoneNoop = C.stepProgressLine('- DONE 10:00 文档 ^ad-1', -25, '16:00');
     assert.equal(backDoneNoop.changed, false);
 
-    // 5d. Vertex label placement + tight dynamic viewBox (right-only labels keep left bound tight!)
+    // 5d. formatSpiralLabel, contour-hugging 2-line / dense 1-line layout, rounded elbow pathD & tight viewBox
+    const fmtAi = C.formatSpiralLabel({
+      label: '🤖 agent-deck -> 梳理记忆方案并重设计界面',
+      start: 125, end: 250, totalDur: 125, isAi: true, progress: 0.5,
+    }, 18, false);
+    assert.ok(!fmtAi.text.includes('agent-deck ->'), 'strips project prefix and promotes task title');
+    assert.ok(fmtAi.text.startsWith('梳理记忆'), `promoted title got ${fmtAi.text}`);
+    assert.equal(fmtAi.meta, '🤖 02:05–04:10 · 2h5m · 50%');
+
+    const fmtDone = C.formatSpiralLabel({ label: '跑步', start: 88, end: 138, totalDur: 44, done: true }, 18, false);
+    assert.equal(fmtDone.text, '✓ 跑步');
+    assert.equal(fmtDone.meta, '01:28–02:18 · 44m');
+
+    const fmtMir = C.formatSpiralLabel({ label: '镜像待办', start: 600, end: 660, isMirror: true }, 18, true);
+    assert.equal(fmtMir.text, '↗ 镜像待办');
+    assert.equal(fmtMir.meta, '');
+    assert.equal(fmtMir.durText, '1h');
+
     const rightAndTop = [
-      { item: { id: 'r1' }, start: 600, end: 660, label: '右侧任务一', midAngle: 0, segR: 135, anchorX: 303, anchorY: 160, toneCls: 'is-main', done: false, prioWeight: 3 },
-      { item: { id: 'v1' }, start: 720, end: 760, label: '顶点任务二', midAngle: -Math.PI / 2, segR: 140, anchorX: 160, anchorY: 11, toneCls: 'is-event', done: true, prioWeight: 2 },
+      { item: { id: 'r1' }, start: 600, end: 660, totalDur: 60, label: '右侧任务一', midAngle: 0, segR: 135, anchorX: 303, anchorY: 160, toneCls: 'is-main', done: false, prioWeight: 3 },
+      { item: { id: 'v1' }, start: 720, end: 760, totalDur: 40, label: '顶点任务二', midAngle: -Math.PI / 2, segR: 140, anchorX: 160, anchorY: 11, toneCls: 'is-event', done: true, prioWeight: 2 },
     ];
     const placedRT = C.layoutSpiralLabels(rightAndTop, { cx: 160, cy: 160, maxCols: 20 });
     assert.equal(placedRT.length, 2);
+    const rLb = placedRT.find((x) => x.item.id === 'r1');
+    assert.equal(rLb.compact, false);
+    assert.equal(rLb.h, 27);
+    assert.match(rLb.pathD, /^M .+ L .+ Q .+ L .+$/);
     const vLb = placedRT.find((x) => x.item.id === 'v1');
     assert.equal(vLb.atVertex, true);
     assert.equal(vLb.done, true);
     const vbTight = C.computeSpiralViewBox(placedRT);
     assert.equal(vbTight.x, -10, 'no left-side labels -> left viewBox stays tight at -10');
-    assert.ok(vbTight.w < 500, `tight viewBox saves left padding (w=${vbTight.w})`);
+    assert.ok(vbTight.w < 510, `tight viewBox saves left padding (w=${vbTight.w})`);
+
+    // Dense right side (> 6 labels) switches that side to compact 1-line layout
+    const denseRight = Array.from({ length: 8 }, (_, idx) => {
+      const a = -0.8 + idx * 0.22;
+      return {
+        item: { id: `d${idx}` }, start: 480 + idx * 45, end: 520 + idx * 45,
+        label: `密集任务${idx + 1}`, midAngle: a, segR: 135,
+        anchorX: 160 + 143 * Math.cos(a), anchorY: 160 + 143 * Math.sin(a), prioWeight: 1,
+      };
+    });
+    const placedDense = C.layoutSpiralLabels(denseRight, { cx: 160, cy: 160, maxCols: 18 });
+    assert.ok(placedDense.every((lb) => lb.atVertex || lb.compact === true), 'dense side falls back to compact 1-line');
 
     // 5e. msToNextMinute alignment
     assert.equal(C.msToNextMinute(60000), 60050);
