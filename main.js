@@ -5,6 +5,7 @@ const ZH = String(OB.getLanguage?.() || moment.locale() || "en").toLowerCase().s
 const T = (zh, en) => (ZH ? zh : en);
 
 const VIEW_TYPE = "nautilus-spiral";
+const REVIEW_VIEW_TYPE = "nautilus-spiral-review";
 const DEFAULTS = {
   dayStart: 8,          // 螺旋从几点开始
   dayEnd: 32,           // 螺旋和排程到几点结束，超过 24 表示次日凌晨（32 = 次日早上 8 点；个人作息夜里会一直干活，早上七八点才睡）
@@ -60,6 +61,14 @@ const DEFAULTS = {
   colors: {},           // { main: "#rrggbb" }：设置里改过的颜色，没改过的不存，用 COLORS 的默认值
   pomodoro: { preset: "25", customMinutes: 45, active: null },   // 番茄钟：preset = "15"|"25"|"custom"，active = { id, dayKey, start, end, minutes, task }
   pomodoroHistory: {},  // { "2026_11_21": [{ start, end, minutes, label }] }：每天已完成的番茄钟记录（留 45 天）
+  pomodoroInterrupted: {}, // { "2026_11_21": [{ start, end, planned, elapsed, label }] }：提前中止但满 1m 的番茄钟（留 45 天）
+  reviewReasons: {},    // { "2026_11_27|任务名": "scope"|"bug"|"waiting"|"interrupt"|"loose" }：高偏差任务原因归因（留 180 天）
+  hideDoneOnSpiral: false, // 螺旋上隐藏已完成段落（不改日记、不影响列表与复盘）
+  spiralCollapsed: false,  // 折叠螺旋图区域，只保留容量条、番茄钟与任务列表
+  showSpiralLabels: "auto",// 螺旋外圈引导线标签："auto"（宽屏 ≥ 520px 自动显示）| "on" | "off"
+  spiralLabelMaxCols: 18,  // 外圈标签最大显示宽（14–28，1 个中文 = 2 列）
+  progressStep: 25,        // 快捷推进/回退进度步进（10 或 25）
+  respectEventOrder: false,// 按日记中固定事件的先后顺序排程：事件下方的未开始待办不排到该事件结束之前（默认关）
 };
 // 螺旋上各类的颜色（设置里能改）：[设置里的名字, 默认值]。默认值和 styles.css 开头的一致；Agent 的颜色跟各家自己的界面走，不放进来
 const COLORS = {
@@ -373,9 +382,43 @@ const stripDuration = (s) => s
   .replace(/(?:[一两二三四五六]个?半?|半)个?小时(?!候)/g, "")
   .replace(/\s+/g, " ").trim();
 
+// 剥离 Markdown 链接 URL 与裸网址再做时间/时长/进度匹配（保留行内代码与展示文字），防 URL 里的数字被误认
+function stripLinkUrls(s) {
+  const spans = [];
+  const masked = String(s || "").replace(/(`+)([\s\S]*?)\1/g, (m) => `\u0000${spans.push(m) - 1}\u0000`);
+  return masked
+    .replace(/!?\[\[[^\]|#]+(?:#[^\]|]+)?\|([^\]]*)\]\]/g, "$1")
+    .replace(/!?\[\[([^\]#]+)(?:#[^\]]+)?\]\]/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\u0000(\d+)\u0000/g, (_, n) => spans[Number(n)] ?? "");
+}
+// 英文 12 小时制时段（9am-11am / 2:30pm to 4pm / 2-4pm / 11-1pm）；至少一侧带 am/pm，或用 to 且带 :mm / am / pm
+const ENG_RANGE_RE = /(?<![\d:：A-Za-z])(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|—|~|～|\bto\b)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?![\d:：A-Za-z])/i;
+function parseEnglishRange(text) {
+  const clean = stripLinkUrls(text);
+  const m = ENG_RANGE_RE.exec(clean);
+  if (!m) return null;
+  const hasTo = /\bto\b/i.test(m[0]);
+  const a1 = m[3] ? m[3].toLowerCase() : "";
+  const a2 = m[6] ? m[6].toLowerCase() : "";
+  if (!a1 && !a2 && !(hasTo && (m[2] != null || m[5] != null))) return null;
+  let h1 = +m[1], min1 = m[2] != null ? +m[2] : 0;
+  let h2 = +m[4], min2 = m[5] != null ? +m[5] : 0;
+  if (min1 > 59 || min2 > 59 || h1 > 23 || h2 > 23) return null;
+  const effA1 = a1 || (a2 && h1 <= h2 ? a2 : "");
+  const to24 = (h, ap) => (ap === "pm" ? (h < 12 ? h + 12 : h) : ap === "am" ? (h === 12 ? 0 : h) : h);
+  const start = to24(h1, effA1) * 60 + min1;
+  let end = to24(h2, a2) * 60 + min2;
+  if (end < start && !a2 && h2 <= 12) end += 720;
+  return { start, end, raw: m[0] };
+}
+
 function cleanLabel(s) {
-  return s
-    .replace(/%%\s*(←[^%]*?)\s*%%/g, "$1")   // 日记整理藏成注释的「%%← 2026_10_15%%」还原成「← 2026_10_15」，下面认「←」尾巴的地方照旧
+  let base = String(s || "").replace(/%%\s*(←[^%]*?)\s*%%/g, "$1");
+  const er = parseEnglishRange(base);
+  if (er) base = base.replace(er.raw, " ");
+  return base
     .replace(RANGE_RE, "").replace(SINGLE_RE, "")
     .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:h|小时)\s*\d+\s*(?:m|min|分钟)(?![a-zA-Z])/g, "")
     .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:[~～\-–到至]\s*\d+(?:\.\d+)?\s*)?(?:hrs|hr|h|个小时|小时|mins|min|m|分钟)(?![a-zA-Z])/g, "")
@@ -493,27 +536,68 @@ const indentWidthOf = (t) => { let w = 0; for (const c of /^[ \t]*/.exec(t)[0]) 
 const isSubMark = (s) => /^🤖\s*(?:子代理|side chat)/.test(s);
 
 // 任务下面那一行「⏱ 00:45–00:58、04:02–05:10 · 共 1h21m · 48k tok · Claude」读回来（最后的 Claude 可以是指向那个会话的链接）：
-//   { segs: [[开始, 结束]…], total: 合计分钟（没写就是 null）, who: 谁记的（"Claude" / "Claude / Codex"，你自己做的没有）, partial: 段数太多只写了后面几段 }
-// 机器写的是上面这个样子；你自己改、自己写的也认：时段之间用顿号、逗号、分号、空格都行，起止之间用 – - ~ 到 都行，合计写「共 57m」「共 1小时21分」都行（英文界面写的是「total 57m」，也认）
+//   { segs: [[开始, 结束]…], total: 合计分钟（没写就是 null）, who: 谁记的（"Claude" / "Claude / Codex"，你自己做的没有）, partial: 段数太多只写了后面几段, isAgent: 是否 Agent Deck 写入 }
+// 先剥离 <!-- ad-clock:... --> 等注释与尾随 ^blockId，避免注释中的十六进制数字干扰 who 提取。
 function parseClock(s, cfg) {
+  const raw = String(s || "");
+  const hasAdMarker = /<!--\s*ad-clock:[a-f0-9]+\s*-->/.test(raw);
+  const clean = raw.replace(/\s*<!--[\s\S]*?-->\s*/g, " ").replace(/\s+\^[\w-]+\s*$/, "").trim();
   const segs = [];
-  for (const m of s.matchAll(/(\d{1,2})[:：](\d{2})\s*(?:[–—~～-]|到|至)\s*(\d{1,2})[:：](\d{2})/g)) {
+  for (const m of clean.matchAll(/(\d{1,2})[:：](\d{2})\s*(?:[–—~～-]|到|至)\s*(\d{1,2})[:：](\d{2})/g)) {
     const a = normalize(+m[1] * 60 + +m[2], cfg);
     let b = normalize(+m[3] * 60 + +m[4], cfg);
     if (b < a) b += 1440;
     if (b > a) segs.push([a, b]);
   }
   if (!segs.length) return null;
-  const tm = /(?:共|\btotal)\s*(?:(\d+)\s*(?:h|小时))?\s*(?:(\d+)\s*(?:m|min|分钟?))?/.exec(s);
+  const tm = /(?:共|\btotal)\s*(?:(\d+)\s*(?:h|小时))?\s*(?:(\d+)\s*(?:m|min|分钟?))?/.exec(clean);
   const total = tm && (tm[1] || tm[2]) ? (+tm[1] || 0) * 60 + (+tm[2] || 0) : null;
   // 最后一个「·」后面要是没有数字，就是谁记的。写成链接的（[Claude](claude://resume?session=…)）取链接上的字，会话号另外拿出来
-  const sm = /\]\([^)]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[^)]*\)/.exec(s);
-  const tail = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").split(/\s[·•]\s/).pop().trim();
+  const sm = /\]\([^)]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[^)]*\)/.exec(clean);
+  const tail = clean.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").split(/\s[·•]\s/).pop().trim();
   const who = /\d/.test(tail) || tail.startsWith("⏱") ? "" : tail;
   // 「· 48k tok」：这几段里 Agent 用掉的 token（产出 + 读入），机器写的
-  const km = /([\d.]+)\s*([kKmM]?)\s*tok\b/.exec(s);
+  const km = /([\d.]+)\s*([kKmM]?)\s*tok\b/.exec(clean);
   const tok = km ? Math.round(+km[1] * ({ k: 1e3, m: 1e6 }[km[2].toLowerCase()] || 1)) : null;
-  return { segs: unionSegs(segs), total, who, tok, sid: sm ? sm[1] : "", partial: /^⏱\uFE0F?\s*…/.test(s) };
+  const parsedSegs = unionSegs(segs);
+  const isAgent = hasAdMarker || Boolean(who);
+  const clockMin = total != null ? total : Math.round(unionMin(parsedSegs));
+  return {
+    segs: parsedSegs, total, who, tok, sid: sm ? sm[1] : "", partial: /^⏱\uFE0F?\s*…/.test(clean), isAgent,
+    humanSegs: isAgent ? [] : parsedSegs,
+    aiSegs: isAgent ? parsedSegs : [],
+    humanMin: isAgent ? 0 : clockMin,
+    aiMin: isAgent ? clockMin : 0,
+  };
+}
+
+function mergeClockEntries(a, b) {
+  const segs = unionSegs([...(a.segs || []), ...(b.segs || [])]);
+  const overlaps = (a.segs || []).some(([x1, x2]) => (b.segs || []).some(([y1, y2]) => Math.min(x2, y2) > Math.max(x1, y1)));
+  let total = null;
+  if (a.total != null || b.total != null) {
+    if (!overlaps) total = (a.total != null ? a.total : Math.round(unionMin(a.segs || []))) + (b.total != null ? b.total : Math.round(unionMin(b.segs || [])));
+    else total = Math.round(unionMin(segs));
+  }
+  const whos = [];
+  for (const raw of [a.who, b.who]) {
+    for (const part of String(raw || "").split(/\s*\/\s*/)) {
+      const trimmed = part.trim();
+      if (trimmed && !whos.includes(trimmed)) whos.push(trimmed);
+    }
+  }
+  const tok = a.tok != null || b.tok != null ? (a.tok || 0) + (b.tok || 0) : null;
+  const humanA = a.humanSegs || (a.isAgent ? [] : (a.segs || []));
+  const humanB = b.humanSegs || (b.isAgent ? [] : (b.segs || []));
+  const aiA = a.aiSegs || (a.isAgent ? (a.segs || []) : []);
+  const aiB = b.aiSegs || (b.isAgent ? (b.segs || []) : []);
+  const humanSegs = unionSegs([...humanA, ...humanB]);
+  const aiSegs = unionSegs([...aiA, ...aiB]);
+  const hOverlap = humanA.some(([x1, x2]) => humanB.some(([y1, y2]) => Math.min(x2, y2) > Math.max(x1, y1)));
+  const aOverlap = aiA.some(([x1, x2]) => aiB.some(([y1, y2]) => Math.min(x2, y2) > Math.max(x1, y1)));
+  const humanMin = hOverlap ? Math.round(unionMin(humanSegs)) : ((a.humanMin ?? (!a.isAgent ? (a.total ?? Math.round(unionMin(humanA))) : 0)) + (b.humanMin ?? (!b.isAgent ? (b.total ?? Math.round(unionMin(humanB))) : 0)));
+  const aiMin = aOverlap ? Math.round(unionMin(aiSegs)) : ((a.aiMin ?? (a.isAgent ? (a.total ?? Math.round(unionMin(aiA))) : 0)) + (b.aiMin ?? (b.isAgent ? (b.total ?? Math.round(unionMin(aiB))) : 0)));
+  return { segs, total, who: whos.join(" / "), tok, sid: a.sid || b.sid || "", partial: Boolean(a.partial || b.partial), isAgent: Boolean(a.isAgent && b.isAgent), humanSegs, aiSegs, humanMin, aiMin };
 }
 
 const BLOCK_ID_RE = /^\^[\w-]+\s*$/;
@@ -651,7 +735,7 @@ function calendarSig(cal) {
     cal.error || "",
   ]);
 }
-function pastDayComputeSig({ dayKey, content, cfg, cal }) {
+function pastDayComputeSig({ dayKey, content, cfg, cal, mirrorSig = "" }) {
   return JSON.stringify([
     dayKey,
     content.length,
@@ -661,13 +745,15 @@ function pastDayComputeSig({ dayKey, content, cfg, cal }) {
     cfg.dayCutoff,
     cfg.defaultDur,
     cfg.showMain !== false,
+    !!cfg.respectEventOrder,
+    mirrorSig || "",
     (cfg.dayBounds || {})[dayKey] || null,
     (cfg.doneTimes || {})[dayKey] || null,
     (cfg.workLog || {})[dayKey] || null,
     calendarSig(cal),
   ]);
 }
-function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount }) {
+function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount, wideLabels = false }) {
   return JSON.stringify([
     computeSig,
     cfg.showAi !== false,
@@ -675,6 +761,12 @@ function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount }) {
     cfg.showUnrecorded !== false,
     !!cfg.dayReviewFolded,
     !!cfg.reviewFolded,
+    !!cfg.hideDoneOnSpiral,
+    !!cfg.spiralCollapsed,
+    cfg.showSpiralLabels || "auto",
+    cfg.spiralLabelMaxCols || 18,
+    cfg.progressStep || 25,
+    !!wideLabels,
     cfg.aiPrimary || "",
     cfg.aiAgents || null,
     aiDay ? [aiDay.wall, aiDay.out, aiDay.fresh, aiDay.cached, aiDay.calls, aiDay.sessions] : null,
@@ -697,12 +789,13 @@ function parseJournal(content, cfg) {
     let s = lm[2];
     if (s.startsWith("🔗") || s.startsWith("💬") || s.startsWith("📋") || s.startsWith("❓") || isSubMark(s) || isGoal(s)) return;   // 任务下面的「🔗 绑定的会话」「💬 会话最后说的话」「📋 步骤/轮次进度」「❓ 追问」「🤖 子代理」「🎯 目标」是记号，不是事件也不是任务（里面带着时间也不算）
     if (s.startsWith("⏱")) {
-      // 任务下面的「⏱ 实际时段」是记录，不是事件也不是任务。读出来挂到它上面那件任务上（往上找缩进更浅的第一行）
+      // 任务/事件下面的「⏱ 实际时段」是记录，不是事件也不是任务。读出来合并挂到上方最近缩进更浅的条目上
       const c = parseClock(s, cfg), ind = lm[1].replace(/\t/g, "    ").length;
       if (c) for (let j = items.length - 1; j >= 0; j--) if (items[j].indent < ind) {
-        if (items[j].kind === "task" && !items[j].clock) {
-          items[j].clock = c;
-          if (items[j].state === "done" && items[j].est == null && items[j].explicitDur && !items[j].actual) items[j].est = items[j].dur;
+        if (items[j].kind === "task" || items[j].kind === "event") {
+          items[j].clock = items[j].clock ? mergeClockEntries(items[j].clock, c) : c;
+          if (!c.isAgent) items[j].hasManualClock = true;
+          if (items[j].kind === "task" && items[j].state === "done" && items[j].est == null && items[j].explicitDur && !items[j].actual) items[j].est = items[j].dur;
         }
         break;
       }
@@ -722,13 +815,15 @@ function parseJournal(content, cfg) {
     let labelPreview = state === "none" ? s : stripProgress(s);
     for (const pr of prio) labelPreview = labelPreview.split(pr).join("");
     labelPreview = cleanLabel(labelPreview) || s.trim();
-    // 母块无状态或为 TODO 时不覆盖子块；母块为其他状态（DOING / DONE / SUSPENDED / PAUSED / CANCELLED 等）时，下面带状态的子块以母块状态为准
+    // 母块无状态或为 TODO 时不覆盖子块；母块为其他状态时，普通手写子块随母块；
+    // 🤖 自动子块不被非 DONE 母块覆盖，仅当母块标 DONE 时把未完成的 🤖 子块一起收口为 done
+    const auto = state !== "none" && /^(?:\[#[ABC]\]\s*)*🤖/i.test(s);   // 这一行是自动记的（Agent 回写的）
     const selfOverride = state !== "none" && KW_STATUS[kwName] !== "todo"
       ? { line, label: labelPreview, state, kw: kwName, doing, suspended, paused, agentKw }
       : null;
     const inherited = stepAnc(anc, indent, selfOverride);
     let inheritedFrom = null, inheritedLabel = null;
-    if (inherited && state !== "none") {
+    if (inherited && state !== "none" && (!auto || (inherited.state === "done" && state !== "done"))) {
       state = inherited.state;
       kwName = inherited.kw;
       doing = inherited.doing;
@@ -739,14 +834,14 @@ function parseJournal(content, cfg) {
       inheritedLabel = inherited.label;
     }
     if (state === "drop") return;
-    const progress = state === "none" ? null : parseProgress(s);
+    const ps = stripLinkUrls(s);
+    const progress = state === "none" ? null : parseProgress(ps);
     const label = labelPreview;
-    const auto = state !== "none" && /^(?:\[#[ABC]\]\s*)*🤖/i.test(s);   // 这一行是自动记的（Agent 回写的）
     const base = { line, indent, label, state, kw: kwName, doing: !!doing, suspended, paused, agentKw, progress, prio: prio.some((p) => s.includes(p)), ...(p.prio ? { priority: p.prio } : {}), stamp, ...(auto ? { auto: true } : {}), ...(inheritedFrom != null ? { inheritedFrom, inheritedLabel } : {}) };
 
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
-      const ts = s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/i, "");   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
+      const ts = stripLinkUrls(s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/i, ""));   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
       const lr = new RegExp("^" + RANGE_RE.source).exec(ts);
       const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
       if (state === "done" && lr) {
@@ -791,7 +886,7 @@ function parseJournal(content, cfg) {
       }
     }
 
-    const rm = RANGE_RE.exec(s);
+    const rm = RANGE_RE.exec(ps);
     if (rm) {
       const start = normalize(tokenMinutes(rm[1], rm[2], rm[3], rm[4]), cfg);
       let end = rm[5] !== undefined ? tokenMinutes(rm[5], rm[6], rm[7], rm[8]) : +rm[9] * 60;
@@ -800,24 +895,32 @@ function parseJournal(content, cfg) {
       items.push({ ...base, kind: "event", start, end });
       return;
     }
+    const erm = parseEnglishRange(ps);
+    if (erm) {
+      const start = normalize(erm.start, cfg);
+      let end = normalize(erm.end, cfg);
+      if (end <= start) end += 720;
+      items.push({ ...base, kind: "event", start, end });
+      return;
+    }
     if (state === "none") {
       if (stamp !== null) items.push({ ...base, kind: "log", start: stamp });
       return;
     }
-    const dur = parseDuration(s) ?? cfg.defaultDur;
-    const single = SINGLE_RE.exec(s);
+    const dur = parseDuration(ps) ?? cfg.defaultDur;
+    const single = SINGLE_RE.exec(ps);
     if (single) {
       const start = normalize(tokenMinutes(single[1], single[2], single[3], single[4]), cfg);
       items.push({ ...base, kind: "event", start, end: start + dur, pinned: true });
       return;
     }
-    items.push({ ...base, kind: "task", dur, explicitDur: parseDuration(s) != null, est: state === "done" ? parseDuration(s) : null });
+    items.push({ ...base, kind: "task", dur, explicitDur: parseDuration(ps) != null, est: state === "done" ? parseDuration(ps) : null });
   });
-  // 父任务下面还挂着子任务、自己又没写时长：时间算在子任务上，父任务不重复占
+  // 父任务下面还挂着子任务、自己又没写时长：时间算在子任务上，父任务不重复占（🤖 子块不把人工父任务降格为容器）
   items.forEach((t, i) => {
     if (t.kind !== "task" || t.state !== "open" || t.explicitDur === true || t.startedAt != null) return;
     for (let j = i + 1; j < items.length && items[j].indent > t.indent; j++) {
-      if (items[j].kind === "task") { t.container = true; break; }
+      if (items[j].kind === "task" && !items[j].auto) { t.container = true; break; }
     }
   });
   return items;
@@ -838,7 +941,8 @@ function mainTask(raw) {
   if (!lm) return null;
   const p = parseStatusPrefix(lm[2], MAIN_KW_FULL_RE, MAIN_KW_RE);
   if (!p.kwName || p.prio !== "A") return null;
-  return { state: mainStateOf(p.kwName), label: cleanLabel(stripProgress(p.rest.replace(/\[#[ABC]\]\s*/gi, ""))) || p.rest.trim() };
+  const auto = /^(?:\[#[ABC]\]\s*)*🤖/i.test(p.rest);
+  return { state: mainStateOf(p.kwName), auto, label: cleanLabel(stripProgress(p.rest.replace(/\[#[ABC]\]\s*/gi, ""))) || p.rest.trim() };
 }
 // 返回 { blocks: [{ line, end, label, tasks: [{ line, label, state }], done, total }], over: [多出来的块的标题], tasks: 各块的 A 级任务拍平, done, total }
 function mainOf(content) {
@@ -868,7 +972,7 @@ function mainOf(content) {
       }
     }
     let t = !inCode && mainTask(raw);
-    if (t && inherited) t = { ...t, state: inherited };
+    if (t && inherited && (!t.auto || (inherited === "done" && t.state !== "done"))) t = { ...t, state: inherited };
     if (!inCode && raw.trim() && !/^\s/.test(raw) && !BLOCK_ID_RE.test(raw)) {   // 顶格的块 ID 那一行跟着上一块
       close();
       const lm = LIST_RE.exec(raw);
@@ -885,12 +989,14 @@ function mainOf(content) {
   return { blocks, over, tasks, done: done(tasks), total: tasks.length };
 }
 // 给 parseJournal 的条目打上主线记号：main = 在主线块里（排程时排在 DOING 后面、别的待办前面），mainA = 它自己就是 A 级的那一行
+// 挂在 [#A] 主线母块下的缩进 🤖 子块不继承 main（除非它自己写了 [#A]），防止 AI 子块冒充主线抢色抢排程
 function markMain(items, M) {
   const a = new Set(M.tasks.map((t) => t.line));
   for (const it of items) {
     if (it.kind !== "task" && it.kind !== "event") continue;
-    if (M.blocks.some((b) => it.line >= b.line && it.line < b.end)) it.main = true;
-    if (a.has(it.line)) it.mainA = true;
+    const selfA = a.has(it.line);
+    if (selfA) it.mainA = true;
+    if (selfA || (!(it.auto && it.indent > 0) && M.blocks.some((b) => it.line >= b.line && it.line < b.end))) it.main = true;
   }
   return items;
 }
@@ -918,6 +1024,80 @@ function withProgress(raw, pct) {
   if (h) return h.cn ? raw.replace(h.re, p) : swap(h.re);
   const tail = /(?:\s+(?:\^[\w-]+|%%[^%]*%%|←\s*\S+))+\s*$/.exec(raw);
   return tail ? `${raw.slice(0, tail.index)} ${p}${raw.slice(tail.index)}` : `${raw.replace(/\s+$/, "")} ${p}`;
+}
+function stripProgressClean(raw) {
+  const lead = (/^\s*/.exec(String(raw || "")) || [""])[0];
+  const tail = String(raw || "").slice(lead.length);
+  return lead + stripProgress(tail).replace(/ {2,}/g, " ").trimEnd();
+}
+// 螺旋色块或菜单快捷推进/回退进度：支持正/负步进（+step → … → DONE，-step 回退并在 <=0% 时清除），严格幂等
+function stepProgressLine(raw, delta = 25, nowStr = undefined) {
+  const k = kwLine(raw);
+  const p0 = splitTask(raw);
+  const kwUp = String(k?.kw || p0?.kw || "").toUpperCase();
+  const isDone = ["DONE", "YES", "CANCELLED", "CANCELED", "NO", "FAILED"].includes(kwUp) || (p0 && (p0.cb === "x" || p0.cb === "X" || p0.cb === "-"));
+  const cur = parseProgress(raw);
+  const curPct = cur != null ? Math.round(cur * 100) : 0;
+  if (isDone) return { nextRaw: raw, nextPct: 100, done: true, changed: false };
+  const d = Math.round(Number(delta) || 0);
+  if (d === 0) return { nextRaw: raw, nextPct: curPct, done: false, changed: false };
+  const s = Math.max(1, Math.min(100, Math.abs(d)));
+  if (d < 0) {
+    if (cur == null || curPct <= 0) return { nextRaw: raw, nextPct: 0, done: false, changed: false };
+    const prevPct = Math.max(0, (Math.ceil(curPct / s) - 1) * s);
+    const nextRaw = prevPct <= 0 ? stripProgressClean(raw) : withProgress(raw, prevPct);
+    return { nextRaw, nextPct: prevPct, done: false, changed: nextRaw !== raw };
+  }
+  const nextPct = Math.min(100, (Math.floor(curPct / s) + 1) * s);
+  if (nextPct >= 100) {
+    const cleaned = stripProgressClean(raw);
+    const now = nowStr || (moment ? moment().format("HH:mm") : "12:00");
+    const nextRaw = toKeyword(cleaned, "DONE", now);
+    return { nextRaw, nextPct: 100, done: true, changed: nextRaw !== raw };
+  }
+  const nextRaw = withProgress(raw, nextPct);
+  return { nextRaw, nextPct, done: false, changed: nextRaw !== raw };
+}
+function advanceProgressLine(raw, step = 25, nowStr = undefined) {
+  return stepProgressLine(raw, Math.abs(Number(step) || 25), nowStr);
+}
+// Obsidian 镜像块嵌入：- ![[源笔记#^块号]]（排除代码块，保留当天缩进与列表符号，操作可回写源笔记）
+const MIRROR_EMBED_RE = /^(\s*(?:[-*+]|\d+[.)])\s+)(!\[\[([^\]|#]+)#\^([A-Za-z0-9-]+)(?:\|([^\]]+))?\]\])\s*$/;
+function parseMirrorEmbed(line) {
+  const m = MIRROR_EMBED_RE.exec(String(line || ""));
+  if (!m) return null;
+  return {
+    prefix: m[1],
+    rawEmbed: m[2],
+    target: String(m[3] || "").trim(),
+    blockId: String(m[4] || "").trim(),
+    alias: String(m[5] || "").trim(),
+  };
+}
+function applyMirrorLines(content, resolvedByLine) {
+  const lines = String(content || "").split("\n");
+  const mirrorMap = new Map();
+  if (!resolvedByLine || typeof resolvedByLine.get !== "function" || !resolvedByLine.size) return { content: String(content || ""), mirrorMap };
+  let inCode = false;
+  const out = lines.map((raw, i) => {
+    if (/^\s*```/.test(raw)) { inCode = !inCode; return raw; }
+    if (inCode || !resolvedByLine.has(i)) return raw;
+    const m = parseMirrorEmbed(raw);
+    const r = resolvedByLine.get(i);
+    if (!m || !r || typeof r.rawLine !== "string" || !r.rawLine.trim()) return raw;
+    const srcBody = r.rawLine.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s+/, "");
+    if (!srcBody) return raw;
+    mirrorMap.set(i, {
+      path: r.path,
+      line: r.line,
+      blockId: r.blockId,
+      rawLine: r.rawLine,
+      target: m.target,
+      alias: m.alias,
+    });
+    return `${m.prefix}${srcBody}`;
+  });
+  return { content: out.join("\n"), mirrorMap };
 }
 // 小组件上点「做完」：DOING 14:05 写稿 → DONE 14:05-15:30 写稿；还没开始的记成 DONE 15:30（几点做完）
 function markDone(raw, now) {
@@ -1018,17 +1198,30 @@ function applyWork(items, cfg, dayKey, now, dayRel, bounds = {}) {
   const close = (segs, est) => segs.map(([a, b]) => [a, b ?? (dayRel === 0 ? now : Math.min(E, a + est))]).filter(([a, b]) => b > a);
   const seen = new Set();
   for (const t of items) {
+    if (t.kind === "event") {
+      if (t.clock) {
+        t.worked = t.clock.segs.map(([a, b]) => [a, b]);
+        t.spentToday = t.clock.total != null ? t.clock.total : sum(t.worked);
+        t._humanSegs = t.clock.humanSegs || (t.clock.isAgent ? [] : t.worked);
+        t._aiSegs = t.clock.aiSegs || (t.clock.isAgent ? t.worked : []);
+        t._humanMin = t.clock.humanMin != null ? t.clock.humanMin : (t.clock.isAgent ? 0 : t.spentToday);
+        t._aiMin = t.clock.aiMin != null ? t.clock.aiMin : (t.clock.isAgent ? t.spentToday : 0);
+        t._aiTok = t.clock.tok || 0;
+      } else {
+        t._humanSegs = []; t._aiSegs = []; t._humanMin = 0; t._aiMin = 0; t._aiTok = 0;
+      }
+      continue;
+    }
     if (t.kind !== "task") continue;
     const k = workKey(t.label);
     seen.add(k);
-    let segs = close(today[k] || [], t.dur);
+    const wlSegs = close(today[k] || [], t.dur);
+    t._workLogSegs = wlSegs;
+    let segs = wlSegs;
     // 手写了「DOING 14:05」但没被记到（比如那会儿 Obsidian 没开）：按写的算
     if (!segs.length && t.startedAt != null && t.state === "open") segs = close([[t.startedAt, null]], t.dur);
-    // 日记里这件任务下面那一行 ⏱ 是正本：机器记的实际时段写在那儿，你觉得不对也是在那儿改。
-    // 任务没在做的时候就按那一行写的算，插件自己的计时记录只当它的底稿（那份只留 45 天，换台电脑也没有）。
-    // 三种情况不按它：正在做的（还在往下记，那一行是上次停下时写的）；段数太多只写了后面几段、而计时记录还在的；
-    // 带「← 日期」的（从别的日子挪过来的，它带着的 ⏱ 说的是原来那天）
-    const noted = t.clock && !(t.doing && t.state === "open") && !(t.clock.partial && segs.length) && !/←\s*\S+\s*$/.test(t.label) ? t.clock : null;
+    // 日记里这件任务下面那一行 ⏱ 是正本；人工任务（包括直绑会话 DOING）没有螺旋自身计时记录时也实时读取 ⏱。
+    const noted = t.clock && (!(t.doing && t.state === "open") || (!t.aiSpan && !wlSegs.length)) && !(t.clock.partial && wlSegs.length) && !/←\s*\S+\s*$/.test(t.label) ? t.clock : null;
     if (noted) segs = noted.segs.map(([a, b]) => [a, b]);
     // 自动记的行上那段「🤖 21:59-00:06」是 AI 回传的真实占用：整段算一块（几件同时跑就叠着），
     // ⏱ 行只当明细，不再把它拆成一小块一小块
@@ -1036,8 +1229,74 @@ function applyWork(items, cfg, dayKey, now, dayRel, bounds = {}) {
     t.worked = segs;
     // 合计按那一行写的「共 …」：写的时候挨得近的几段并成了一段，照段落加会多出中间的空隙
     t.spentToday = t.aiSpan ? sum(segs) : noted && noted.total != null ? noted.total : sum(segs);
+    if (t.auto || t.aiSpan) {
+      t._humanSegs = [];
+      t._humanMin = 0;
+      t._aiSegs = segs;
+      t._aiMin = t.spentToday;
+      t._aiTok = t.clock?.tok || 0;
+    } else if (noted) {
+      const nHuman = noted.humanSegs || (noted.isAgent ? [] : noted.segs);
+      const nAi = noted.aiSegs || (noted.isAgent ? noted.segs : []);
+      t._humanSegs = wlSegs.length ? unionSegs([...wlSegs, ...nHuman]) : nHuman;
+      t._humanMin = wlSegs.length
+        ? Math.round(sum(t._humanSegs))
+        : (noted.humanMin != null ? noted.humanMin : (!noted.isAgent ? (noted.total ?? Math.round(sum(nHuman))) : 0));
+      t._aiSegs = nAi;
+      t._aiMin = noted.aiMin != null ? noted.aiMin : (noted.isAgent ? (noted.total ?? Math.round(sum(nAi))) : 0);
+      t._aiTok = noted.tok || 0;
+    } else {
+      t._humanSegs = segs;
+      t._humanMin = t.spentToday;
+      t._aiSegs = [];
+      t._aiMin = 0;
+      t._aiTok = 0;
+    }
     t.spentBefore = 0;
     for (const d in log) if (d < dayKey && log[d][k]) t.spentBefore += sum(log[d][k].filter(([, b]) => b != null));
+  }
+  // 将直接挂在人工母块（任务/预约事件）下的 🤖 子块实际用时上卷合并到母块，方便预计/预约 vs 实际对比
+  for (let idx = 0; idx < items.length; idx++) {
+    const p = items[idx];
+    if (!((p.kind === "task" && !p.auto && !p.container) || p.kind === "event")) continue;
+    const childWork = [];
+    let anyChildDoing = false;
+    for (let j = idx + 1; j < items.length && items[j].indent > p.indent; j++) {
+      const ch = items[j];
+      if (ch.kind !== "task" || !ch.auto) continue;
+      if (ch.doing && ch.state === "open") anyChildDoing = true;
+      const cSegs = (ch.worked && ch.worked.length) ? ch.worked : (ch.clock?.segs || []);
+      const cMin = ch.spentToday > 0 ? ch.spentToday : (ch.clock?.total != null ? ch.clock.total : sum(cSegs));
+      const cTok = ch._aiTok || ch.clock?.tok || 0;
+      if (cSegs.length || cMin > 0) childWork.push({ item: ch, segs: cSegs, min: cMin, tok: cTok });
+    }
+    if (!childWork.length) continue;
+    p._hasChildAiWork = true;
+    p._childAiDoing = anyChildDoing;
+    const childSegs = unionSegs(childWork.flatMap((c) => c.segs));
+    let childOverlap = false;
+    outer: for (let a = 0; a < childWork.length; a++) {
+      for (let b = a + 1; b < childWork.length; b++) {
+        for (const [s1, e1] of childWork[a].segs) {
+          for (const [s2, e2] of childWork[b].segs) {
+            if (Math.min(e1, e2) > Math.max(s1, s2)) { childOverlap = true; break outer; }
+          }
+        }
+      }
+    }
+    const childMinutes = !childOverlap && childWork.every((c) => c.min > 0)
+      ? childWork.reduce((acc, c) => acc + c.min, 0)
+      : unionMin(childSegs);
+    const childTokens = childWork.reduce((acc, c) => acc + (c.tok || 0), 0);
+    const ownAiOverlap = (p._aiSegs || []).some(([s1, e1]) => childSegs.some(([s2, e2]) => Math.min(e1, e2) > Math.max(s1, s2)));
+    p._aiSegs = unionSegs([...(p._aiSegs || []), ...childSegs]);
+    p._aiMin = !ownAiOverlap ? (p._aiMin || 0) + Math.round(childMinutes) : Math.round(sum(p._aiSegs));
+    p._aiTok = (p._aiTok || 0) + childTokens;
+    const ownSegs = p.worked || [];
+    const ownMin = p.spentToday || 0;
+    const ownOverlapsChild = ownSegs.some(([s1, e1]) => childSegs.some(([s2, e2]) => Math.min(e1, e2) > Math.max(s1, s2)));
+    p.worked = unionSegs([...ownSegs, ...childSegs]);
+    p.spentToday = !ownOverlapsChild ? ownMin + childMinutes : unionMin(p.worked);
   }
   return Object.entries(today).filter(([k]) => !seen.has(k)).map(([k, segs]) => ({ label: k, line: 0, segs: close(segs, 30) })).filter((o) => o.segs.length);
 }
@@ -1060,6 +1319,30 @@ function fill(free, need, min, segs) {
   }
   return need;
 }
+// 仅在 >= startAfter 的空档中排程，保留 startAfter 之前的空档供其它任务使用
+function fillAfter(free, startAfter, need, min, segs) {
+  if (startAfter == null) return fill(free, need, min, segs);
+  const before = [], after = [];
+  for (const [a, b] of free) {
+    if (b <= startAfter) before.push([a, b]);
+    else if (a >= startAfter) after.push([a, b]);
+    else {
+      if (startAfter > a) before.push([a, startAfter]);
+      if (b > startAfter) after.push([startAfter, b]);
+    }
+  }
+  const rem = fill(after, need, min, segs);
+  const combined = [...before, ...after].sort((u, v) => u[0] - v[0]);
+  const merged = [];
+  for (const iv of combined) {
+    if (iv[1] <= iv[0]) continue;
+    const last = merged[merged.length - 1];
+    if (last && Math.abs(last[1] - iv[0]) < 1e-6) last[1] = iv[1];
+    else merged.push(iv);
+  }
+  free.splice(0, free.length, ...merged);
+  return rem;
+}
 
 // bounds = 这天实际的开始 / 结束（螺旋上拖出来的），没设就用设置里的 dayStart / dayEnd
 function schedule(items, cfg, now, dayRel, bounds = {}) {
@@ -1072,8 +1355,26 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
   const available = free.reduce((s, [a, b]) => s + b - a, 0);
 
   const open = items.filter((i) => i.kind === "task" && i.state === "open" && !i.container && !i.suspended);
-  // 在做的先排，然后是主线块里的，再是别的待办（各自按日记里的先后）
-  const queue = [...open.filter((t) => t.doing), ...open.filter((t) => !t.doing && t.main), ...open.filter((t) => !t.doing && !t.main)];
+  for (const t of open) t.startAfter = null;
+  if (cfg.respectEventOrder === true) {
+    let lastEventEnd = null;
+    for (const it of items.filter((i) => i.line != null && i.line >= 0).sort((a, b) => a.line - b.line)) {
+      if (it.kind === "event") {
+        lastEventEnd = lastEventEnd == null ? it.end : Math.max(lastEventEnd, it.end);
+      } else if (it.kind === "task" && it.state === "open" && !it.doing && !it.container && !it.suspended && lastEventEnd != null) {
+        it.startAfter = lastEventEnd;
+      }
+    }
+  }
+  const isNestedAuto = (t) => Boolean(t.auto && t.indent > 0);
+  // 母块 / 顶格任务优先于缩进 🤖 子块：顶格 DOING 先占中心泳道，顶格主线与待办先于非进行中 🤖 子块
+  const queue = [
+    ...open.filter((t) => t.doing && !isNestedAuto(t)),
+    ...open.filter((t) => t.doing && isNestedAuto(t)),
+    ...open.filter((t) => !t.doing && t.main && !isNestedAuto(t)),
+    ...open.filter((t) => !t.doing && !t.main && !isNestedAuto(t)),
+    ...open.filter((t) => !t.doing && isNestedAuto(t)),
+  ];
   let demand = 0;
   for (const t of queue) {
     t.segments = [];
@@ -1118,7 +1419,7 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
     if (parallel && t.doing) continue;
     demand += t.remaining;
     // 进行中的从现在接着做，照旧切开填；其余的每段至少 minChunk 分钟
-    t.overflow = fill(free, t.remaining, t.doing ? 0 : cfg.minChunk ?? 0, t.segments);
+    t.overflow = fillAfter(free, (!t.doing && cfg.respectEventOrder === true) ? t.startAfter : null, t.remaining, t.doing ? 0 : cfg.minChunk ?? 0, t.segments);
   }
   const eventLeft = unionSegs(busy).reduce((s, [a, b]) => s + b - a, 0);   // 重叠的事件按并集算，同一分钟不重复算
   // 没排进去的分钟。总量超了是一回事（overflow），总量够、但没有一段连续空档放得下是另一回事，容量条上分开报
@@ -1338,20 +1639,32 @@ function formatTaskTip(t, autoKeys = null) {
 //   未预估 no-estimate = 这一行从来没进过计划（自动记的 🤖 行，或者「DONE 18:02 写稿 2h」这种直接记做了多久的），只列实际，不拿默认时长去比
 // 汇总只算「已对比」的那几件，两边是同一批任务；在做的、停着的不影响偏差。预计 = 行上写的时长，没写按默认任务时长（排程也是按它排的）
 // 固定事件不算（时间段是约定，不是预估）；带子任务的大项、复习卡片不算。live = 这一天是不是今天
-const useClockTotal = (t) => !t.aiSpan && t.clock && t.clock.total != null && !(t.doing && t.state === "open") && !(t.clock.partial && (t.worked || []).length) && !/←\s*\S+\s*$/.test(t.label);
+const useClockTotal = (t) => !t._hasChildAiWork && !t.aiSpan && t.clock && t.clock.total != null && (!(t.doing && t.state === "open") || !(t._workLogSegs?.length)) && !(t.clock.partial && (t._workLogSegs || []).length) && !/←\s*\S+\s*$/.test(t.label);
 function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
   const rows = [];
   for (const t of items) {
+    if (t.kind === "event") {
+      if (!t.clock && !t._hasChildAiWork) continue;
+      const planned = Math.max(1, Math.round((t.end || 0) - (t.start || 0)));
+      const actual = useClockTotal(t) ? Math.floor(t.clock.total) : Math.floor(t.spentToday || unionMin(t.worked || []));
+      if (!(actual > 0)) continue;
+      const done = t.state === "done" || !live;
+      const state = done ? "compared" : t._childAiDoing ? "live" : "paused";
+      rows.push({ item: t, label: t.label, done, state, plannedMinutes: planned, actualMinutes: actual, varianceMinutes: state === "compared" ? actual - planned : null });
+      continue;
+    }
     if (t.kind !== "task" || t.container || isReview(t)) continue;
     const done = t.state === "done";
     const worked = t.worked || [];
     const noPlan = auto.has(workKey(t.label)) || t.label.startsWith(AUTO_MARK.trim()) || (done && !(t.est > 0) && t.explicitDur === true && !t.actual);
     const planned = noPlan ? null : done ? (t.est > 0 ? t.est : cfg.defaultDur) : t.dur;
-    // 实际：记下来的那几段和 DONE 后面写的时段合起来（重叠只算一次）；直接写了做多久的按写的
-    let actual = useClockTotal(t) ? Math.floor(t.clock.total) : Math.floor(unionMin([...worked, ...(done && t.actual ? [t.actual] : [])]));
+    // 实际：有挂接子块汇总时直接用汇总后的净分钟，否则取有效 clock.total 或实际分段并集
+    let actual = useClockTotal(t)
+      ? Math.floor(t.clock.total)
+      : Math.floor(t._hasChildAiWork ? Math.max(t.spentToday || 0, unionMin([...worked, ...(done && t.actual ? [t.actual] : [])])) : unionMin([...worked, ...(done && t.actual ? [t.actual] : [])]));
     if (!actual && noPlan && done && t.explicitDur === true && !t.actual && !auto.has(workKey(t.label))) actual = Math.round(t.dur);
     const state = done ? (actual > 0 ? (planned == null ? "no-estimate" : "compared") : "not-tracked")
-      : live && t.doing && actual > 0 ? "live" : actual > 0 ? "paused" : "not-started";
+      : live && (t.doing || t._childAiDoing) && actual > 0 ? "live" : actual > 0 ? "paused" : "not-started";
     rows.push({ item: t, label: t.label, done, state, plannedMinutes: planned, actualMinutes: actual, varianceMinutes: state === "compared" ? actual - planned : null });
   }
   const compared = rows.filter((r) => r.state === "compared");
@@ -1360,6 +1673,427 @@ function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
 }
 const signed = (m) => (m > 0 ? `+${dur(m)}` : m < 0 ? `−${dur(-m)}` : "±0");
 const reviewLine = (s) => T(`已完成 ${s.completedCount}/${s.totalCount} · 已对比 ${s.comparedCount} 件：预计 ${dur(s.plannedMinutes)} · 实际 ${dur(s.actualMinutes)} · 偏差 ${signed(s.varianceMinutes)}`, `Done ${s.completedCount}/${s.totalCount} · compared ${s.comparedCount}: estimated ${dur(s.plannedMinutes)} · actual ${dur(s.actualMinutes)} · off by ${signed(s.varianceMinutes)}`);
+
+const REVIEW_REASONS = [
+  { id: "scope", label: T("范围扩大", "Scope grew") },
+  { id: "bug", label: T("卡 Bug", "Hit a bug") },
+  { id: "waiting", label: T("等回复", "Waiting on reply") },
+  { id: "interrupt", label: T("临时打断", "Interrupted") },
+  { id: "loose", label: T("估太松", "Over-buffered") },
+];
+const REVIEW_REASON_MAP = Object.fromEntries(REVIEW_REASONS.map((r) => [r.id, r.label]));
+
+function extractCats(rawLine) {
+  const raw = String(rawLine || "");
+  const tags = [...raw.matchAll(/#([^\s#\[\],，。;；:：]+)/gu)].map((m) => "#" + m[1]);
+  const links = [...raw.matchAll(/\[\[([^\]|#]+)/g)].map((m) => m[1].trim()).filter((x) => !/^\d{4}[-_]\d{2}[-_]\d{2}$/.test(x));
+  return [...new Set([...tags, ...links])];
+}
+
+function calibratedEstimate(rawLine, estMin, catMap) {
+  if (!rawLine || !(estMin > 0) || !catMap) return null;
+  let best = null;
+  for (const cat of extractCats(rawLine)) {
+    const stat = catMap[cat];
+    if (!stat || !(stat.n >= 2) || !(stat.ratio > 0) || Math.abs(stat.ratio - 1) < 0.15) continue;
+    if (!best || stat.n > best.n || (stat.n === best.n && Math.abs(Math.log(stat.ratio)) > Math.abs(Math.log(best.ratio)))) {
+      best = { cat, ratio: stat.ratio, n: stat.n, calibratedMin: Math.max(1, Math.round(estMin * stat.ratio)) };
+    }
+  }
+  return best;
+}
+
+function buildPeriodReview(daySnapshots = [], cfg = DEFAULTS, opts = {}) {
+  const mode = opts.mode || "week";
+  const reasons = opts.reasons || {};
+  const autoKeysByDay = opts.autoKeysByDay || {};
+  const rows = [];
+  const taskWorkRows = [];
+  const dailyBudget = [];
+  const hourly = Array.from({ length: 24 }, (_, hour) => ({ hour, workMin: 0, mainMin: 0, aiMin: 0, unrecordedMin: 0 }));
+  const rolloverMap = new Map();
+  let plannedTotal = 0, plannedDone = 0, unplannedDone = 0, totalDoneTasks = 0;
+  let mainDays = 0, mainDone = 0, mainTotal = 0;
+  let activeDays = 0;
+  let totalSegs = 0, totalSegMin = 0, taskWithSegCount = 0;
+  let pomoDoneCount = 0, pomoInterruptedCount = 0;
+  let eventCount = 0, freeBlockSum = 0, freeBlockCount = 0;
+  let totalAiTokensFromDays = 0;
+
+  const clipSegs = (segs, lo, hi) => (segs || []).map(([a, b]) => [Math.max(lo, a), Math.min(hi, b)]).filter(([a, b]) => b > a);
+  const addHourly = (segs, field, lo, hi) => {
+    for (const [ra, rb] of clipSegs(segs, lo, hi)) {
+      let cur = ra;
+      while (cur < rb) {
+        const hIdxAbs = Math.floor(cur / 60);
+        const hEnd = Math.min(rb, (hIdxAbs + 1) * 60);
+        const h = ((hIdxAbs % 24) + 24) % 24;
+        hourly[h][field] += hEnd - cur;
+        cur = hEnd;
+      }
+    }
+  };
+  const isoWeekOf = (snap) => {
+    const raw = snap.dateStr || snap.dayKey || "";
+    const d = moment(raw, ["YYYY-MM-DD", cfg.format || "YYYY_MM_DD", "YYYY_MM_DD"], true);
+    if (!d.isValid()) return "—";
+    return `${d.isoWeekYear()}-W${String(d.isoWeek()).padStart(2, "0")}`;
+  };
+
+  for (const snap of daySnapshots) {
+    const dayKey = snap.dayKey;
+    const dateStr = snap.dateStr || dayKey;
+    const content = snap.content || "";
+    const bounds = snap.bounds || {};
+    const S1 = bounds.start ?? (cfg.dayStart ?? 8) * 60;
+    const E1 = bounds.end ?? (cfg.dayEnd ?? 32) * 60;
+    const upto = snap.isToday && snap.now != null ? Math.min(Math.max(snap.now, S1), E1) : E1;
+    const lines = content ? content.split("\n") : [];
+    const items = content ? parseJournal(content, cfg) : [];
+    const M = mainOf(cfg.showMain !== false ? content : "");
+    markMain(items, M);
+    for (const e of snap.calItems || []) {
+      const dup = items.some((i) => i.kind === "event" && Math.abs(i.start - e.start) <= 5 && (i.label.includes(e.label) || e.label.includes(i.label)));
+      if (!dup) items.push({ ...e });
+    }
+    const dayCfg = { ...cfg, workLog: opts.fullWorkLog || { [dayKey]: snap.workLog || {} } };
+    applyWork(items, dayCfg, dayKey, snap.isToday && snap.now != null ? snap.now : E1, snap.isToday ? 0 : -1, bounds);
+
+    const autoSet = new Set(autoKeysByDay[dayKey] || []);
+    const dayAi = snap.aiDay || null;
+    const dayAiTok = dayAi ? tokUsed(dayAi) : 0;
+    totalAiTokensFromDays += dayAiTok;
+    const gameSegs = (snap.gameSegs || []).map(([a, b]) => [a, b]).filter(([a, b]) => b > a);
+    const pomoDone = snap.pomoDone || [];
+    const pomoInt = snap.pomoInterrupted || [];
+    pomoDoneCount += pomoDone.length;
+    pomoInterruptedCount += pomoInt.length;
+
+    const mainSegs = [], taskSegs = [], eventSegs = [], reviewSegs = [];
+    for (const t of items) {
+      if (t.kind === "event") {
+        eventCount++;
+        const eSegs = [[t.start, t.end]].filter(([a, b]) => b > a);
+        eventSegs.push(...eSegs);
+        const actual = Math.round((useClockTotal(t) ? t.clock.total : (t.spentToday || unionMin(t.worked || []))) + (t.spentBefore || 0));
+        if ((t.clock || t._hasChildAiWork) && actual >= 1) {
+          const est = Math.max(1, Math.round((t.end || 0) - (t.start || 0)));
+          const cats = extractCats(lines[t.line] || "");
+          let hMin = Math.round(t._humanMin || 0), aMin = Math.round(t._aiMin || 0), aTok = t._aiTok || 0;
+          if (hMin + aMin === 0) hMin = actual;
+          const rk = `${dayKey}|${t.label}`;
+          const row = { day: dayKey, dateStr, path: snap.path || "", line: t.line ?? 0, label: t.label, key: workKey(t.label), kind: "event", est, actual, humanMin: hMin, aiMin: aMin, aiTok: aTok, variance: actual - est, ratio: actual / est, cats, reasonKey: rk, reason: reasons[rk] || "", weekLabel: isoWeekOf(snap) };
+          rows.push(row);
+          taskWorkRows.push(row);
+        }
+        continue;
+      }
+      if (t.kind !== "task") continue;
+      if (isReview(t) && t.state === "done") {
+        const rSegs = t.actual ? [t.actual] : (t.worked || []);
+        reviewSegs.push(...rSegs);
+        continue;
+      }
+      if (!t.container && !isReview(t)) {
+        const isAuto = t.auto || autoSet.has(workKey(t.label));
+        const isPlanned = !isAuto && (t.explicitDur || t.est > 0 || t.main || t.mainA || t.prio);
+        if (t.state === "done") {
+          totalDoneTasks++;
+          if (isPlanned) { plannedTotal++; plannedDone++; }
+          else unplannedDone++;
+        } else if (isPlanned) {
+          plannedTotal++;
+        }
+        // 顺延追踪：← YYYY_MM_DD 后缀或跨多天出现的同一 workKey
+        if (!isAuto && t.label) {
+          const carryMatch = /\s*←\s*(\S+)\s*$/.exec(t.label);
+          const baseKey = workKey(cleanLabel(t.label));
+          if (baseKey) {
+            let entry = rolloverMap.get(baseKey);
+            if (!entry) {
+              entry = { key: baseKey, label: baseKey, days: new Set(), explicitCarries: 0, done: false, latestDay: dayKey, latestDateStr: dateStr, path: snap.path || "", line: t.line ?? 0 };
+              rolloverMap.set(baseKey, entry);
+            }
+            entry.days.add(dayKey);
+            if (carryMatch) entry.explicitCarries++;
+            if (dayKey >= entry.latestDay) {
+              entry.latestDay = dayKey;
+              entry.latestDateStr = dateStr;
+              entry.done = t.state === "done";
+              entry.path = snap.path || entry.path;
+              entry.line = t.line ?? entry.line;
+            }
+          }
+        }
+      }
+
+      const workSegs = unionSegs([...(t.worked || []), ...(t.state === "done" && t.actual ? [t.actual] : [])]);
+      if (workSegs.length) {
+        totalSegs += workSegs.length;
+        totalSegMin += unionMin(workSegs);
+        taskWithSegCount++;
+      }
+      if (!t.auto && workSegs.length) {
+        if (t.main || t.mainA) mainSegs.push(...workSegs);
+        else taskSegs.push(...workSegs);
+      }
+
+      const clockTot = useClockTotal(t);
+      const segs = [...(t.worked || []), ...(t.state === "done" && t.actual ? [t.actual] : [])];
+      const spentAny = Math.round((clockTot ? t.clock.total : (t._hasChildAiWork ? Math.max(t.spentToday || 0, unionMin(segs)) : unionMin(segs))) + (t.spentBefore || 0));
+      const cats = extractCats(lines[t.line] || "");
+      let hMin = Math.round(t._humanMin || 0), aMin = Math.round(t._aiMin || 0), aTok = t._aiTok || 0;
+      if (spentAny > 0 && hMin + aMin === 0) {
+        if (t.auto) aMin = spentAny;
+        else hMin = spentAny;
+      }
+      const rk = `${dayKey}|${t.label}`;
+      if (t.state === "done" && t.est > 0 && (segs.length || clockTot) && spentAny >= 1) {
+        const row = { day: dayKey, dateStr, path: snap.path || "", line: t.line ?? 0, label: t.label, key: workKey(t.label), kind: "task", est: t.est, actual: spentAny, humanMin: hMin, aiMin: aMin, aiTok: aTok, variance: spentAny - t.est, ratio: spentAny / t.est, cats, reasonKey: rk, reason: reasons[rk] || "", weekLabel: isoWeekOf(snap) };
+        rows.push(row);
+        taskWorkRows.push(row);
+      } else if (spentAny >= 1) {
+        taskWorkRows.push({ day: dayKey, dateStr, path: snap.path || "", line: t.line ?? 0, label: t.label, key: workKey(t.label), kind: "task", est: t.est || null, actual: spentAny, humanMin: hMin, aiMin: aMin, aiTok: aTok, variance: null, ratio: null, cats, reasonKey: rk, reason: reasons[rk] || "", weekLabel: isoWeekOf(snap) });
+      }
+    }
+
+    const mLog = snap.mainLog;
+    if (M.total > 0) { mainDays++; mainTotal += M.total; mainDone += M.done; }
+    else if (mLog && mLog.total > 0) { mainDays++; mainTotal += mLog.total; mainDone += (mLog.done || 0); }
+
+    const evFree = E1 > S1 ? subtract([[S1, E1]], unionSegs(eventSegs)) : [];
+    for (const [fa, fb] of evFree) {
+      if (fb - fa >= 5) { freeBlockSum += fb - fa; freeBlockCount++; }
+    }
+
+    const dayMainSegs = clipSegs(unionSegs(mainSegs), S1, upto);
+    const dayTaskSegs = clipSegs(subtract(unionSegs(taskSegs), dayMainSegs), S1, upto);
+    const dayEventSegs = clipSegs(subtract(unionSegs(eventSegs), unionSegs([...dayMainSegs, ...dayTaskSegs])), S1, upto);
+    const dayRevSegs = clipSegs(unionSegs(reviewSegs), S1, upto);
+    const dayAiSegs = clipSegs(unionSegs(dayAi?.segs || []), S1, upto);
+    const dayGameSegs = clipSegs(unionSegs(gameSegs), S1, upto);
+    const allRecorded = unionSegs([...dayMainSegs, ...dayTaskSegs, ...dayEventSegs, ...dayRevSegs, ...dayAiSegs, ...dayGameSegs]);
+    const gapSegs = upto > S1 ? pastGaps(S1, E1, upto, allRecorded) : [];
+
+    const dMain = Math.round(unionMin(dayMainSegs));
+    const dTasks = Math.round(unionMin(dayTaskSegs));
+    const dEvents = Math.round(unionMin(dayEventSegs));
+    const dAiWall = Math.round(dayAi?.wall ?? unionMin(dayAiSegs));
+    const dAiAgent = Math.round(dayAi?.agent ?? dAiWall);
+    const dRev = Math.round(unionMin(dayRevSegs));
+    const dGames = Math.round(unionMin(dayGameSegs));
+    const dUnrec = Math.round(unionMin(gapSegs));
+    const dRecorded = dMain + dTasks + dEvents + dAiWall + dRev + dGames;
+    if (dRecorded > 0 || items.length > 0) activeDays++;
+    dailyBudget.push({ dayKey, dateStr, mainline: dMain, tasks: dTasks, events: dEvents, aiWall: dAiWall, aiAgent: dAiAgent, reviewCards: dRev, games: dGames, unrecorded: dUnrec });
+
+    addHourly(dayMainSegs, "mainMin", S1, upto);
+    addHourly(unionSegs([...dayMainSegs, ...dayTaskSegs]), "workMin", S1, upto);
+    addHourly(dayAiSegs, "aiMin", S1, upto);
+    addHourly(gapSegs, "unrecordedMin", S1, upto);
+  }
+
+  const sumE = rows.reduce((n, r) => n + r.est, 0);
+  const sumA = rows.reduce((n, r) => n + r.actual, 0);
+  const ratios = rows.map((r) => r.ratio).sort((a, b) => a - b);
+  const byCatMap = new Map();
+  for (const r of rows) {
+    for (const c of r.cats) {
+      const v = byCatMap.get(c) || { n: 0, e: 0, a: 0, humanMin: 0, aiMin: 0, aiTok: 0 };
+      v.n++; v.e += r.est; v.a += r.actual;
+      byCatMap.set(c, v);
+    }
+  }
+  for (const r of taskWorkRows) {
+    for (const c of r.cats) {
+      const v = byCatMap.get(c);
+      if (!v) continue;
+      v.humanMin += r.humanMin || 0;
+      v.aiMin += r.aiMin || 0;
+      v.aiTok += r.aiTok || 0;
+    }
+  }
+  const catMap = {};
+  const byCat = [...byCatMap].map(([cat, v]) => {
+    const ratio = v.e > 0 ? v.a / v.e : 1;
+    const rec = { cat, n: v.n, e: v.e, a: v.a, ratio, humanMin: v.humanMin, aiMin: v.aiMin, aiTok: v.aiTok };
+    catMap[cat] = rec;
+    return rec;
+  }).sort((x, y) => y.n - x.n || Math.abs(Math.log(y.ratio)) - Math.abs(Math.log(x.ratio)));
+
+  const overRows = rows.filter((r) => r.actual > r.est * 1.2).sort((x, y) => (y.actual - y.est) - (x.actual - x.est));
+  const underRows = rows.filter((r) => r.actual < r.est * 0.8).sort((x, y) => (x.actual - x.est) - (y.actual - y.est));
+
+  const timeBudget = {
+    mainline: dailyBudget.reduce((n, d) => n + d.mainline, 0),
+    tasks: dailyBudget.reduce((n, d) => n + d.tasks, 0),
+    events: dailyBudget.reduce((n, d) => n + d.events, 0),
+    aiWall: dailyBudget.reduce((n, d) => n + d.aiWall, 0),
+    aiAgent: dailyBudget.reduce((n, d) => n + d.aiAgent, 0),
+    reviewCards: dailyBudget.reduce((n, d) => n + d.reviewCards, 0),
+    games: dailyBudget.reduce((n, d) => n + d.games, 0),
+    unrecorded: dailyBudget.reduce((n, d) => n + d.unrecorded, 0),
+    daily: dailyBudget,
+  };
+  timeBudget.recordedTotal = timeBudget.mainline + timeBudget.tasks + timeBudget.events + timeBudget.aiWall + timeBudget.reviewCards + timeBudget.games;
+  timeBudget.spanTotal = timeBudget.recordedTotal + timeBudget.unrecorded;
+
+  const rollovers = [...rolloverMap.values()]
+    .map((x) => ({
+      key: x.key,
+      label: x.label,
+      daysSeen: x.days.size,
+      carryCount: Math.max(x.days.size - 1, x.explicitCarries),
+      done: x.done,
+      latestDay: x.latestDay,
+      latestDateStr: x.latestDateStr,
+      path: x.path,
+      line: x.line,
+    }))
+    .filter((x) => x.carryCount >= 1)
+    .sort((a, b) => Number(a.done) - Number(b.done) || b.carryCount - a.carryCount || b.daysSeen - a.daysSeen);
+
+  const taskHumanMin = taskWorkRows.reduce((n, r) => n + (r.humanMin || 0), 0);
+  const taskAiMin = taskWorkRows.reduce((n, r) => n + (r.aiMin || 0), 0);
+  const taskAiTok = taskWorkRows.reduce((n, r) => n + (r.aiTok || 0), 0);
+
+  const reasonCounts = new Map();
+  for (const r of rows) {
+    if (!r.reason || !REVIEW_REASON_MAP[r.reason]) continue;
+    const prev = reasonCounts.get(r.reason) || { id: r.reason, label: REVIEW_REASON_MAP[r.reason], count: 0, totalVariance: 0 };
+    prev.count++;
+    prev.totalVariance += r.variance;
+    reasonCounts.set(r.reason, prev);
+  }
+
+  const weekMap = new Map();
+  const trendSource = Array.isArray(opts.weeklyRows) ? opts.weeklyRows : rows;
+  for (const r of trendSource) {
+    const wk = r.weekLabel || "—";
+    const cur = weekMap.get(wk) || { weekLabel: wk, n: 0, sumE: 0, sumA: 0 };
+    cur.n++; cur.sumE += r.est; cur.sumA += r.actual;
+    weekMap.set(wk, cur);
+  }
+  const weeklyTrend = [...weekMap.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-8)
+    .map(([, v]) => ({ ...v, ratio: v.sumE > 0 ? v.sumA / v.sumE : 1 }));
+
+  const peakHours = [...hourly].filter((h) => h.workMin > 0).sort((a, b) => b.workMin - a.workMin).slice(0, 3);
+  const gapHours = [...hourly].filter((h) => h.unrecordedMin > 0).sort((a, b) => b.unrecordedMin - a.unrecordedMin).slice(0, 3);
+  const pomoTotal = pomoDoneCount + pomoInterruptedCount;
+
+  return {
+    mode,
+    label: opts.label || "",
+    daysCount: daySnapshots.length,
+    activeDays,
+    estimate: {
+      n: rows.length,
+      sumE,
+      sumA,
+      ratio: sumE > 0 ? sumA / sumE : 1,
+      median: ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1,
+      over: overRows.length,
+      under: underRows.length,
+      close: rows.length - overRows.length - underRows.length,
+      rows,
+      byCat,
+      catMap,
+      worstOver: overRows.slice(0, 5),
+      worstUnder: underRows.slice(0, 5),
+    },
+    timeBudget,
+    fulfillment: {
+      plannedTotal,
+      plannedDone,
+      plannedRate: plannedTotal > 0 ? plannedDone / plannedTotal : 0,
+      unplannedDone,
+      unplannedShare: totalDoneTasks > 0 ? unplannedDone / totalDoneTasks : 0,
+      mainDays,
+      mainDone,
+      mainTotal,
+      mainRate: mainTotal > 0 ? mainDone / mainTotal : 0,
+      rollovers,
+      avgRollover: rollovers.length ? rollovers.reduce((n, r) => n + r.carryCount, 0) / rollovers.length : 0,
+      stalledCount: rollovers.filter((r) => !r.done && r.daysSeen >= 3).length,
+    },
+    humanAi: {
+      humanMin: taskHumanMin,
+      aiTaskMin: taskAiMin,
+      wallTaskMin: taskWorkRows.reduce((n, r) => n + (r.actual || 0), 0),
+      aiWallTotal: timeBudget.aiWall,
+      aiAgentTotal: timeBudget.aiAgent,
+      leverageRatio: timeBudget.aiWall > 0 ? timeBudget.aiAgent / timeBudget.aiWall : 0,
+      aiTokensTotal: Math.max(totalAiTokensFromDays, taskAiTok),
+      byCat: byCat.filter((c) => c.humanMin > 0 || c.aiMin > 0 || c.aiTok > 0),
+    },
+    rhythm: {
+      hourly,
+      peakHours,
+      gapHours,
+      fragmentation: {
+        totalSegs,
+        avgSegMin: totalSegs > 0 ? Math.round(totalSegMin / totalSegs) : 0,
+        avgSegsPerTask: taskWithSegCount > 0 ? totalSegs / taskWithSegCount : 0,
+        pomoDoneCount,
+        pomoInterruptedCount,
+        pomoInterruptRate: pomoTotal > 0 ? pomoInterruptedCount / pomoTotal : 0,
+        eventCount,
+        avgEventsPerDay: daySnapshots.length > 0 ? eventCount / daySnapshots.length : 0,
+        avgFreeBlockMin: freeBlockCount > 0 ? Math.round(freeBlockSum / freeBlockCount) : 0,
+      },
+    },
+    reasons: {
+      totalTagged: [...reasonCounts.values()].reduce((n, x) => n + x.count, 0),
+      items: [...reasonCounts.values()].sort((a, b) => b.count - a.count),
+    },
+    weeklyTrend,
+  };
+}
+
+function formatReviewMarkdown(review, cfg = DEFAULTS) {
+  if (!review) return "";
+  const e = review.estimate || {}, tb = review.timeBudget || {}, f = review.fulfillment || {}, ha = review.humanAi || {}, fr = review.rhythm?.fragmentation || {};
+  const modeTitle = review.mode === "day" ? T("日复盘", "Daily Review") : review.mode === "month" ? T("月复盘", "Monthly Review") : T("周复盘", "Weekly Review");
+  const lines = [];
+  lines.push(`## 📏 ${modeTitle} · ${review.label || ""}`.trim());
+  lines.push("");
+  lines.push(`- **${T("时间账单", "Time budget")}**：${T("主线", "Mainline")} ${dur(tb.mainline || 0)} · ${T("普通任务", "Tasks")} ${dur(tb.tasks || 0)} · ${T("固定事件", "Events")} ${dur(tb.events || 0)} · ${T("AI 协作", "Agents")} ${dur(tb.aiWall || 0)} · ${T("复习", "Review")} ${dur(tb.reviewCards || 0)} · ${T("游戏", "Gaming")} ${dur(tb.games || 0)} · ${T("未记录", "Unrecorded")} ${dur(tb.unrecorded || 0)}`);
+  lines.push(`- **${T("预估准确度", "Estimate accuracy")}**：${e.n || 0} ${T("件已对比", "compared")}（${T("预估", "Est.")} ${dur(e.sumE || 0)} → ${T("实际", "Actual")} ${dur(e.sumA || 0)}，×${(e.ratio || 1).toFixed(2)}，±20% ${T("命中", "within")} ${e.close || 0} ${T("件", "")}）`);
+  lines.push(`- **${T("主线与计划兑现", "Fulfillment")}**：${T("主线", "Mainline")} ${f.mainDone || 0}/${f.mainTotal || 0}（${Math.round((f.mainRate || 0) * 100)}%） · ${T("计划内", "Planned")} ${f.plannedDone || 0}/${f.plannedTotal || 0}（${Math.round((f.plannedRate || 0) * 100)}%） · ${T("临时插单完成", "Unplanned done")} ${f.unplannedDone || 0} · ${T("卡壳顺延 ≥3 天", "Stalled ≥3d")} ${f.stalledCount || 0} ${T("件", "")}`);
+  lines.push(`- **${T("人机拆分与杠杆", "Human vs AI")}**：${T("任务人工", "Human")} ${dur(ha.humanMin || 0)} · ${T("任务 AI", "Task AI")} ${dur(ha.aiTaskMin || 0)} · ${T("全局协作/工时", "Global wall/agent")} ${dur(ha.aiWallTotal || 0)} / ${dur(ha.aiAgentTotal || 0)}（×${(ha.leverageRatio || 0).toFixed(1)} ${T("并行", "parallel")} · ${fmtTok(ha.aiTokensTotal || 0)} tok）`);
+  lines.push(`- **${T("节奏与碎片化", "Rhythm & fragmentation")}**：${T("平均连贯段长", "Avg block")} ${dur(fr.avgSegMin || 0)} · ${T("番茄完成/中断", "Pomodoro done/int.")} ${fr.pomoDoneCount || 0}/${fr.pomoInterruptedCount || 0} · ${T("日均事件", "Events/day")} ${(fr.avgEventsPerDay || 0).toFixed(1)} · ${T("日间最大空闲均长", "Avg free block")} ${dur(fr.avgFreeBlockMin || 0)}`);
+  if (e.worstOver?.length) {
+    lines.push(`- **${T("低估最多", "Most underestimated")}**：` + e.worstOver.slice(0, 3).map((w) => `${w.label}（${dur(w.est)}→${dur(w.actual)}${w.reason ? ` · ${REVIEW_REASON_MAP[w.reason] || w.reason}` : ""}）`).join("；"));
+  }
+  if (e.worstUnder?.length) {
+    lines.push(`- **${T("高估最多", "Most overestimated")}**：` + e.worstUnder.slice(0, 3).map((w) => `${w.label}（${dur(w.est)}→${dur(w.actual)}）`).join("；"));
+  }
+  if (f.rollovers?.length) {
+    lines.push(`- **${T("顺延关注", "Rollovers")}**：` + f.rollovers.slice(0, 4).map((r) => `${r.label}（${T(`跨 ${r.daysSeen} 天`, `${r.daysSeen}d`)}${r.done ? " ✓" : ""}）`).join("；"));
+  }
+  if (review.reasons?.items?.length) {
+    lines.push(`- **${T("偏差原因分布", "Deviation reasons")}**：` + review.reasons.items.map((it) => `${it.label} ${it.count} ${T("次", "x")}`).join(" · "));
+  }
+  lines.push("");
+  lines.push(`### ${T("手写反思", "Notes & reflection")}`);
+  lines.push(`- ${T("这阶段做对的节奏：", "What worked well:")} `);
+  lines.push(`- ${T("下阶段要微调的一件事：", "One adjustment for next period:")} `);
+  return lines.join("\n");
+}
+
+function formatReviewAiPrompt(review, cfg = DEFAULTS) {
+  const md = formatReviewMarkdown(review, cfg);
+  return [
+    T("请基于下面这段真实时间账单与预估偏差数据，帮我做简明犀利的复盘诊断：", "Please review these real time-budget and estimate-vs-actual metrics concisely:"),
+    T("1) 指出我哪类任务/标签预估系统性偏低或偏高；", "1) Identify which task categories show systematic over/under-estimation;"),
+    T("2) 诊断跨天顺延瓶颈、AI 返工 vs 并行杠杆、以及碎片化/未记录黑洞；", "2) Diagnose stalled rollovers, AI rework vs parallel leverage, and fragmentation / unrecorded gaps;"),
+    T("3) 给出下周期 3 条可直接执行的排程或估时调整建议（每条 ≤ 2 句话）。", "3) Suggest 3 concrete scheduling/estimation adjustments for the next period."),
+    "",
+    md,
+  ].join("\n");
+}
 // 状态栏上的计时：分:秒，过了一小时是 时:分:秒
 const elapsedText = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600); return h ? `${h}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`; };
 let hatchSeq = 0;   // 每个螺旋的斜纹图案一个号，几个视图同时开着不串
@@ -1931,25 +2665,36 @@ function aiDay(ms, cfg) {
 
 // 会话来自哪个 Agent（各读各的日志目录），螺旋和列表上各用各的颜色：Claude 橙、Codex 黑、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 彩虹渐变
 const AI_AGENTS = { claude: "Claude", codex: "Codex", workbuddy: "WorkBuddy", dsh: "DeepSeek Harness", antigravity: "Antigravity" };
-const aiAgent = (x) => (x && AI_AGENTS[x.agent] ? x.agent : "claude");   // 旧记录没写来源的都是 Claude
+const AI_AGENT_COLORS = { claude: "#d97757", codex: "#525663", workbuddy: "#17a57f", dsh: "#4d6bfe", antigravity: "#558ce6" };
+const aiAgent = (x) => (x && x.agent ? x.agent : "claude");   // 支持 Agent Deck 接入的全部客户端；旧记录没写来源的都是 Claude
+const aiAgentName = (id, catalog = null) => AI_AGENTS[id] || catalog?.[id]?.short || catalog?.[id]?.name || String(id || "Claude");
+const aiAgentColor = (id, catalog = null) => AI_AGENT_COLORS[id] || catalog?.[id]?.color || "#6f86a8";
+const dayAgentKeys = (day) => {
+  if (!day) return [];
+  if (!day.by) return day.segs?.length ? ["claude"] : [];
+  const base = Object.keys(AI_AGENTS).filter((k) => day.by[k]);
+  const extra = Object.keys(day.by).filter((k) => !AI_AGENTS[k]).sort();
+  return [...base, ...extra];
+};
 // 主力 Agent：全量追踪；没设过是 Claude
 const aiPrimary = (cfg) => (cfg && AI_AGENTS[cfg.aiPrimary] ? cfg.aiPrimary : "claude");
 // 设置里开着的那几个，没设过就是全开；主力总是开着
 const aiOn = (cfg) => Object.keys(AI_AGENTS).filter((k) => !(cfg && cfg.aiAgents) || cfg.aiAgents[k] !== false || k === aiPrimary(cfg));
 const codexHome = () => process.env.CODEX_HOME || require("path").join(require("os").homedir(), ".codex");
 // 这个会话是在哪开的
-const aiWhere = (x) => {
+const aiWhere = (x, catalog = null) => {
   const a = aiAgent(x), app = x.app || "";
   if (a === "claude") return app === "cli" ? T("终端", "Terminal") : T("Claude 桌面版", "Claude desktop");   // 终端里的 Claude Code；其余（claude-desktop 或者旧记录不知道来源的）按桌面版
   if (a === "codex") return /desktop/i.test(app) ? T("Codex 桌面版", "Codex desktop") : /tui|cli|exec/i.test(app) ? T("Codex 终端", "Codex terminal") : "Codex";
   if (a === "dsh") return "DeepSeek Harness";
   if (a === "antigravity") return "Antigravity";
-  return AI_AGENTS[a];
+  return aiAgentName(a, catalog);
 };
 
-// 存下的一天汇总里只留开着的那几个 Agent。存的那份不动，用的时候再筛：关掉一个再打开，它的历史还在
+// 存下的一天汇总里只留开着的那几个 Agent。由 Agent Deck 统一供数时直接采用其已过滤结果；独立运行时保留原 5 家筛选。
 function aiPick(day, cfg) {
   if (!day) return null;
+  if (day._fromDeck) return day;
   const on = new Set(aiOn(cfg));
   const by = day.by || { claude: { wall: day.wall, agent: day.agent, out: day.out, segs: day.segs } };   // 旧记录没分 Agent，都是 Claude
   const keep = Object.keys(by).filter((k) => on.has(k));
@@ -2847,14 +3592,16 @@ class AiSessionsModal extends OB.Modal {
   }
   session(parent, x) {
     const agent = aiAgent(x);
-    const box = parent.createDiv({ cls: `naut-ai-sess naut-by-${agent}` + (x.related ? "" : " is-weak") });
+    const catalog = this.plugin?._deckAgentCatalog || null;
+    const box = parent.createDiv({ cls: `naut-ai-sess ${AI_AGENTS[agent] ? `naut-by-${agent}` : ""}` + (x.related ? "" : " is-weak") });
+    if (!AI_AGENTS[agent]) box.style.setProperty("--naut-ai", aiAgentColor(agent, catalog));
     const first = (x.text || "").split(" / ")[0];
     box.createDiv({ cls: "naut-ai-sess-title", text: x.title || first.slice(0, 120) || T("（没有标题）", "(untitled)") });
     if (x.title && first) box.createDiv({ cls: "naut-ai-sess-text", text: first.slice(0, 200) });
     const viaDeck = typeof this.plugin.agentDeck()?.openSessionBySid === "function";
     const cli = agent === "codex" || x.app === "cli";
     const when = x.overlap != null ? T(`和这件重叠 ${dur(x.overlap)}`, `Overlaps this task by ${dur(x.overlap)}`) : x.stopped ? T(`最后在 ${clock(x.lastAt)}`, `Last active ${clock(x.lastAt)}`) : T(`${clock(x.lastAt)} 还在动`, `Still active at ${clock(x.lastAt)}`);
-    box.createDiv({ cls: "naut-ai-sess-meta", text: T(`${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 🗄 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）`, `${aiWhere(x)} · ${x.cwd || x.dir} · ${when} · ${dur(x.min)} in this session that day · used 🗄 ${fmtTok(tokUsed(x))} tok (output ${fmtTok(x.out)}${x.fresh != null ? ` · input ${fmtTok(x.fresh)}` : ""})`) });
+    box.createDiv({ cls: "naut-ai-sess-meta", text: T(`${aiWhere(x, catalog)} · ${x.cwd || x.dir} · ${when} · 这个会话当天 ${dur(x.min)} · 消耗 🗄 ${fmtTok(tokUsed(x))} tok（产出 ${fmtTok(x.out)}${x.fresh != null ? ` · 读入 ${fmtTok(x.fresh)}` : ""}）`, `${aiWhere(x, catalog)} · ${x.cwd || x.dir} · ${when} · ${dur(x.min)} in this session that day · used 🗄 ${fmtTok(tokUsed(x))} tok (output ${fmtTok(x.out)}${x.fresh != null ? ` · input ${fmtTok(x.fresh)}` : ""})`) });
     const bar = box.createDiv({ cls: "naut-ai-sess-btns" });
     if (viaDeck) {
       bar.createEl("button", { cls: "mod-cta", text: T("打开会话", "Open session") }).onclick = () => {
@@ -2868,7 +3615,7 @@ class AiSessionsModal extends OB.Modal {
       bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
       return;
     }
-    if (agent === "workbuddy" || agent === "antigravity") {
+    if (agent !== "claude" && agent !== "codex") {
       bar.createEl("button", { text: T("复制会话号", "Copy session ID") }).onclick = async () => { await navigator.clipboard.writeText(x.sid); new OB.Notice(T("已复制：", "Copied: ") + x.sid); };
       return;
     }
@@ -2955,7 +3702,14 @@ class StatusModal extends OB.Modal {
       const chip = (text, cls = "") => chips.createSpan({ cls: `naut-st-chip ${cls}`, text });
       chip(T(`✅ 做完 ${d.done} · 还有 ${d.open}`, `✅ ${d.done} done · ${d.open} open`));
       if (d.review && d.review.comparedCount) chip(T(`📋 偏差 ${signed(d.review.varianceMinutes)}`, `📋 Off by ${signed(d.review.varianceMinutes)}`), d.review.varianceMinutes > 0 ? "is-over" : "");
-      if (d.ai) { const c = chip(""); for (const k of Object.keys(AI_AGENTS)) if (d.ai.by && d.ai.by[k] && d.ai.by[k].wall) c.createSpan({ cls: `naut-sw naut-bg-${k}` }); c.appendText(T(`🤖 协作 ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`, `🤖 Agents ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`)); }
+      if (d.ai) {
+        const c = chip(""), catalog = plugin._deckAgentCatalog || null;
+        for (const k of dayAgentKeys(d.ai)) if (d.ai.by?.[k]?.wall || !d.ai.by) {
+          const sw = c.createSpan({ cls: `naut-sw ${AI_AGENTS[k] ? `naut-bg-${k}` : ""}` });
+          if (!AI_AGENTS[k]) sw.style.background = aiAgentColor(k, catalog);
+        }
+        c.appendText(T(`🤖 协作 ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`, `🤖 Agents ${dur(d.ai.wall)} · 🗄 ${fmtTok(d.ai.out)} tok`));
+      }
       if (d.games) chip(`🎮 ${dur(d.games)}`);
     }
 
@@ -3151,6 +3905,97 @@ class QuickPanel extends OB.FuzzySuggestModal {
 
 // ---------------- 视图 ----------------
 
+const displayWidth = (s) => {
+  let w = 0;
+  for (const ch of String(s || "")) w += (ch.codePointAt(0) || 0) > 255 ? 2 : 1;
+  return w;
+};
+function truncDisplay(s, maxCols = 20) {
+  let out = "", w = 0;
+  for (const ch of String(s || "")) {
+    const cw = (ch.codePointAt(0) || 0) > 255 ? 2 : 1;
+    if (w + cw > maxCols) return out + "…";
+    out += ch;
+    w += cw;
+  }
+  return out;
+}
+function msToNextMinute(nowMs = Date.now()) {
+  return Math.max(250, 60000 - (nowMs % 60000) + 50);
+}
+function layoutSpiralLabels(entries, opts = {}) {
+  const { cx = 160, cy = 160, padX = 135, padY = 44, fontSize = 10.5, lineH = 15, maxCols = 18, maxLabels = 14 } = opts;
+  if (!Array.isArray(entries) || !entries.length) return [];
+  const bestByItem = new Map();
+  for (const e of entries) {
+    if (!e || !e.label) continue;
+    const span = Math.max(0, (e.end ?? 0) - (e.start ?? 0));
+    const key = e.item ?? `${e.label}|${e.start}`;
+    const prev = bestByItem.get(key);
+    if (!prev || span > prev._span) bestByItem.set(key, { ...e, _span: span });
+  }
+  const picked = [...bestByItem.values()]
+    .sort((a, b) => (b.prioWeight || 0) - (a.prioWeight || 0) || b._span - a._span)
+    .slice(0, maxLabels)
+    .sort((a, b) => (a.midAngle ?? 0) - (b.midAngle ?? 0));
+  const minY = cy - 160 - padY + 4, maxY = cy + 160 + padY - lineH - 4;
+  const placed = [];
+  const collides = (cand) => placed.some((p) => cand.x < p.x + p.w + 4 && cand.x + cand.w + 4 > p.x && cand.y < p.y + p.h + 3 && cand.y + cand.h + 3 > p.y);
+  const offsets = [0, 16, -16, 32, -32, 48, -48, 64, -64, 80, -80, 96, -96];
+  for (const e of picked) {
+    const a = e.midAngle ?? 0;
+    const cosA = Math.cos(a), sinA = Math.sin(a);
+    const atVertex = Math.abs(cosA) < 0.22;
+    const onLeft = !atVertex && cosA < 0;
+    const text = truncDisplay(e.label, maxCols);
+    const w = Math.min(126, Math.max(36, displayWidth(text) * (fontSize * 0.54) + 10));
+    const h = lineH;
+    const rIdeal = Math.max(168, (e.segR ?? 141) + 28);
+    let x, idealY;
+    if (atVertex) {
+      x = Math.min(cx + 160 + padX - w - 4, Math.max(cx - 160 - padX + 4, cx + rIdeal * cosA - w / 2));
+      idealY = sinA < 0 ? cy - 178 - h : cy + 178;
+    } else {
+      const colAnchor = onLeft ? Math.max(cx - 160 - padX + 4 + w, cx - 174) : Math.min(cx + 160 + padX - 4 - w, cx + 174);
+      x = onLeft ? Math.max(cx - 160 - padX + 4, colAnchor - w) : colAnchor;
+      idealY = cy + rIdeal * sinA - h / 2;
+    }
+    let chosenY = null;
+    for (const dy of offsets) {
+      const y = Math.min(maxY, Math.max(minY, idealY + dy));
+      if (!collides({ x, y, w, h })) { chosenY = y; break; }
+    }
+    if (chosenY == null) continue;
+    const endX = atVertex ? x + w / 2 : (onLeft ? x + w + 3 : x - 3);
+    const endY = atVertex ? (sinA < 0 ? chosenY + h + 2 : chosenY - 2) : chosenY + h / 2;
+    const midR = Math.max((e.segR ?? 141) + 24, 156);
+    const ax = e.anchorX ?? (cx + (e.segR ?? 141) * cosA);
+    const ay = e.anchorY ?? (cy + (e.segR ?? 141) * sinA);
+    const ctrlX = atVertex ? (ax + endX) / 2 : (cx + midR * cosA + endX) / 2;
+    const ctrlY = atVertex ? (ay + endY) / 2 : (cy + midR * sinA + endY) / 2 + 6;
+    const pathD = `M ${ax.toFixed(1)},${ay.toFixed(1)} Q ${ctrlX.toFixed(1)},${ctrlY.toFixed(1)} ${endX.toFixed(1)},${endY.toFixed(1)}`;
+    placed.push({
+      item: e.item, text, x, y: chosenY, w, h, onLeft, atVertex,
+      anchorX: ax, anchorY: ay, endX, endY, pathD,
+      toneCls: e.toneCls || "", done: !!e.done, color: e.color || "",
+    });
+  }
+  return placed;
+}
+function computeSpiralViewBox(placedLabels, opts = {}) {
+  const padX = opts.padX ?? 10, padY = opts.padY ?? 8;
+  let minX = -10, maxX = 330, minY = -10, maxY = 330;
+  for (const lb of placedLabels || []) {
+    minX = Math.min(minX, Math.floor(lb.x - padX));
+    maxX = Math.max(maxX, Math.ceil(lb.x + lb.w + padX));
+    minY = Math.min(minY, Math.floor(lb.y - padY));
+    maxY = Math.max(maxY, Math.ceil(lb.y + lb.h + padY));
+  }
+  const w = Math.max(320, maxX - minX);
+  const h = Math.max(320, maxY - minY);
+  return { x: minX, y: minY, w, h, viewBox: `${minX} ${minY} ${w} ${h}`, maxWidth: Math.min(640, Math.max(340, Math.ceil(w))) };
+}
+
 class SpiralView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -3164,6 +4009,21 @@ class SpiralView extends ItemView {
   async onOpen() {
     this.containerEl.children[1].addClass("naut-root");
     this._enter = true;
+    this._lastWide = (this.containerEl.children[1].clientWidth || this.containerEl.clientWidth || 0) >= 520;
+    if (typeof ResizeObserver === "function") {
+      this._ro = new ResizeObserver((entries) => {
+        if (this.plugin.settings.showSpiralLabels !== "auto") return;
+        const w = entries?.[0]?.contentRect?.width ?? this.containerEl.children[1]?.clientWidth ?? 0;
+        if (w <= 0) return;
+        const wide = w >= 520;
+        if (wide !== this._lastWide) {
+          this._lastWide = wide;
+          clearTimeout(this._roTimer);
+          this._roTimer = setTimeout(() => this.render(), 100);
+        }
+      });
+      this._ro.observe(this.containerEl.children[1] || this.containerEl);
+    }
     await this.render();
   }
 
@@ -3224,7 +4084,7 @@ class SpiralView extends ItemView {
   _clearPomoTimer() {
     if (this._pomoTimer) { window.clearInterval(this._pomoTimer); this._pomoTimer = null; }
   }
-  async onClose() { this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); this._lastPastRenderKey = null; }
+  async onClose() { this._ro?.disconnect(); this._ro = null; clearTimeout(this._roTimer); this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); this._lastPastRenderKey = null; }
 
   date() { return this.plugin.today().add(this.offset, "days"); }
   path() { return this.plugin.journalPath(this.date()); }
@@ -3245,13 +4105,19 @@ class SpiralView extends ItemView {
     if (seq !== this._renderSeq) return;
     const content = file instanceof TFile ? await this.plugin.readLiveContent(file) : null;
     if (seq !== this._renderSeq) return;
+    const mirrored = content != null && file instanceof TFile ? await this.plugin.resolveJournalMirrors(content, file.path) : null;
+    if (seq !== this._renderSeq) return;
+    const effContent = mirrored ? mirrored.content : content;
+    const mirrorMap = mirrored ? mirrored.mirrorMap : new Map();
     const calSnap = file instanceof TFile ? this.plugin.calendarFor(date) : null;
     const aiDayRaw = aiStore?.days?.[dayKey] || null;
     const gameDayRaw = (gameLog && gameLog.days[dayKey]) || null;
     const deckBindings = file instanceof TFile ? this.plugin.deckJournalBindings(dayKey, file.path) : null;
-    const computeSig = isPastStatic && content != null ? pastDayComputeSig({ dayKey, content, cfg, cal: calSnap }) : null;
+    const containerW = root.clientWidth || this.containerEl?.clientWidth || 0;
+    const wideLabels = cfg.showSpiralLabels === "on" || (cfg.showSpiralLabels !== "off" && containerW >= 520);
+    const computeSig = isPastStatic && effContent != null ? pastDayComputeSig({ dayKey, content: effContent, cfg, cal: calSnap, mirrorSig: mirrored?.sig || "" }) : null;
     const pastRenderKey = isPastStatic && computeSig != null
-      ? pastDayRenderSig({ computeSig, cfg, aiDay: aiDayRaw, gameDay: gameDayRaw, deckCount: deckBindings ? deckBindings.size : 0 })
+      ? pastDayRenderSig({ computeSig, cfg, aiDay: aiDayRaw, gameDay: gameDayRaw, deckCount: deckBindings ? deckBindings.size : 0, wideLabels })
       : null;
     // 历史日期输入指纹未变且不是切天入场/强制刷新时，跳过整棵 DOM 重建（避免每分钟定时器与后台会话事件触发闪烁和重算）
     if (pastRenderKey && !force && !this._enter && this._lastPastRenderKey === pastRenderKey && root.childElementCount > 0) return;
@@ -3291,6 +4157,34 @@ class SpiralView extends ItemView {
       return;
     }
     {
+      const showLabelsNow = !playing && wideLabels;
+      const hideDoneBtn = head.createEl("button", {
+        cls: "naut-playback naut-head-btn" + (cfg.hideDoneOnSpiral ? " is-on" : ""),
+        attr: { "aria-label": cfg.hideDoneOnSpiral ? T("显示螺旋上的已完成色块", "Show completed segments on spiral") : T("隐藏螺旋上的已完成色块（不改日记与复盘）", "Hide completed segments on spiral (keeps journal & review)") },
+      });
+      if (OB.setIcon) OB.setIcon(hideDoneBtn, cfg.hideDoneOnSpiral ? "eye-off" : "eye"); else hideDoneBtn.setText(cfg.hideDoneOnSpiral ? "🙈" : "👁");
+      hideDoneBtn.onclick = () => { cfg.hideDoneOnSpiral = !cfg.hideDoneOnSpiral; this.plugin.saveSoon(); this.render({ force: true }); };
+
+      const modeNext = { auto: "on", on: "off", off: "auto" };
+      const modeTip = { auto: T("外圈标签：自动（宽屏开启）", "Outer labels: Auto"), on: T("外圈标签：始终开启", "Outer labels: Always on"), off: T("外圈标签：关闭", "Outer labels: Off") };
+      const curMode = cfg.showSpiralLabels || "auto";
+      const labelBtn = head.createEl("button", {
+        cls: "naut-playback naut-head-btn" + (showLabelsNow ? " is-on" : ""),
+        attr: { "aria-label": modeTip[curMode] || modeTip.auto },
+      });
+      if (OB.setIcon) OB.setIcon(labelBtn, "tag"); else labelBtn.setText("🏷");
+      labelBtn.onclick = () => { cfg.showSpiralLabels = modeNext[curMode] || "auto"; this.plugin.saveSoon(); this.render({ force: true }); };
+
+      const collapseBtn = head.createEl("button", {
+        cls: "naut-playback naut-head-btn" + (cfg.spiralCollapsed ? " is-on" : ""),
+        attr: { "aria-label": cfg.spiralCollapsed ? T("展开螺旋图", "Expand spiral chart") : T("折叠螺旋图（保留容量与列表）", "Collapse spiral chart (keeps capacity & lists)") },
+      });
+      if (OB.setIcon) OB.setIcon(collapseBtn, cfg.spiralCollapsed ? "chevron-right" : "chevron-down"); else collapseBtn.setText(cfg.spiralCollapsed ? "▸" : "▾");
+      collapseBtn.onclick = () => { cfg.spiralCollapsed = !cfg.spiralCollapsed; this.plugin.saveSoon(); this.render({ force: true }); };
+
+      const rvBtn = head.createEl("button", { cls: "naut-playback", attr: { "aria-label": T("打开日/周/月完整复盘视图", "Open full review (day/week/month)") } });
+      if (OB.setIcon) OB.setIcon(rvBtn, "bar-chart-2"); else rvBtn.setText("📊");
+      rvBtn.onclick = () => this.plugin.openReviewView({ mode: "day", offset: this.offset });
       const pb = head.createEl("button", { cls: "naut-playback" + (playing ? " is-playing" : ""), attr: { "aria-label": playing ? T("停止回放", "Stop playback") : T("回放一整天（只是重画，不改日记）", "Play back the whole day (just redraws; the note is not changed)") } });
       if (OB.setIcon) OB.setIcon(pb, "play"); else pb.setText("⏵");
       pb.onclick = () => this.play();
@@ -3308,8 +4202,14 @@ class SpiralView extends ItemView {
     if (cachedDay && cachedDay.sig === computeSig) {
       ({ items, M, cal, orphans, plan } = cachedDay);
     } else {
-      items = parseJournal(content, cfg);
-      M = mainOf(cfg.showMain !== false ? content : "");
+      items = parseJournal(effContent, cfg);
+      if (mirrorMap.size) {
+        for (const it of items) {
+          const mr = mirrorMap.get(it.line);
+          if (mr) it.mirror = mr;
+        }
+      }
+      M = mainOf(cfg.showMain !== false ? effContent : "");
       markMain(items, M);   // 主线块里的任务排程时排在 DOING 后面，螺旋上换主线的颜色
       cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
       const done = cfg.doneTimes[dayKey] || {};
@@ -3374,10 +4274,11 @@ class SpiralView extends ItemView {
       return r.createSpan({ cls: "naut-cap-val" });
     };
     const ai = projectAiDay(aiStore?.days?.[dayKey], cfg);
+    const catalog = aiStore?.agents || this.plugin._deckAgentCatalog || null;
     const agentDeck = this.plugin.agentDeck();
-    const journalLines = content.split("\n");
-    // 这天用了哪几个 Agent（按 Claude / Codex / WorkBuddy 的固定顺序）；旧记录没分 Agent 的都算 Claude
-    const agents = !ai ? [] : ai.by ? Object.keys(AI_AGENTS).filter((k) => ai.by[k] && ai.by[k].segs.length).map((k) => [k, ai.by[k]]) : [["claude", { segs: ai.segs, wall: ai.wall, out: ai.out }]];
+    const journalLines = effContent.split("\n");
+    // 这天用了哪几个 Agent（支持经典 5 家 + Agent Deck 接入的全部客户端）
+    const agents = !ai ? [] : ai.by ? dayAgentKeys(ai).filter((k) => ai.by[k] && ai.by[k].segs?.length).map((k) => [k, ai.by[k]]) : [["claude", { segs: ai.segs, wall: ai.wall, out: ai.out }]];
     const games = (gameLog && gameLog.days[dayKey]) || [];
     // 📝 已经过去、没有任何记录的时间（螺旋上画成斜纹）。你记的 = 事件、做完的任务、做过的时段；机器记的 = Agent 会话、游戏。今天算到现在，过去的日子算整天
     const upto = dayRel === 0 ? Math.min(Math.max(now, S1), E1) : dayRel < 0 ? E1 : S1;
@@ -3394,9 +4295,25 @@ class SpiralView extends ItemView {
       T("剩余：余量 ÷ 全天可安排的时间", "Free: spare ÷ schedulable time for the whole day"),
     ];
     if (C.burning) notes.push(C.burning === "available" ? T("🔥 可安排的时间正在流逝", "🔥 Schedulable time is slipping away") : T("🔥 事件时间正在流逝", "🔥 Event time is slipping away"));
-    // 按以往预估的准头校准一下：近 30 天整体多用 / 少用了多少
+    // 按以往预估的准头校准一下：优先按 #标签 / [[双链]] 分类校准，样本足够时再附总体倍率
     const rv = cfg.showReview !== false && dayRel >= 0 ? this.plugin.reviewData() : null;
-    if (rv && rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15 && plan.demand >= 15) notes.push(T(`按以往约 ${dur(plan.demand * rv.ratio)}：近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍`, `About ${dur(plan.demand * rv.ratio)} going by your history: over the last ${rv.days} days, ${rv.n} finished tasks took ${rv.ratio.toFixed(2)}× their estimates`));
+    if (rv && plan.demand >= 15) {
+      let calHit = 0, calDemand = 0;
+      if (rv.catMap) {
+        const jLines = effContent.split("\n");
+        for (const t of plan.queue || []) {
+          const rem = Math.max(0, t.remaining ?? t.dur ?? 0);
+          const cal = calibratedEstimate(jLines[t.line] || "", rem, rv.catMap);
+          if (cal) { calHit++; calDemand += cal.calibratedMin; }
+          else calDemand += rem;
+        }
+      }
+      if (calHit > 0 && Math.abs(calDemand - plan.demand) >= 5) {
+        notes.push(T(`按同类历史约 ${dur(calDemand)}（已有 ${calHit} 件按 #标签/[[链接]] 历史倍率校准）`, `About ${dur(calDemand)} by tag/link history (${calHit} item(s) calibrated)`));
+      } else if (rv.n >= 10 && Math.abs(rv.ratio - 1) >= 0.15) {
+        notes.push(T(`按以往约 ${dur(plan.demand * rv.ratio)}：近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍`, `About ${dur(plan.demand * rv.ratio)} going by your history: over the last ${rv.days} days, ${rv.n} finished tasks took ${rv.ratio.toFixed(2)}× their estimates`));
+      }
+    }
     // 🃏 复习卡片（第二大脑的每日回顾记进日记的，每张按「复习用时」秒算）
     const reviews = items.filter(isReview);
     if (reviews.length) notes.push(T(`🃏 复习 ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} 张 · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))}（螺旋上的青色段）`, `🃏 Review ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} cards · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))} (the cyan segments on the spiral)`));
@@ -3440,15 +4357,15 @@ class SpiralView extends ItemView {
       }
     }
 
-    // 🤖 人机协作：这一天 Agent 干了多少（口径见设置里「人机协作」一节）
+    // 🤖 人机协作：这一天 Agent 干了多少（双插件共存时由 Agent Deck 统一供数）
     if (ai) {
-      const models = Object.entries(ai.models).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${fmtTok(n)}`).join(T("、", ", "));
-      const only = agents.length === 1 ? AI_AGENTS[agents[0][0]] : "";
+      const models = Object.entries(ai.models || {}).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${fmtTok(n)}`).join(T("、", ", "));
+      const only = agents.length === 1 ? aiAgentName(agents[0][0], catalog) : "";
       const line = row("naut-cap-ai", "🤖", [
         T(`协作 ${dur(ai.wall)}：有 ${only || "Agent"} 在干活的时间，几个窗口同时开只算一次（螺旋内圈的细线，一个 Agent 一种颜色）`, `Agents ${dur(ai.wall)}: time with ${only || "an agent"} at work; several windows at once count once (thin lines on the inner rings, one color per agent)`),
-        agents.length > 1 ? T("各 Agent：", "By agent: ") + agents.map(([k, g]) => `${AI_AGENTS[k]} ${dur(g.wall)}`).join(" / ") : "",
+        agents.length > 1 ? T("各 Agent：", "By agent: ") + agents.map(([k, g]) => `${aiAgentName(k, catalog)} ${dur(g.wall)}`).join(" / ") : "",
         T(`${only || "Agent"} 工时 ${dur(ai.agent)}：${ai.sessions} 个会话各自的活跃时间相加${ai.agent > ai.wall * 1.1 ? `，平均 ${(ai.agent / ai.wall).toFixed(1)} 路并行` : ""}`, `${only || "Agent"} hours ${dur(ai.agent)}: active time of ${ai.sessions} sessions added up${ai.agent > ai.wall * 1.1 ? `, ${(ai.agent / ai.wall).toFixed(1)} running in parallel on average` : ""}`),
-        T(`消耗 ${fmtTok(tokUsed(ai))} tok = 产出 + 读入${agents.length > 1 ? "：" + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`, `Used ${fmtTok(tokUsed(ai))} tok = output + input${agents.length > 1 ? ": " + agents.map(([k, g]) => `${AI_AGENTS[k]} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`),
+        T(`消耗 ${fmtTok(tokUsed(ai))} tok = 产出 + 读入${agents.length > 1 ? "：" + agents.map(([k, g]) => `${aiAgentName(k, catalog)} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`, `Used ${fmtTok(tokUsed(ai))} tok = output + input${agents.length > 1 ? ": " + agents.map(([k, g]) => `${aiAgentName(k, catalog)} ${fmtTok(tokUsed(g))}`).join(" / ") : ""}`),
         T(`产出 ${fmtTok(ai.out)}：${only || "Agent"} 写出来的 token（含思考），${ai.calls} 次调用`, `Output ${fmtTok(ai.out)}: tokens ${only || "the agents"} wrote (thinking included), ${ai.calls} calls`),
         T(`读入 ${fmtTok(ai.fresh)}：新读进来的文件、命令输出`, `Input ${fmtTok(ai.fresh)}: newly read files and command output`),
         T(`缓存命中 ${fmtTok(ai.cached)}：每轮重读上下文，不算工作量`, `Cache hits ${fmtTok(ai.cached)}: context re-read every turn, not counted as work`),
@@ -3456,7 +4373,10 @@ class SpiralView extends ItemView {
         models && T(`模型：${models}`, `Models: ${models}`),
       ].filter(Boolean).join("\n"));
       line.createSpan({ text: T(`协作 ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok`, `Agents ${dur(ai.wall)} · 🗄 ${fmtTok(tokUsed(ai))} tok`) });
-      for (const [k] of agents) line.createSpan({ cls: `naut-sw naut-bg-${k}` });
+      for (const [k] of agents) {
+        const sw = line.createSpan({ cls: `naut-sw ${AI_AGENTS[k] ? `naut-bg-${k}` : ""}` });
+        if (!AI_AGENTS[k]) sw.style.background = aiAgentColor(k, catalog);
+      }
     }
     // 📅 日历读不到时说明原因（全天事件本身在下面「固定事件」里）
     if (cal && cal.error) row("is-error", "📅", cal.error).setText(cal.error.split("\n")[0]);
@@ -3515,6 +4435,59 @@ class SpiralView extends ItemView {
       }
     }
 
+    // 列表与螺旋共享的关联高亮、AI 关联及 Agent Deck 实时状态
+    const linked = new Map();
+    const link = (item, el) => {
+      const all = linked.get(item) || linked.set(item, []).get(item);
+      all.push(el);
+      el.addEventListener("mouseenter", () => { for (const x of all) x.classList.add("is-hot"); });
+      el.addEventListener("mouseleave", () => { for (const x of all) x.classList.remove("is-hot"); });
+    };
+    const aiName = (x) => x.title || (x.text || "").split(" / ")[0].slice(0, 40) || x.dir;
+    const aiMemo = new Map();
+    const aiOf = (item) => {
+      if (!ai || !ai.list || item.kind === "event" || item.cal) return [];
+      if (!aiMemo.has(item)) {
+        const segs = item.segs || (item.state === "done" ? item.segments : item.workedN != null ? item.segments.slice(0, item.workedN) : item.worked);
+        aiMemo.set(item, aiFor(segs, ai.list, item.label));
+      }
+      return aiMemo.get(item);
+    };
+    const deck = dayRel === 0 && !playing ? agentDeck : null;
+    const deckByBlock = new Map(), deckByKey = new Map();
+    const stateOf = (sid) => {
+      const meta = sid && deck?.usage?.meta?.get(sid);
+      if (!meta) return null;
+      return (deck.applyExternalState?.(meta) || meta).state || null;
+    };
+    if (deck) {
+      for (const [sid, rec] of deckBindings) {
+        const st = stateOf(sid);
+        if (!st) continue;
+        if (rec.blockId && !deckByBlock.has(rec.blockId)) deckByBlock.set(rec.blockId, st);
+        if (rec.key) deckByKey.set(rec.key, st);
+      }
+    }
+    const deckStateOf = (item) => {
+      if (!deck || !item || item.line == null) return null;
+      const raw = journalLines[item.line] || "";
+      const bm = /\^([a-z0-9-]+)\s*$/i.exec(raw.trimEnd());
+      if (bm && deckByBlock.has(bm[1])) return deckByBlock.get(bm[1]);
+      const lnk = linkUnder(journalLines, item.line);
+      if (lnk?.sid) {
+        const st = stateOf(lnk.sid);
+        if (st) return st;
+      }
+      return item.label ? deckByKey.get(workKey(item.label)) || null : null;
+    };
+    const autoKeys = this.plugin.autoKeys(dayKey);
+    const trunc = (s, n) => { const t = String(s || ""); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+
+    let paintGapsAndSlots = null, paintSegs = null, paintTimed = null, paintNow = null, center = null, centerSub = null;
+    if (cfg.spiralCollapsed) {
+      const cBar = root.createDiv({ cls: "naut-collapsed-bar", text: T("▸ 螺旋图已折叠（点击展开）", "▸ Spiral collapsed (click to expand)") });
+      cBar.onclick = () => { cfg.spiralCollapsed = false; this.plugin.saveSoon(); this.render({ force: true }); };
+    } else {
     // 鼠标划到螺旋的哪一段，这一行立刻显示那一段的时间和做的事（不等系统的悬停提示），位置固定在螺旋上方
     const hover = root.createDiv({ cls: "naut-hover" });
     let svg = null;
@@ -3572,18 +4545,14 @@ class SpiralView extends ItemView {
       for (let i = 0; i <= n; i++) d += (i ? " L " : "M ") + pt(a + (b - a) * i / n, dr).map((v) => v.toFixed(2)).join(" ");
       return d;
     };
-    svg = svgEl("svg", { viewBox: `0 0 ${size} ${size}`, class: "naut-svg" });
+    const showLabels = !playing && wideLabels;
+    svg = svgEl("svg", {
+      viewBox: showLabels ? "-135 -40 590 400" : `0 0 ${size} ${size}`,
+      class: "naut-svg" + (showLabels ? " has-labels" : ""),
+    });
     root.appendChild(svg);
     // 入场时各段按自己的时刻先后出来：从早上往夜里，跟着轨道一路画过去
     const late = (el, t) => { if (enter && el) el.style.setProperty("--naut-d", `${Math.round(20 + 260 * (Math.min(Math.max(t, S), E) - S) / (E - S))}ms`); return el; };
-    // 鼠标停在螺旋的一段或列表的一行上：同一件事的线段和那一行一起亮，其余背景与色块保持稳定不闪烁
-    const linked = new Map();
-    const link = (item, el) => {
-      const all = linked.get(item) || linked.set(item, []).get(item);
-      all.push(el);
-      el.addEventListener("mouseenter", () => { for (const x of all) x.classList.add("is-hot"); });
-      el.addEventListener("mouseleave", () => { for (const x of all) x.classList.remove("is-hot"); });
-    };
     // 这天实际开始之前、结束之后的一段画成虚线
     svgEl("path", { d: arc(S1, E1), class: "naut-track", pathLength: 1 }, svg);
     if (S1 > S) svgEl("path", { d: arc(S, S1), class: "naut-off" }, svg);
@@ -3596,9 +4565,14 @@ class SpiralView extends ItemView {
       const pat = svgEl("pattern", { id: hatchId, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, ensureDefs());
       svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 7, class: "naut-hatch-stripe" }, pat);
     }
+    const dotPatId = `naut-dot-${++hatchSeq}`;
+    {
+      const dotPat = svgEl("pattern", { id: dotPatId, width: 6, height: 6, patternUnits: "userSpaceOnUse" }, ensureDefs());
+      svgEl("circle", { cx: 3, cy: 3, r: 1.35, class: "naut-prog-dot" }, dotPat);
+    }
     const gapsG = svgEl("g", { class: "naut-gaps-g" }, svg);
     // 没有记录的过去（斜纹）与排完以后还空着的时段
-    const paintGapsAndSlots = (curPlan, simNow, curGaps = null) => {
+    paintGapsAndSlots = (curPlan, simNow, curGaps = null) => {
       gapsG.replaceChildren();
       const gList = curGaps ?? (cfg.showUnrecorded !== false ? pastGaps(S1, E1, dayRel === 0 ? Math.min(Math.max(simNow, S1), E1) : dayRel < 0 ? E1 : S1, [
         ...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
@@ -3629,7 +4603,6 @@ class SpiralView extends ItemView {
       const tx = late(svgEl("text", { x, y, class: "naut-hour" }, svg), h * 60);
       tx.textContent = String(h % 24);
     }
-    const aiName = (x) => x.title || (x.text || "").split(" / ")[0].slice(0, 40) || x.dir;
     let agGradId = null;
     if (agents.some(([k]) => k === "antigravity")) {
       agGradId = `naut-ag-${++hatchSeq}`;
@@ -3639,29 +4612,34 @@ class SpiralView extends ItemView {
       }
     }
     const timedPaths = [], timedDots = [];
+    const laneStep = agents.length > 5 ? Math.max(2.6, 20 / agents.length) : 4.2;
+    const laneOffset = -11.5 - laneStep * Math.max(1, agents.length);
     // 内圈细线：各个 Agent 在干活的时段，一个 Agent 一圈、各用各的颜色
     agents.forEach(([k, g], lane) => {
+      const aColor = aiAgentColor(k, catalog);
+      const aName = aiAgentName(k, catalog);
       for (const [a, b] of g.segs) {
-        const d = arc(a, Math.max(b, a + 3), -11.5 - 4.2 * lane);
+        const d = arc(a, Math.max(b, a + 3), -11.5 - laneStep * lane);
         if (!d) continue;
-        const vis = late(svgEl("path", { d, class: `naut-ai naut-by-${k}`, pathLength: 1 }, svg), a);
+        const vis = late(svgEl("path", { d, class: `naut-ai ${AI_AGENTS[k] ? `naut-by-${k}` : ""}`, pathLength: 1 }, svg), a);
         if (k === "antigravity" && agGradId) vis.style.stroke = `url(#${agGradId})`;
+        else if (!AI_AGENTS[k]) vis.style.stroke = aColor;
         timedPaths.push([vis, a, Math.max(b, a + 3)]);
         const sessions = aiSegmentSessions(ai.list, k, a, b);
         const hit = fat(d, vis);
         hit.dataset.agent = k;
         hit.setAttribute("tabindex", "0");
         hit.setAttribute("role", "button");
-        hit.setAttribute("aria-label", `${AI_AGENTS[k]} ${clock(a)}–${clock(b)} · ${sessions.length} ${T("个会话，查看详情", "sessions, view details")}`);
+        hit.setAttribute("aria-label", `${aName} ${clock(a)}–${clock(b)} · ${sessions.length} ${T("个会话，查看详情", "sessions, view details")}`);
         const show = (expanded = false, explicit = false) => {
           if ((hover.hasClass("is-expanded") || hover.hasClass("is-pinned")) && !explicit) return;
           const samePinned = this._agentHoverPinned?.agent === k && this._agentHoverPinned?.start === a && this._agentHoverPinned?.day === dayKey;
           const wasExpanded = hover.hasClass("is-expanded");
           if (explicit && !expanded && samePinned && !wasExpanded && hover.hasClass("is-pinned")) { clearHover(true); return; }
-          clearHover(true); hover.addClass("is-agent"); hover.style.setProperty("--naut-hover-agent", `var(--naut-ai-${k})`);
+          clearHover(true); hover.addClass("is-agent"); hover.style.setProperty("--naut-hover-agent", AI_AGENTS[k] ? `var(--naut-ai-${k})` : aColor);
           if (explicit) { hover.addClass("is-pinned"); vis.classList.add("is-pinned"); this._agentHoverPinned = { agent: k, start: a, day: dayKey }; }
           hover.createSpan({ cls: "naut-hover-time", text: `${clock(a)}–${clock(b)} · ${dur(b - a)}` });
-          hover.createSpan({ cls: "naut-hover-text", text: AI_AGENTS[k] });
+          hover.createSpan({ cls: "naut-hover-text", text: aName });
           hover.createSpan({ cls: "naut-hover-sub", text: sessions[0]?.title || T(`${sessions.length} 个会话`, `${sessions.length} sessions`), attr: { title: sessions.map(aiName).join("\n") } });
           const toggle = hover.createEl("button", { cls: "naut-ai-hover-toggle", text: expanded ? T("收起详情", "Hide details") : T("详情", "Details"), attr: { "aria-expanded": String(expanded) } });
           toggle.onclick = (e) => { e.stopPropagation(); show(!expanded, true); };
@@ -3702,7 +4680,7 @@ class SpiralView extends ItemView {
             if (typeof deck?.openSessionBySid === "function" || k === "claude") actions.createEl("button", { text: T("打开会话", "Open session") }).onclick = () => this.plugin.openAgentSession(x.sid, k);
           }
           if (!sessions.length) card.createDiv({ cls: "naut-muted", text: T("这段记录没有会话明细", "No session details were recorded for this segment") });
-          if (sessions.length > 3) card.createEl("button", { cls: "naut-ai-hover-more", text: T(`查看全部 ${sessions.length} 个会话`, `View all ${sessions.length} sessions`) }).onclick = () => new AiSessionsModal(this.plugin, `${AI_AGENTS[k]} ${clock(a)}–${clock(b)}`, [{ list: sessions.map((x) => ({ ...x, related: true })) }]).open();
+          if (sessions.length > 3) card.createEl("button", { cls: "naut-ai-hover-more", text: T(`查看全部 ${sessions.length} 个会话`, `View all ${sessions.length} sessions`) }).onclick = () => new AiSessionsModal(this.plugin, `${aName} ${clock(a)}–${clock(b)}`, [{ list: sessions.map((x) => ({ ...x, related: true })) }]).open();
         };
         hit.addEventListener("mouseenter", () => show());
         hit.addEventListener("focus", () => show());
@@ -3717,7 +4695,7 @@ class SpiralView extends ItemView {
     });
     // 再往里一圈：游戏时间
     for (const [a, b, n] of games) {
-      const d = arc(a, Math.max(b, a + 3), -11.5 - 4.2 * Math.max(1, agents.length) - 1.5);
+      const d = arc(a, Math.max(b, a + 3), laneOffset - 1.5);
       if (!d) continue;
       const vis = late(svgEl("path", { d, class: "naut-game", pathLength: 1 }, svg), a);
       timedPaths.push([vis, a, Math.max(b, a + 3)]);
@@ -3727,53 +4705,26 @@ class SpiralView extends ItemView {
     const revN = (t) => +(REVIEW_RE.exec(t.label) || [0, 0])[1];
     const revs = items.filter(isReview);
     for (const t of revs) for (const [a, b] of t.segments || []) {
-      const d = arc(a, Math.max(b, a + 3), -11.5 - 4.2 * Math.max(1, agents.length) - 6);
+      const d = arc(a, Math.max(b, a + 3), laneOffset - 6);
       if (!d) continue;
       const vis = late(svgEl("path", { d, class: "naut-rev", pathLength: 1 }, svg), a);
       timedPaths.push([vis, a, Math.max(b, a + 3)]);
       hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`🃏 复习卡片 ${revN(t)} 张`, `🃏 Review ${revN(t)} cards`));
     }
-    // 这件任务做过的那几段里，Claude 在干什么
-    const aiMemo = new Map();
-    const aiOf = (item) => {
-      if (!ai || !ai.list || item.kind === "event" || item.cal) return [];
-      if (!aiMemo.has(item)) {
-        const segs = item.segs || (item.state === "done" ? item.segments : item.workedN != null ? item.segments.slice(0, item.workedN) : item.worked);
-        aiMemo.set(item, aiFor(segs, ai.list, item.label));
-      }
-      return aiMemo.get(item);
-    };
-    const deck = dayRel === 0 && !playing ? agentDeck : null;
-    const deckByBlock = new Map(), deckByKey = new Map();
-    const stateOf = (sid) => {
-      const meta = sid && deck?.usage?.meta?.get(sid);
-      if (!meta) return null;
-      return (deck.applyExternalState?.(meta) || meta).state || null;
-    };
-    if (deck) {
-      for (const [sid, rec] of deckBindings) {
-        const st = stateOf(sid);
-        if (!st) continue;
-        if (rec.blockId && !deckByBlock.has(rec.blockId)) deckByBlock.set(rec.blockId, st);
-        if (rec.key) deckByKey.set(rec.key, st);
-      }
-    }
-    const deckStateOf = (item) => {
-      if (!deck || !item || item.line == null) return null;
-      const raw = journalLines[item.line] || "";
-      const bm = /\^([a-z0-9-]+)\s*$/i.exec(raw.trimEnd());
-      if (bm && deckByBlock.has(bm[1])) return deckByBlock.get(bm[1]);
-      const lnk = linkUnder(journalLines, item.line);
-      if (lnk?.sid) {
-        const st = stateOf(lnk.sid);
-        if (st) return st;
-      }
-      return item.label ? deckByKey.get(workKey(item.label)) || null : null;
-    };
-    const trunc = (s, n) => { const t = String(s || ""); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+    const pStep = Number(cfg.progressStep) || 25;
     const LANE = [0, 4, -4, 7.5, -7.5, 10.5];   // 并行的几件 DOING 各画一条线，沿螺旋错开一点
     const perMin = (t) => 2 * Math.PI * rad(t) / 720;   // 这一圈上一分钟有几个像素
     const segsG = svgEl("g", { class: "naut-segs-g" }, svg);
+    const labelsG = showLabels ? svgEl("g", { class: "naut-labels-g" }, svg) : null;
+    const labelCands = [];
+    const toneClassOf = (item) => {
+      if (item.kind === "event") return item.prio ? "is-prio" : "is-event";
+      if (isReview(item) && item.state === "done") return "is-review";
+      if (item.main || item.mainA) return "is-main";
+      if (item.prio) return "is-prio";
+      const st = taskStatus(item, deckStateOf(item));
+      return st ? `is-kw-${st}` : "is-task";
+    };
     const drawSeg = (a, b, cls, item) => {
       // 够长的段两头各让出 0.8 像素，挨着的两段之间留一条缝；太短的不让，免得缩没了
       const k = perMin((a + b) / 2), gap = (b - a) * k > 6 ? 0.8 / k : 0;
@@ -3781,12 +4732,42 @@ class SpiralView extends ItemView {
       if (!d) return;
       const p = late(svgEl("path", { d, class: `naut-seg ${cls}${statusCls(item, "naut-kw-", deckStateOf(item))}`, pathLength: 1 }, segsG), a);
       if (item.cal && item.cal.color) p.style.stroke = item.cal.color;   // 日历事件用日历自己的颜色
+      if (item.kind === "task" && item.state === "open" && item.progress > 0 && item.progress < 1 && !cls.includes("naut-worked")) {
+        svgEl("path", { d, class: "naut-seg-dots", stroke: `url(#${dotPatId})` }, segsG);
+      }
       if (playing) return;
       link(item, p);
+      if (showLabels && (item.kind === "task" || item.kind === "event") && item.label && !cls.includes("naut-worked")) {
+        const mid = (a + b) / 2;
+        const laneOff = LANE[item.lane || 0] ?? 0;
+        const [ax, ay] = pt(mid, laneOff + 8.5);
+        labelCands.push({
+          item,
+          start: a,
+          end: b,
+          label: workKey(item.label),
+          midAngle: ang(mid),
+          segR: rad(mid) + laneOff,
+          anchorX: ax,
+          anchorY: ay,
+          toneCls: toneClassOf(item),
+          done: item.state === "done" || (item.kind === "event" && dayRel === 0 && item.end <= now),
+          color: item.cal?.color || "",
+          prioWeight: item.doing ? 4 : item.main ? 3 : item.kind === "event" ? 2 : item.state === "open" ? 1 : 0,
+        });
+      }
       const rel = aiOf(item).filter((x) => x.related);
       // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
       hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join(T("、", ", "))}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
-      p.addEventListener("click", () => this.plugin.openItem(file, item));
+      p.addEventListener("click", (e) => {
+        if (e.shiftKey && item.kind === "task" && item.state === "open" && !item.container && !isAutoTask(item, autoKeys) && item.line != null) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.advanceUpNextProgress(file, dayKey, item, e.altKey ? -pStep : pStep);
+          return;
+        }
+        this.plugin.openItem(file, item);
+      });
       const segLabel = workKey(item.label);
       const parentHint = item.inheritedFrom != null && item.inheritedLabel
         ? T(` · 随母块「${trunc(item.inheritedLabel, 14)}」`, ` · parent "${trunc(item.inheritedLabel, 14)}"`)
@@ -3802,27 +4783,72 @@ class SpiralView extends ItemView {
         p.addEventListener("contextmenu", (e) => this.openDoneMenu(e, file, item, { header }));
       }
     };
-    const paintSegs = (curPlan, simNow) => {
+    const shallowTop = (arr) => [...arr].sort((a, b) => (b.indent || 0) - (a.indent || 0));
+    paintSegs = (curPlan, simNow) => {
       segsG.replaceChildren();
+      labelCands.length = 0;
+      const hideDone = !!cfg.hideDoneOnSpiral;
+      const altTasks = new Set(curPlan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).filter((_, idx) => idx % 2 === 1));
+      const altEvents = new Set(items.filter((i) => i.kind === "event" && i.state !== "done" && !i.cal).sort((a, b) => a.start - b.start).filter((_, idx) => idx % 2 === 1));
       for (const o of orphans) for (const [a, b] of o.segs) drawSeg(a, b, "naut-task naut-worked", o);
-      for (const t of curPlan.suspended) for (const [a, b] of t.worked || []) drawSeg(a, b, "naut-task naut-worked", t);
-      for (const t of items.filter((i) => i.kind === "task" && i.state === "done")) {
-        const segs = playing ? (t._fullSegments || t.segments || []) : (t.segments || []);
-        for (const [a, b] of segs) {
-          const b1 = playing ? Math.min(b, simNow) : b;
-          if (b1 > a) drawSeg(a, b1, isReview(t) ? "naut-done naut-review" : t.mainA ? "naut-done naut-main-done" : "naut-done", t);
+      for (const t of shallowTop(curPlan.suspended)) for (const [a, b] of t.worked || []) drawSeg(a, b, "naut-task naut-worked", t);
+      if (!hideDone) {
+        for (const t of shallowTop(items.filter((i) => i.kind === "task" && i.state === "done"))) {
+          const segs = playing ? (t._fullSegments || t.segments || []) : (t.segments || []);
+          for (const [a, b] of segs) {
+            const b1 = playing ? Math.min(b, simNow) : b;
+            if (b1 > a) drawSeg(a, b1, isReview(t) ? "naut-done naut-review" : t.mainA ? "naut-done naut-main-done" : "naut-done", t);
+          }
         }
       }
-      // 没做完的：做过的几段画在底层，固定事件居中，正在做与后续排程画在最上层
-      for (const t of curPlan.queue) t.segments.forEach(([a, b], i) => {
+      // 没做完的：做过的几段画在底层，固定事件居中，正在做与后续排程画在最上层（每层内母块压在子块之上）
+      for (const t of shallowTop(curPlan.queue)) t.segments.forEach(([a, b], i) => {
         if (i < t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + " naut-worked", t);
       });
-      const evs = items.filter((i) => i.kind === "event");
-      for (const e of evs) if (e.state === "done") drawSeg(e.start, e.end, "naut-event naut-done-event", e);
-      for (const e of evs) if (e.state !== "done") drawSeg(e.start, e.end, e.prio ? "naut-prio" : "naut-event", e);
-      for (const t of curPlan.queue) t.segments.forEach(([a, b], i) => {
-        if (i >= t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + (t.doing && dayRel === 0 ? " naut-live" : ""), t);
+      const evs = shallowTop(items.filter((i) => i.kind === "event"));
+      if (!hideDone) for (const e of evs) if (e.state === "done") drawSeg(e.start, e.end, "naut-event naut-done-event", e);
+      for (const e of evs) if (e.state !== "done") {
+        const expCls = dayRel === 0 && e.end <= simNow ? " naut-expired-event" : "";
+        const altCls = altEvents.has(e) ? " naut-alt" : "";
+        drawSeg(e.start, e.end, (e.prio ? "naut-prio" : "naut-event") + expCls + altCls, e);
+      }
+      for (const t of shallowTop(curPlan.queue)) t.segments.forEach(([a, b], i) => {
+        if (i >= t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + (t.doing && dayRel === 0 ? " naut-live" : "") + (altTasks.has(t) ? " naut-alt" : ""), t);
       });
+      if (labelsG) {
+        labelsG.replaceChildren();
+        const placed = layoutSpiralLabels(labelCands, { cx: c, cy: c, maxCols: Number(cfg.spiralLabelMaxCols) || 18 });
+        const vb = computeSpiralViewBox(placed);
+        svg.setAttribute("viewBox", vb.viewBox);
+        svg.style.maxWidth = `${vb.maxWidth}px`;
+        for (const lb of placed) {
+          const dirCls = lb.atVertex ? "is-vertex" : lb.onLeft ? "is-left" : "is-right";
+          const g = svgEl("g", { class: `naut-label-group ${lb.toneCls}${lb.done ? " is-done" : ""} ${dirCls}` }, labelsG);
+          if (lb.color) g.style.setProperty("--naut-lbl-c", lb.color);
+          svgEl("path", { d: lb.pathD, class: "naut-link-line" }, g);
+          svgEl("circle", { cx: lb.anchorX.toFixed(1), cy: lb.anchorY.toFixed(1), r: 2.1, class: "naut-link-dot" }, g);
+          const tx = lb.atVertex ? lb.x + lb.w / 2 : (lb.onLeft ? lb.x + lb.w : lb.x);
+          const ta = lb.atVertex ? "middle" : (lb.onLeft ? "end" : "start");
+          const txt = svgEl("text", {
+            x: tx.toFixed(1),
+            y: (lb.y + lb.h / 2).toFixed(1),
+            "text-anchor": ta,
+            "dominant-baseline": "central",
+            class: "naut-label-text",
+          }, g);
+          txt.textContent = lb.text;
+          link(lb.item, g);
+          g.addEventListener("click", (e) => {
+            if (e.shiftKey && lb.item.kind === "task" && lb.item.state === "open" && !lb.item.container && !isAutoTask(lb.item, autoKeys) && lb.item.line != null) {
+              e.preventDefault();
+              e.stopPropagation();
+              this.advanceUpNextProgress(file, dayKey, lb.item, e.altKey ? -pStep : pStep);
+              return;
+            }
+            this.plugin.openItem(file, lb.item);
+          });
+        }
+      }
     };
     paintSegs(plan, now);
     for (const l of items.filter((i) => i.kind === "log")) {
@@ -3893,7 +4919,7 @@ class SpiralView extends ItemView {
       }
     }
     let nowG = null, trailPath = null, nowLine = null, nowHalo = null, nowDot = null;
-    const paintNow = (simNow) => {
+    paintNow = (simNow) => {
       if (!(dayRel === 0 && simNow >= S && simNow <= E)) return;
       if (!nowG) {
         nowG = svgEl("g", { class: "naut-now-g" }, svg);
@@ -3917,7 +4943,7 @@ class SpiralView extends ItemView {
         trailPath.setAttribute("d", td || "");
       }
     };
-    const paintTimed = (simNow) => {
+    paintTimed = (simNow) => {
       if (!playing) return;
       for (const [el, a, b] of timedPaths) {
         const prog = simNow <= a ? 0 : simNow >= b ? 1 : (simNow - a) / Math.max(0.5, b - a);
@@ -3964,11 +4990,25 @@ class SpiralView extends ItemView {
     };
     handle("start", S1);
     handle("end", E1);
-    const center = svgEl("text", { x: c, y: c + 4, class: "naut-center" }, svg);
-    center.textContent = dayRel === 0 ? clock(now) : date.format("M/D");
-    // 中间时间下面：这天一共复习了几张卡
+    // 圆心双行光学排版：主数字略上移（y = c - 3），副行显示复习张数、今日余量/超载或星期
     const revTotal = revs.reduce((k, t) => k + revN(t), 0);
-    if (revTotal) hov(svgEl("text", { x: c, y: c + 19, class: "naut-center-rev" }, svg), T(`${revs.length} 轮`, `${revs.length} rounds`), T(`🃏 这天复习了 ${revTotal} 张卡片`, `🃏 ${revTotal} cards reviewed this day`)).textContent = `🃏 ${revTotal}`;
+    const fmtCenterCap = (capObj) => {
+      const k = capObj.status.key;
+      const pfx = k === "overload" ? T("超 ", "over ") : k === "fragmented" ? T("缺 ", "gap ") : T("剩 ", "free ");
+      return pfx + dur(capObj.status.value);
+    };
+    const subLabel = revTotal ? `🃏 ${revTotal}` : dayRel === 0 ? fmtCenterCap(C) : date.format("ddd");
+    center = svgEl("text", { x: c, y: subLabel ? c - 3 : c + 4, class: "naut-center" }, svg);
+    center.textContent = dayRel === 0 ? clock(now) : date.format("M/D");
+    if (revTotal) {
+      centerSub = hov(svgEl("text", { x: c, y: c + 14, class: "naut-center-rev" }, svg), T(`${revs.length} 轮`, `${revs.length} rounds`), T(`🃏 这天复习了 ${revTotal} 张卡片`, `🃏 ${revTotal} cards reviewed this day`));
+      centerSub.textContent = `🃏 ${revTotal}`;
+    } else if (subLabel) {
+      const over = dayRel === 0 && (C.status.key === "overload" || C.status.key === "fragmented");
+      centerSub = svgEl("text", { x: c, y: c + 14, class: "naut-center-sub" + (over ? " is-over" : "") }, svg);
+      centerSub.textContent = subLabel;
+    }
+    }
 
     // 列表
     const list = root.createDiv({ cls: "naut-list" });
@@ -4010,6 +5050,9 @@ class SpiralView extends ItemView {
         else if (r.item.mainA && !r.inMain) labelEl.appendText("🎯 ");
         if (r.item.cal) labelEl.appendText("📅 ");
         labelEl.appendText(r.item.label);
+        if (r.item.mirror?.path) {
+          labelEl.createSpan({ cls: "naut-mirror-tag", text: "↗", attr: { title: T(`镜像自 ${r.item.mirror.path}（点击打开源笔记）`, `Mirrored from ${r.item.mirror.path} (click to open source note)`) } });
+        }
         const sess = aiOf(r.item);
         if (sess.length) {
           const rel = sess.filter((x) => x.related).length;
@@ -4029,9 +5072,16 @@ class SpiralView extends ItemView {
       }
     };
     // 进度：写了 40% / 1/3 按写的；没写但做过，按 已做 / 预估 估一个；自动记的行没有预估时长，只显示已经做了多久
-    const autoKeys = this.plugin.autoKeys(dayKey);
     const durText = (t) => formatTaskDur(t, autoKeys);
-    const tipOf = (t) => formatTaskTip(t, autoKeys);
+    const rvCatMap = rv?.catMap || null;
+    const tipOf = (t) => {
+      const base = formatTaskTip(t, autoKeys);
+      if (!rvCatMap || !t || t.state === "done" || t.kind !== "task" || isAutoTask(t, autoKeys)) return base;
+      const cal = calibratedEstimate(journalLines[t.line] || "", t.dur, rvCatMap);
+      if (!cal) return base;
+      const note = T(`历史「${cal.cat}」约 ${dur(cal.calibratedMin)}（×${cal.ratio.toFixed(1)}）`, `History for ${cal.cat}: ~${dur(cal.calibratedMin)} (×${cal.ratio.toFixed(1)})`);
+      return base ? `${base}\n${note}` : note;
+    };
     const paintTaskSections = (curPlan) => {
       // 🎯 主线：这一天最要紧的几件（主线块里 A 级的任务）放在列表最上面，一件一行：做完的打勾写几点做完，在做的写「进行中」，
       // 没开始的写排到了几点（排程里主线排在 DOING 后面、别的待办前面），排不下的直说
@@ -4132,12 +5182,18 @@ class SpiralView extends ItemView {
           planStatusEl.textContent = `${curC.status.label} ${dur(curC.status.value)}`;
           planLeftEl.className = `naut-left is-${curC.tone}`;
           planLeftEl.textContent = T(` · 剩余 ${curC.left}%`, ` · ${curC.left}% free`);
-          center.textContent = clock(curMin);
+          if (center) center.textContent = clock(curMin);
+          if (centerSub && dayRel === 0 && !revs.length) {
+            const k = curC.status.key;
+            const over = k === "overload" || k === "fragmented";
+            centerSub.setAttribute("class", "naut-center-sub" + (over ? " is-over" : ""));
+            centerSub.textContent = (k === "overload" ? T("超 ", "over ") : k === "fragmented" ? T("缺 ", "gap ") : T("剩 ", "free ")) + dur(curC.status.value);
+          }
         }
-        paintGapsAndSlots(curPlan, simNow);
-        paintSegs(curPlan, simNow);
-        paintTimed(simNow);
-        paintNow(simNow);
+        if (paintGapsAndSlots) paintGapsAndSlots(curPlan, simNow);
+        if (paintSegs) paintSegs(curPlan, simNow);
+        if (paintTimed) paintTimed(simNow);
+        if (paintNow) paintNow(simNow);
         const bucket = Math.floor(simNow / 10);
         if (bucket !== lastListBucket) {
           lastListBucket = bucket;
@@ -4156,32 +5212,75 @@ class SpiralView extends ItemView {
     stagger();
   }
 
-  // 「接下来」面板改写单行状态的统一入口：互斥锁 + 边界校验 + 音效去重 + 重绘
+  // 「接下来」面板改写单行状态的统一入口：互斥锁 + 边界校验 + 音效去重 + 重绘（支持 ![[源笔记#^块号]] 镜像回写）
   async _mutateUpNext(file, dayKey, item, mutate) {
     let targetLine = item?.inheritedFrom ?? item?.line;
-    if (!file || targetLine == null || this._upNextBusy) return;
+    const mirror = item?.mirror?.path && item?.mirror?.blockId && item?.inheritedFrom == null ? item.mirror : null;
+    if ((!file && !mirror) || targetLine == null || this._upNextBusy) return;
     this._upNextBusy = true;
     try {
       const targetKey = workKey(item?.inheritedFrom != null ? (item?.inheritedLabel || item?.label) : item?.label);
       let beforeRaw = null, out = null;
-      const changed = await this.plugin.editFile(file, (lines) => {
-        const curItems = parseJournal(lines.join("\n"), this.plugin.settings);
-        let hit = null;
-        if (targetKey) {
-          const hits = curItems.filter((t) => t.kind === "task" && workKey(t.inheritedFrom != null ? (t.inheritedLabel || t.label) : t.label) === targetKey);
-          if (hits.length) {
-            hit = hits.find((t) => (t.inheritedFrom != null ? t.inheritedFrom : t.line) === targetLine) || hits.find((t) => t.state === "open") || hits[0];
-            targetLine = hit.inheritedFrom != null ? hit.inheritedFrom : hit.line;
+      let soundPath = file?.path || mirror?.path;
+      let changed = false;
+      if (mirror) {
+        const srcFile = this.app.vault.getAbstractFileByPath(mirror.path);
+        if (!(srcFile instanceof TFile)) return;
+        soundPath = srcFile.path;
+        const applyMirrorLinesMut = (lines) => {
+          const escId = mirror.blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const idRe = new RegExp(`\\^${escId}\\s*$`);
+          let inCode = false, srcIdx = -1;
+          for (let i = 0; i < lines.length; i++) {
+            if (/^\s*```/.test(lines[i])) { inCode = !inCode; continue; }
+            if (!inCode && idRe.test(lines[i].trimEnd())) { srcIdx = i; break; }
           }
+          if (srcIdx < 0) return 0;
+          const curItems = parseJournal(lines.join("\n"), this.plugin.settings);
+          const hit = curItems.find((t) => t.line === srcIdx) || null;
+          const cur = lines[srcIdx];
+          out = mutate(cur, srcIdx, hit);
+          if (!out || out.nextRaw === cur) return 0;
+          beforeRaw = cur;
+          lines[srcIdx] = out.nextRaw;
+          targetLine = srcIdx;
+          return 1;
+        };
+        const deck = this.plugin.agentDeck();
+        if (deck && typeof deck.updateMirrorBlock === "function" && !this.plugin.journalView(srcFile)) {
+          const res = await deck.updateMirrorBlock(mirror, (cur, srcIdx, srcLines) => {
+            const curItems = parseJournal(srcLines.join("\n"), this.plugin.settings);
+            const hit = curItems.find((t) => t.line === srcIdx) || null;
+            out = mutate(cur, srcIdx, hit);
+            if (!out || out.nextRaw === cur) return cur;
+            beforeRaw = cur;
+            targetLine = srcIdx;
+            return out.nextRaw;
+          });
+          changed = Boolean(res?.changed);
+        } else {
+          changed = await this.plugin.editFile(srcFile, applyMirrorLinesMut);
         }
-        if (targetLine < 0 || targetLine >= lines.length) return 0;
-        const cur = lines[targetLine];
-        out = mutate(cur, targetLine, hit);
-        if (!out || out.nextRaw === cur) return 0;
-        beforeRaw = cur;
-        lines[targetLine] = out.nextRaw;
-        return 1;
-      });
+      } else {
+        changed = await this.plugin.editFile(file, (lines) => {
+          const curItems = parseJournal(lines.join("\n"), this.plugin.settings);
+          let hit = null;
+          if (targetKey) {
+            const hits = curItems.filter((t) => t.kind === "task" && workKey(t.inheritedFrom != null ? (t.inheritedLabel || t.label) : t.label) === targetKey);
+            if (hits.length) {
+              hit = hits.find((t) => (t.inheritedFrom != null ? t.inheritedFrom : t.line) === targetLine) || hits.find((t) => t.state === "open") || hits[0];
+              targetLine = hit.inheritedFrom != null ? hit.inheritedFrom : hit.line;
+            }
+          }
+          if (targetLine < 0 || targetLine >= lines.length) return 0;
+          const cur = lines[targetLine];
+          out = mutate(cur, targetLine, hit);
+          if (!out || out.nextRaw === cur) return 0;
+          beforeRaw = cur;
+          lines[targetLine] = out.nextRaw;
+          return 1;
+        });
+      }
       if (!changed || !out) return;
       out.after?.(targetLine);
       if (out.soundKw && canonKw(out.soundKw) !== "DOING") {
@@ -4193,12 +5292,33 @@ class SpiralView extends ItemView {
         }
       }
       const ch = beforeRaw != null ? kwLineChange(beforeRaw, out.nextRaw) : null;
-      const shouldSound = ch ? this.plugin.kwFresh(file.path, [ch]).length > 0 : true;
+      const shouldSound = ch ? this.plugin.kwFresh(soundPath, [ch]).length > 0 : true;
       if (shouldSound && out.soundKw) this.plugin.kwSound(KW_SOUND[out.soundKw] || "TODO");
       await this.render();
     } finally {
       this._upNextBusy = false;
     }
+  }
+
+  // 螺旋色块或右键快捷推进/回退任务进度（+step → … → DONE，-step 回退）
+  async advanceUpNextProgress(file, dayKey, item, delta = 25) {
+    return this._mutateUpNext(file, dayKey, item, (cur, targetLine, hit) => {
+      const res = stepProgressLine(cur, delta);
+      if (!res.changed) return { nextRaw: cur, soundKw: null };
+      let nextRaw = res.nextRaw;
+      if (res.done && hit?.clock) {
+        const sp = splitTask(nextRaw);
+        if (sp) nextRaw = `${sp.prefix}DONE ${moment().format("HH:mm")} ${sp.rest}`;
+      }
+      return {
+        nextRaw,
+        soundKw: res.done ? "DONE" : null,
+        after: () => {
+          this._upNextHold?.get(dayKey)?.delete(targetLine);
+          if (!res.done) this.plugin.sound("tick");
+        },
+      };
+    });
   }
 
   // 「接下来」面板状态图标点击循环：原状态 → DONE → SUSPENDED → 原状态
@@ -4308,6 +5428,23 @@ class SpiralView extends ItemView {
       menu.addSeparator();
     }
     const curKw = canonKw(item.kw);
+    if (item.state !== "done" && !isAuto) {
+      const pStep = Number(this.plugin.settings.progressStep) || 25;
+      const curPct = item.progress != null ? Math.round(item.progress * 100) : 0;
+      const nextPct = Math.min(100, (Math.floor(curPct / pStep) + 1) * pStep);
+      menu.addItem((mi) => {
+        mi.setTitle(nextPct >= 100 ? T("⏩ 推进进度 → DONE", "⏩ Advance progress → DONE") : T(`⏩ 推进进度（${curPct}% → ${nextPct}%）`, `⏩ Advance progress (${curPct}% → ${nextPct}%)`));
+        mi.onClick(() => this.advanceUpNextProgress(file, dayKey, item, pStep));
+      });
+      if (curPct > 0) {
+        const prevPct = Math.max(0, (Math.ceil(curPct / pStep) - 1) * pStep);
+        menu.addItem((mi) => {
+          mi.setTitle(prevPct <= 0 ? T("⏪ 清除进度标记", "⏪ Clear progress marker") : T(`⏪ 回退进度（${curPct}% → ${prevPct}%）`, `⏪ Step back progress (${curPct}% → ${prevPct}%)`));
+          mi.onClick(() => this.advanceUpNextProgress(file, dayKey, item, -pStep));
+        });
+      }
+      menu.addSeparator();
+    }
     UP_NEXT_MENU_GROUPS.forEach((group, gi) => {
       if (gi > 0) menu.addSeparator();
       for (const [kw, title] of group) {
@@ -4328,7 +5465,7 @@ class SpiralView extends ItemView {
     }
     menu.addSeparator();
     menu.addItem((mi) => {
-      mi.setTitle(T("定位到日记", "Show in journal"));
+      mi.setTitle(item.mirror?.path ? T("定位到源笔记", "Show in source note") : T("定位到日记", "Show in journal"));
       mi.onClick(() => this.plugin.openItem(file, item));
     });
     menu.showAtMouseEvent(e);
@@ -4428,12 +5565,15 @@ class SpiralView extends ItemView {
   // 🤖 人机协作：按项目分 + 近 7 天
   renderAi(list, store, date, ai) {
     const cfg = this.plugin.settings;
+    const catalog = store?.agents || this.plugin._deckAgentCatalog || null;
     const sec = list.createDiv({ cls: "naut-sec naut-sec-ai", text: T("🤖 人机协作", "🤖 Agents") });
     if (ai) {
-      const rows = Object.entries(ai.proj).filter(([, p]) => p.out >= 1000 || p.min >= 2).sort((a, b) => b[1].out - a[1].out).slice(0, 5);
+      const rows = Object.entries(ai.proj || {}).filter(([, p]) => p.out >= 1000 || p.min >= 2).sort((a, b) => b[1].out - a[1].out).slice(0, 5);
       for (const [name, p] of rows) {
         const main = Object.entries(p.agents || {}).sort((a, b) => b[1] - a[1])[0];
-        const row = list.createDiv({ cls: `naut-row naut-ai-row naut-by-${main ? main[0] : "claude"}`, attr: main && Object.keys(p.agents).length > 1 ? { title: Object.entries(p.agents).map(([k, m]) => `${AI_AGENTS[k]} ${dur(m)}`).join(" · ") } : {} });
+        const mainId = main ? main[0] : "claude";
+        const row = list.createDiv({ cls: `naut-row naut-ai-row ${AI_AGENTS[mainId] ? `naut-by-${mainId}` : ""}`, attr: main && Object.keys(p.agents).length > 1 ? { title: Object.entries(p.agents).map(([k, m]) => `${aiAgentName(k, catalog)} ${dur(m)}`).join(" · ") } : {} });
+        if (!AI_AGENTS[mainId]) row.style.setProperty("--naut-ai", aiAgentColor(mainId, catalog));
         row.createSpan({ cls: "naut-time", text: dur(p.min) });
         row.createSpan({ cls: "naut-label", text: name });
         row.createSpan({ cls: "naut-dur", text: fmtTok(p.out) });
@@ -4447,7 +5587,7 @@ class SpiralView extends ItemView {
     const days = [];
     for (let i = 6; i >= 0; i--) {
       const d = date.clone().subtract(i, "days");
-      days.push({ d, s: aiPick(store.days[d.format(cfg.format)], cfg) });
+      days.push({ d, s: aiPick(store?.days?.[d.format(cfg.format)], cfg) });
     }
     const max = Math.max(60, ...days.map((x) => (x.s ? x.s.wall : 0)));
     const had = days.filter((x) => x.s);
@@ -4455,8 +5595,11 @@ class SpiralView extends ItemView {
     for (const { d, s } of days) {
       const col = week.createDiv({ cls: "naut-ai-col" + (d.isSame(date, "day") ? " is-cur" : ""), attr: { title: s ? T(`${d.format("M/D ddd")}  协作 ${dur(s.wall)} · 工时 ${dur(s.agent)} · 产出 ${fmtTok(s.out)} · ${s.prompts} 条指令`, `${d.format("ddd M/D")}  agents ${dur(s.wall)} · hours ${dur(s.agent)} · output ${fmtTok(s.out)} · ${s.prompts} prompts`) : T(`${d.format("M/D ddd")}  没用 Agent`, `${d.format("ddd M/D")}  no agents`) } });
       const bar = col.createDiv({ cls: "naut-ai-bar", attr: { style: `height:${s ? Math.max(2, (s.wall / max) * 100) : 0}%` } });
-      const parts = !s ? [] : s.by ? Object.keys(AI_AGENTS).filter((k) => s.by[k] && s.by[k].wall).map((k) => [k, s.by[k].wall]) : [["claude", 1]];
-      for (const [k, w] of parts) bar.createDiv({ cls: `naut-ai-part naut-bg-${k}`, attr: { style: `flex-grow:${w}` } });
+      const parts = !s ? [] : s.by ? dayAgentKeys(s).filter((k) => s.by[k] && s.by[k].wall).map((k) => [k, s.by[k].wall]) : [["claude", 1]];
+      for (const [k, w] of parts) {
+        const part = bar.createDiv({ cls: `naut-ai-part ${AI_AGENTS[k] ? `naut-bg-${k}` : ""}`, attr: { style: `flex-grow:${w}` } });
+        if (!AI_AGENTS[k]) part.style.background = aiAgentColor(k, catalog);
+      }
       col.createDiv({ cls: "naut-ai-day", text: d.format("dd") });
     }
     const sum = (k) => had.reduce((n, x) => n + x.s[k], 0);
@@ -4508,8 +5651,323 @@ class SpiralView extends ItemView {
     if (r.worst.length) list.createDiv({ cls: "naut-proj-note", text: T("估得最短的几件：", "Most underestimated:") });
     for (const w of r.worst) row(`×${(w.actual / w.est).toFixed(1)}`, w.label, `${dur(w.est)}→${dur(w.actual)}`, T(`${w.day} · 预估 ${dur(w.est)}，实际 ${dur(w.actual)}`, `${w.day} · estimated ${dur(w.est)}, actual ${dur(w.actual)}`),
       () => { const f = this.app.vault.getAbstractFileByPath(w.path); if (f instanceof TFile) this.plugin.openLine(f, w.line); });
+    if (r.worstUnder?.length) {
+      list.createDiv({ cls: "naut-proj-note", text: T("估得最长的几件：", "Most overestimated:") });
+      for (const w of r.worstUnder) row(`×${(w.actual / w.est).toFixed(1)}`, w.label, `${dur(w.est)}→${dur(w.actual)}`, T(`${w.day} · 预估 ${dur(w.est)}，实际 ${dur(w.actual)}`, `${w.day} · estimated ${dur(w.est)}, actual ${dur(w.actual)}`),
+        () => { const f = this.app.vault.getAbstractFileByPath(w.path); if (f instanceof TFile) this.plugin.openLine(f, w.line); });
+    }
+    const openFull = list.createEl("button", { cls: "naut-rev-linkbtn", text: T("📏 打开日 / 周 / 月完整复盘 ↗", "📏 Open full day / week / month review ↗") });
+    openFull.onclick = () => this.plugin.openReviewView({ mode: "week", offset: 0 });
   }
 
+}
+
+class SpiralReviewView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this.mode = "week";
+    this.offset = 0;
+  }
+  getViewType() { return REVIEW_VIEW_TYPE; }
+  getDisplayText() { return T("螺旋复盘", "Nautilus Review"); }
+  getIcon() { return "bar-chart-2"; }
+
+  async onOpen() { await this.render(); }
+  async onClose() { this.contentEl.empty(); }
+
+  async _ensureTodayNote() {
+    const d = this.plugin.today();
+    const path = this.plugin.journalPath(d);
+    let file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+      file = await this.app.vault.create(path, this.plugin.journalSeed(d));
+    }
+    return file;
+  }
+
+  async _writeToTodayJournal(data) {
+    const file = await this._ensureTodayNote();
+    const md = formatReviewMarkdown(data, this.plugin.settings);
+    let targetLine = 0;
+    await this.plugin.editFile(file, (lines) => {
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      if (lines.length) lines.push("");
+      targetLine = lines.length;
+      lines.push(...md.split("\n"));
+      return 1;
+    });
+    await this.plugin.openLine(file, targetLine);
+    new OB.Notice(T("已写入今日日记末尾", "Appended review card to today's note"));
+  }
+
+  async _delegateToAgent(data) {
+    const promptText = formatReviewAiPrompt(data, this.plugin.settings);
+    const deck = this.plugin.agentDeck();
+    if (!deck || typeof deck.delegateDrop !== "function") {
+      await navigator.clipboard.writeText(promptText);
+      new OB.Notice(T("未检测到 Agent Deck 委派接口，已复制复盘提示词到剪贴板", "Agent Deck delegation unavailable; copied review prompt to clipboard"));
+      return;
+    }
+    const file = await this._ensureTodayNote();
+    const titleLine = `- TODO 📋 ${T(`螺旋复盘诊断（${data.label}）`, `Spiral review checkup (${data.label})`)}`;
+    let taskLine = 0;
+    await this.plugin.editFile(file, (lines) => {
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      if (lines.length) lines.push("");
+      taskLine = lines.length;
+      lines.push(titleLine);
+      for (const pl of promptText.split("\n")) {
+        lines.push(pl.trim() ? `\t- ${pl.trim()}` : "\t");
+      }
+      return 1;
+    });
+    await this.plugin.openLine(file, taskLine);
+    await deck.delegateDrop(deck.defaultTarget(), { path: file.path, line: taskLine, lineText: titleLine }, null, { newSession: true });
+  }
+
+  async render({ keepScroll = false } = {}) {
+    const seq = (this._renderSeq = (this._renderSeq || 0) + 1);
+    const root = this.contentEl;
+    const prevScroll = keepScroll ? root.scrollTop : 0;
+    const data = await this.plugin.computePeriodReview(this.mode, this.offset);
+    if (seq !== this._renderSeq) return;
+    const cfg = this.plugin.settings;
+    root.empty();
+    root.addClass("naut-rev-root");
+
+    // 顶部栏：模式切换 + 周期翻页 + 动作按钮
+    const head = root.createDiv({ cls: "naut-rev-head" });
+    head.createDiv({ cls: "naut-rev-title", text: T("📏 螺旋复盘", "📏 Nautilus Review") });
+    const seg = head.createDiv({ cls: "naut-rev-seg" });
+    for (const [m, name] of [["day", T("日", "Day")], ["week", T("周", "Week")], ["month", T("月", "Month")]]) {
+      const b = seg.createEl("button", { cls: this.mode === m ? "is-on" : "", text: name });
+      b.onclick = () => { this.mode = m; this.offset = 0; this.render(); };
+    }
+    const nav = head.createDiv({ cls: "naut-rev-nav" });
+    const prevBtn = nav.createEl("button", { text: "‹" });
+    const curBtn = nav.createEl("button", { text: this.mode === "day" ? T("今天", "Today") : this.mode === "month" ? T("本月", "This mo") : T("本周", "This wk") });
+    const nextBtn = nav.createEl("button", { text: "›" });
+    curBtn.disabled = this.offset === 0;
+    nextBtn.disabled = this.offset >= 0;
+    prevBtn.onclick = () => { this.offset -= 1; this.render(); };
+    curBtn.onclick = () => { this.offset = 0; this.render(); };
+    nextBtn.onclick = () => { if (this.offset < 0) { this.offset += 1; this.render(); } };
+    head.createDiv({ cls: "naut-rev-range", text: data.label });
+
+    const actions = head.createDiv({ cls: "naut-rev-actions" });
+    const refreshBtn = actions.createEl("button", { text: T("↻ 刷新", "↻ Refresh") });
+    refreshBtn.onclick = () => this.render({ keepScroll: true });
+    const writeBtn = actions.createEl("button", { text: T("📝 写入今日日记", "📝 Append to journal") });
+    writeBtn.onclick = () => this._writeToTodayJournal(data);
+    const copyBtn = actions.createEl("button", { text: T("📋 复制 Markdown", "📋 Copy Markdown") });
+    copyBtn.onclick = async () => { await navigator.clipboard.writeText(formatReviewMarkdown(data, cfg)); new OB.Notice(T("已复制复盘卡片", "Copied Markdown review")); };
+    const aiBtn = actions.createEl("button", { cls: "mod-cta", text: T("🤖 交给主力 Agent 复盘", "🤖 Ask primary agent to review") });
+    aiBtn.onclick = () => this._delegateToAgent(data);
+
+    const e = data.estimate, tb = data.timeBudget, f = data.fulfillment, ha = data.humanAi, fr = data.rhythm.fragmentation;
+
+    // 1. KPI 四联卡
+    const kpis = root.createDiv({ cls: "naut-rev-kpis" });
+    const kpiCard = (title, mainVal, subText, tone = "") => {
+      const c = kpis.createDiv({ cls: `naut-rev-kpi ${tone}` });
+      c.createDiv({ cls: "naut-rev-kpi-k", text: title });
+      c.createDiv({ cls: "naut-rev-kpi-v", text: mainVal });
+      c.createDiv({ cls: "naut-rev-kpi-s", text: subText });
+    };
+    kpiCard(
+      T("预估准确度", "Estimate accuracy"),
+      e.n ? `×${e.ratio.toFixed(2)}` : "—",
+      e.n ? T(`${e.n} 件 · 命中 ${e.close} 件（±20%）· 中位 ×${e.median.toFixed(1)}`, `${e.n} tasks · ${e.close} close · med ×${e.median.toFixed(1)}`) : T("暂无已对比任务", "No compared tasks yet"),
+      e.n && e.ratio > 1.2 ? "is-warn" : e.n && e.ratio <= 1.1 ? "is-ok" : ""
+    );
+    kpiCard(
+      T("主线与计划兑现", "Mainline & fulfillment"),
+      f.mainTotal ? `${Math.round(f.mainRate * 100)}%` : f.plannedTotal ? `${Math.round(f.plannedRate * 100)}%` : "—",
+      T(`主线 ${f.mainDone}/${f.mainTotal} · 计划内 ${f.plannedDone}/${f.plannedTotal} · 卡壳 ≥3天 ${f.stalledCount} 件`, `Main ${f.mainDone}/${f.mainTotal} · planned ${f.plannedDone}/${f.plannedTotal} · stalled ≥3d: ${f.stalledCount}`),
+      f.stalledCount > 0 ? "is-warn" : ""
+    );
+    kpiCard(
+      T("人机拆分与并行杠杆", "Human vs AI leverage"),
+      ha.aiWallTotal ? `×${ha.leverageRatio.toFixed(1)}` : dur(ha.humanMin),
+      T(`人工 ${dur(ha.humanMin)} · 任务 AI ${dur(ha.aiTaskMin)} · 全局协作 ${dur(ha.aiWallTotal)} / ${fmtTok(ha.aiTokensTotal)} tok`, `Human ${dur(ha.humanMin)} · task AI ${dur(ha.aiTaskMin)} · agents ${dur(ha.aiWallTotal)} / ${fmtTok(ha.aiTokensTotal)} tok`)
+    );
+    kpiCard(
+      T("专注完整度", "Focus integrity"),
+      fr.avgSegMin ? dur(fr.avgSegMin) : "—",
+      T(`单段均长 · 番茄 ${fr.pomoDoneCount} 成/${fr.pomoInterruptedCount} 断 · 事件 ${fr.avgEventsPerDay.toFixed(1)}/天`, `Avg block · pomo ${fr.pomoDoneCount}/${fr.pomoInterruptedCount} · events ${fr.avgEventsPerDay.toFixed(1)}/d`),
+      fr.pomoInterruptRate > 0.35 ? "is-warn" : ""
+    );
+
+    const grid = root.createDiv({ cls: "naut-rev-grid" });
+    const card = (title, span2 = false) => {
+      const c = grid.createDiv({ cls: "naut-rev-card" + (span2 ? " is-wide" : "") });
+      c.createDiv({ cls: "naut-rev-card-h", text: title });
+      return c;
+    };
+
+    // 2. 时间账单堆叠图 + 趋势折线
+    const budgetParts = [
+      { key: "mainline", label: T("主线", "Mainline"), color: "var(--naut-main)" },
+      { key: "tasks", label: T("普通任务", "Tasks"), color: "var(--naut-task)" },
+      { key: "events", label: T("固定事件", "Events"), color: "var(--naut-event)" },
+      { key: "aiWall", label: T("AI 协作", "Agents"), color: "var(--naut-ai-claude)" },
+      { key: "reviewCards", label: T("复习", "Review"), color: "var(--naut-review)" },
+      { key: "games", label: T("游戏", "Gaming"), color: "var(--naut-game)" },
+      { key: "unrecorded", label: T("未记录", "Unrecorded"), color: "var(--background-modifier-border)" },
+    ];
+    const cBudget = card(T("⏱ 时间账单分布（小时）", "⏱ Time budget breakdown"));
+    const tbSum = tb.spanTotal || 1;
+    const svgBar = svgEl("svg", { viewBox: "0 0 600 28", class: "naut-rev-svg-bar" }, cBudget);
+    let bx = 0;
+    for (const bp of budgetParts) {
+      const val = tb[bp.key] || 0;
+      if (val <= 0) continue;
+      const w = Math.max(2, (val / tbSum) * 600);
+      const r = svgEl("rect", { x: bx.toFixed(1), y: 2, width: w.toFixed(1), height: 22, rx: 3, fill: bp.color, opacity: bp.key === "unrecorded" ? "0.55" : "0.9" }, svgBar);
+      svgEl("title", {}, r).textContent = `${bp.label}: ${dur(val)} (${Math.round((val / tbSum) * 100)}%)`;
+      bx += w;
+    }
+    const leg = cBudget.createDiv({ cls: "naut-rev-legend" });
+    for (const bp of budgetParts) {
+      const val = tb[bp.key] || 0;
+      const item = leg.createSpan({ cls: "naut-rev-leg-item" });
+      item.createSpan({ cls: "naut-rev-dot", attr: { style: `background:${bp.color}` } });
+      item.appendText(`${bp.label} ${dur(val)}`);
+    }
+    if (tb.daily.length > 1) {
+      const maxD = Math.max(60, ...tb.daily.map((d) => d.mainline + d.tasks + d.events + d.aiWall + d.reviewCards + d.games + d.unrecorded));
+      const dCols = cBudget.createDiv({ cls: "naut-rev-daily" });
+      for (const d of tb.daily) {
+        const col = dCols.createDiv({ cls: "naut-rev-dcol", attr: { title: `${d.dateStr}\n` + budgetParts.map((bp) => `${bp.label} ${dur(d[bp.key] || 0)}`).join(" · ") } });
+        const stack = col.createDiv({ cls: "naut-rev-dstack" });
+        for (const bp of budgetParts) {
+          const val = d[bp.key] || 0;
+          if (val <= 0) continue;
+          stack.createDiv({ cls: "naut-rev-dseg", attr: { style: `height:${((val / maxD) * 100).toFixed(1)}%;background:${bp.color};opacity:${bp.key === "unrecorded" ? 0.45 : 0.9}` } });
+        }
+        col.createDiv({ cls: "naut-rev-dlbl", text: d.dateStr.slice(-2) });
+      }
+    }
+
+    // 3. 近 8 周准确度趋势折线
+    const cTrend = card(T("📈 近 8 周预估倍率趋势（1.0 = 完美命中）", "📈 8-week estimate ratio trend (1.0 = exact)"));
+    if (data.weeklyTrend.length < 2) {
+      cTrend.createDiv({ cls: "naut-muted", text: T("至少需要 2 周已完成并计时的样本，才会画出趋势折线", "Needs at least 2 weeks of completed timed samples") });
+    } else {
+      const tw = 420, th = 120, padX = 28, padY = 16;
+      const svgT = svgEl("svg", { viewBox: `0 0 ${tw} ${th}`, class: "naut-rev-svg-trend" }, cTrend);
+      const yFor = (ratio) => {
+        const clamped = Math.max(0.3, Math.min(2.4, ratio));
+        return padY + (1 - (clamped - 0.3) / (2.4 - 0.3)) * (th - padY * 2 - 14);
+      };
+      const y1 = yFor(1);
+      svgEl("line", { x1: padX, y1, x2: tw - 12, y2: y1, stroke: "var(--text-faint)", "stroke-dasharray": "4 3", "stroke-width": 1 }, svgT);
+      svgEl("text", { x: 4, y: y1 + 3, fill: "var(--text-faint)", "font-size": 9 }, svgT).textContent = "1.0×";
+      const stepX = (tw - padX - 18) / Math.max(1, data.weeklyTrend.length - 1);
+      const pts = data.weeklyTrend.map((w, idx) => `${(padX + idx * stepX).toFixed(1)},${yFor(w.ratio).toFixed(1)}`).join(" ");
+      svgEl("polyline", { points: pts, fill: "none", stroke: "var(--naut-main)", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" }, svgT);
+      data.weeklyTrend.forEach((w, idx) => {
+        const cx = padX + idx * stepX, cy = yFor(w.ratio);
+        const dot = svgEl("circle", { cx, cy, r: 4, fill: "var(--background-primary)", stroke: w.ratio > 1.2 ? "var(--naut-main)" : "var(--naut-task)", "stroke-width": 2 }, svgT);
+        svgEl("title", {}, dot).textContent = `${w.weekLabel}: ×${w.ratio.toFixed(2)} (${w.n} 件 · ${dur(w.sumE)}→${dur(w.sumA)})`;
+        svgEl("text", { x: cx, y: th - 2, "text-anchor": "middle", fill: "var(--text-faint)", "font-size": 9 }, svgT).textContent = w.weekLabel.slice(-3);
+      });
+    }
+
+    // 4. 24 小时高效热力带 & 碎片化诊断
+    const cRhythm = card(T("🕰 24 小时节律与碎片化诊断", "🕰 24h rhythm & fragmentation"), true);
+    const maxWorkH = Math.max(15, ...data.rhythm.hourly.map((h) => h.workMin));
+    const maxGapH = Math.max(15, ...data.rhythm.hourly.map((h) => h.unrecordedMin));
+    const strip = cRhythm.createDiv({ cls: "naut-rev-heat" });
+    for (const h of data.rhythm.hourly) {
+      const cell = strip.createDiv({ cls: "naut-rev-hcell", attr: { title: `${pad(h.hour)}:00 · ${T("推进", "Focus")} ${dur(h.workMin)}（${T("主线", "Main")} ${dur(h.mainMin)}） · AI ${dur(h.aiMin)} · ${T("未记录", "Gap")} ${dur(h.unrecordedMin)}` } });
+      const topFill = cell.createDiv({ cls: "naut-rev-hwork" });
+      if (h.workMin > 0) topFill.style.opacity = String((0.18 + 0.82 * (h.workMin / maxWorkH)).toFixed(2));
+      else topFill.style.opacity = "0.04";
+      const gapFill = cell.createDiv({ cls: "naut-rev-hgap" });
+      if (h.unrecordedMin > 0) gapFill.style.opacity = String((0.16 + 0.7 * (h.unrecordedMin / maxGapH)).toFixed(2));
+      else gapFill.style.opacity = "0.04";
+      cell.createDiv({ cls: "naut-rev-hlbl", text: pad(h.hour) });
+    }
+    const peakStr = data.rhythm.peakHours.map((h) => `${pad(h.hour)}:00 (${dur(h.workMin)})`).join(" · ") || "—";
+    const gapStr = data.rhythm.gapHours.map((h) => `${pad(h.hour)}:00 (${dur(h.unrecordedMin)})`).join(" · ") || "—";
+    cRhythm.createDiv({ cls: "naut-rev-meta-row", text: T(`🔥 高效时段：${peakStr}    🕳 未记录集中：${gapStr}`, `🔥 Peak hours: ${peakStr}    🕳 Unrecorded peaks: ${gapStr}`) });
+    cRhythm.createDiv({ cls: "naut-rev-meta-row", text: T(`平均每段专注 ${dur(fr.avgSegMin)} · 平均每任务切换 ${fr.avgSegsPerTask.toFixed(1)} 段 · 番茄完成 ${fr.pomoDoneCount} / 中断 ${fr.pomoInterruptedCount}（${Math.round(fr.pomoInterruptRate * 100)}%） · 日均事件 ${fr.avgEventsPerDay.toFixed(1)} 个 · 空闲整块均长 ${dur(fr.avgFreeBlockMin)}`, `Avg block ${dur(fr.avgSegMin)} · ${fr.avgSegsPerTask.toFixed(1)} segs/task · Pomodoro ${fr.pomoDoneCount} done / ${fr.pomoInterruptedCount} int (${Math.round(fr.pomoInterruptRate * 100)}%) · ${fr.avgEventsPerDay.toFixed(1)} events/d · Avg free block ${dur(fr.avgFreeBlockMin)}`) });
+
+    // 5. 人机拆分 & 分类校准表
+    const cCat = card(T("🤖 人机拆分与分类校准（#标签 / [[双链]]）", "🤖 Human/AI split & category calibration"), true);
+    if (!e.byCat.length) {
+      cCat.createDiv({ cls: "naut-muted", text: T("在任务行附上 #标签 或 [[项目]] 并完成计时后，这里会自动统计每类任务的预估倍率与人机用时", "Add #tags or [[links]] to timed tasks to unlock per-category calibration & Human/AI breakdown") });
+    } else {
+      const tbl = cCat.createEl("table", { cls: "naut-rev-table" });
+      const thr = tbl.createEl("thead").createEl("tr");
+      for (const h of [T("分类", "Category"), T("样本", "N"), T("人工", "Human"), T("AI", "AI"), "Token", T("实际/预估", "Ratio"), T("建议校准", "Calibration")]) thr.createEl("th", { text: h });
+      const tbody = tbl.createEl("tbody");
+      for (const c of e.byCat.slice(0, 12)) {
+        const tr = tbody.createEl("tr");
+        tr.createEl("td", { text: c.cat });
+        tr.createEl("td", { text: String(c.n) });
+        tr.createEl("td", { text: dur(c.humanMin) });
+        tr.createEl("td", { text: dur(c.aiMin) });
+        tr.createEl("td", { text: c.aiTok ? fmtTok(c.aiTok) : "—" });
+        tr.createEl("td", { text: `×${c.ratio.toFixed(2)}`, cls: c.ratio > 1.2 ? "is-over" : c.ratio < 0.8 ? "is-under" : "" });
+        const calHint = c.n >= 2 && Math.abs(c.ratio - 1) >= 0.15 ? T(`下次写 1h 建议按 ${dur(60 * c.ratio)} 留余量`, `1h est → budget ~${dur(60 * c.ratio)}`) : T("保持当前估法", "Well calibrated");
+        tr.createEl("td", { text: calHint, cls: "naut-muted" });
+      }
+    }
+
+    // 6. 双侧偏差榜单 + 一键归因标签
+    const cDev = card(T("⚖️ 双侧偏差榜单与原因归因", "⚖️ Over & under-estimates + reason tagging"));
+    const renderDevList = (title, itemsList) => {
+      cDev.createDiv({ cls: "naut-rev-subh", text: title });
+      if (!itemsList.length) { cDev.createDiv({ cls: "naut-muted", text: T("暂无条目", "None") }); return; }
+      for (const r of itemsList) {
+        const box = cDev.createDiv({ cls: "naut-rev-dev" });
+        const top = box.createDiv({ cls: "naut-rev-dev-top" });
+        top.createSpan({ cls: `naut-rev-badge ${r.variance > 0 ? "is-over" : "is-under"}`, text: `×${r.ratio.toFixed(1)}` });
+        const link = top.createSpan({ cls: "naut-rev-dev-lbl", text: r.label });
+        link.onclick = () => { const f = this.app.vault.getAbstractFileByPath(r.path); if (f instanceof TFile) this.plugin.openLine(f, r.line); };
+        top.createSpan({ cls: "naut-muted", text: `${r.day} · ${dur(r.est)}→${dur(r.actual)} (${signed(r.variance)})` });
+        const pills = box.createDiv({ cls: "naut-rev-pills" });
+        for (const rs of REVIEW_REASONS) {
+          const active = cfg.reviewReasons?.[r.reasonKey] === rs.id;
+          const p = pills.createEl("button", { cls: "naut-rev-pill" + (active ? " is-on" : ""), text: rs.label });
+          p.onclick = () => {
+            cfg.reviewReasons ||= {};
+            if (active) delete cfg.reviewReasons[r.reasonKey];
+            else cfg.reviewReasons[r.reasonKey] = rs.id;
+            this.plugin.saveSoon();
+            this.plugin._review = null;
+            this.render({ keepScroll: true });
+          };
+        }
+      }
+    };
+    renderDevList(T("估短最多的 5 件", "Top 5 underestimated"), e.worstOver);
+    renderDevList(T("估长最多的 5 件", "Top 5 overestimated"), e.worstUnder);
+    if (data.reasons.items.length) {
+      cDev.createDiv({ cls: "naut-rev-meta-row", text: T("原因统计：", "Reasons: ") + data.reasons.items.map((x) => `${x.label} ${x.count} 次（净偏差 ${signed(x.totalVariance)}）`).join(" · ") });
+    }
+
+    // 7. 跨天顺延 / 卡壳榜单
+    const cRoll = card(T("🔁 跨天顺延与卡壳清单", "🔁 Cross-day rollovers & stalled tasks"));
+    if (!f.rollovers.length) {
+      cRoll.createDiv({ cls: "naut-muted", text: T("本周期未发现跨天反复顺延的任务 👍", "No recurring rollover tasks found in this period 👍") });
+    } else {
+      for (const r of f.rollovers.slice(0, 10)) {
+        const row = cRoll.createDiv({ cls: "naut-rev-roll" + (!r.done && r.daysSeen >= 3 ? " is-stalled" : "") });
+        row.createSpan({ cls: "naut-rev-badge", text: T(`${r.daysSeen}天`, `${r.daysSeen}d`) });
+        const lbl = row.createSpan({ cls: "naut-rev-dev-lbl", text: r.label });
+        lbl.onclick = () => { const fl = this.app.vault.getAbstractFileByPath(r.path); if (fl instanceof TFile) this.plugin.openLine(fl, r.line); };
+        row.createSpan({ cls: "naut-muted", text: (r.done ? T("✓ 最终完成", "✓ Done") : T("仍未收口", "Still open")) + ` · ${r.latestDay}` });
+      }
+    }
+
+    if (keepScroll) root.scrollTop = prevScroll;
+  }
 }
 
 // ---------------- 界面图标：emoji 显示成 Lucide ----------------
@@ -4638,6 +6096,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerInterval(window.setInterval(() => this.pollGames(), 60 * 1000));
 
     this.registerView(VIEW_TYPE, (leaf) => new SpiralView(leaf, this));
+    this.registerView(REVIEW_VIEW_TYPE, (leaf) => new SpiralReviewView(leaf, this));
     this.addRibbonIcon("orbit", T("螺旋日程", "Nautilus Spiral"), () => this.activate());
     // 命令和快捷面板共用动作表；不预设全局快捷键，需要时可在 Obsidian 设置中绑定
     let nm = (s) => s;   // 命令名
@@ -4687,7 +6146,13 @@ module.exports = class NautilusSpiral extends Plugin {
     this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves((l) => { if (l.view && l.view.file) this.kwBaseline(l.view.file); }));
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
     this.registerEvent(this.app.workspace.on("agent-deck:sessions-changed", () => this.refresh()));
-    this.registerInterval(window.setInterval(() => this.refresh(), 60 * 1000));
+    const scheduleMinuteRefresh = () => {
+      this._minuteTimer = window.setTimeout(() => {
+        this.refresh();
+        scheduleMinuteRefresh();
+      }, msToNextMinute());
+    };
+    scheduleMinuteRefresh();
     this.registerInterval(window.setInterval(() => this.tickPomodoro(), 5 * 1000));
 
     this.app.workspace.onLayoutReady(async () => {
@@ -5045,18 +6510,24 @@ module.exports = class NautilusSpiral extends Plugin {
     new AiSessionsModal(this, T("正在做的事 · Agent 会话", "What you're doing · agent sessions"), groups).open();
   }
 
-  // ⌃⌥R 打开螺旋，展开并滚到「📏 预估 vs 实际」
-  async showReview() {
-    await this.activate();
-    this.settings.reviewFolded = false;
-    this.saveSoon();
-    const v = this.views()[0];
-    if (!v) return;
-    v.offset = 0;
-    await v.render();
-    const head = v.containerEl.querySelector(".naut-review-head");
-    if (head) head.scrollIntoView({ block: "start", behavior: "smooth" });
-    else new OB.Notice(T("还没有够条件的任务：要做完、写了预估、也记到了实际用时", "No task qualifies yet: it has to be done, have an estimate, and have actual time recorded"));
+  async openReviewView({ mode = "week", offset = 0 } = {}) {
+    if (!this.app?.workspace) return null;
+    const leaves = this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE);
+    let leaf = leaves[0] || this.app.workspace.getLeaf("tab");
+    if (!leaf) return null;
+    await leaf.setViewState({ type: REVIEW_VIEW_TYPE, active: true });
+    if (leaf.view instanceof SpiralReviewView) {
+      leaf.view.mode = mode;
+      leaf.view.offset = offset;
+      await leaf.view.render();
+    }
+    this.app.workspace.revealLeaf(leaf);
+    return leaf;
+  }
+
+  // ⌃⌥R 打开独立日/周/月复盘视图
+  async showReview(mode = "week", offset = 0) {
+    return this.openReviewView({ mode, offset });
   }
 
   // ---- 预估 vs 实际 ----
@@ -5079,16 +6550,16 @@ module.exports = class NautilusSpiral extends Plugin {
   async computeReview(days) {
     const cfg = this.settings;
     const rows = [];
-    const fileCache = (this._revFileCache ||= new Map());
+    const maxCache = (this._revFileCache ||= new Map());
     const cacheSig = `${cfg.format}|${cfg.dayStart}|${cfg.dayEnd}|${cfg.defaultDur}`;
-    if (this._revFileSig !== cacheSig) { fileCache.clear(); this._revFileSig = cacheSig; }
+    if (this._revFileSig !== cacheSig) { maxCache.clear(); this._revFileSig = cacheSig; }
     for (let i = 0; i < days; i++) {
       const d = this.today().subtract(i, "days");
       const f = this.app.vault.getAbstractFileByPath(this.journalPath(d));
       if (!(f instanceof TFile)) continue;
       const key = d.format(cfg.format);
       const workSnap = JSON.stringify((cfg.workLog || {})[key] || null);
-      const prev = fileCache.get(f.path);
+      const prev = maxCache.get(f.path);
       if (prev && prev.mtime === f.stat.mtime && prev.workSnap === workSnap) { rows.push(...prev.rows); continue; }
       const text = await this.app.vault.cachedRead(f);
       const lines = text.split("\n");
@@ -5096,32 +6567,121 @@ module.exports = class NautilusSpiral extends Plugin {
       applyWork(items, cfg, key, 0, -1, {});
       const fileRows = [];
       for (const t of items) {
+        if (t.kind === "event") {
+          if (!t.clock && !t._hasChildAiWork) continue;
+          const est = Math.max(1, Math.round((t.end || 0) - (t.start || 0)));
+          const actual = Math.round((useClockTotal(t) ? t.clock.total : (t.spentToday || unionMin(t.worked || []))) + (t.spentBefore || 0));
+          if (actual < 1) continue;
+          const cats = extractCats(lines[t.line] || "");
+          fileRows.push({ day: key, path: f.path, line: t.line, label: t.label, est, actual, cats });
+          continue;
+        }
         if (t.kind !== "task" || t.state !== "done" || !(t.est > 0)) continue;
         const clockTot = useClockTotal(t);
         const segs = [...(t.worked || []), ...(t.actual ? [t.actual] : [])];
         if (!segs.length && !clockTot) continue;
-        const actual = Math.round((clockTot ? t.clock.total : unionMin(segs)) + (t.spentBefore || 0));
+        const actual = Math.round((clockTot ? t.clock.total : (t._hasChildAiWork ? Math.max(t.spentToday || 0, unionMin(segs)) : unionMin(segs))) + (t.spentBefore || 0));
         if (actual < 1) continue;
-        const raw = lines[t.line] || "";
-        // 分类：行里的 #标签 和 [[链接]]（日记日期的链接不算）
-        const cats = [...raw.matchAll(/#([^\s#\[\],，。;；:：]+)/gu)].map((m) => "#" + m[1])
-          .concat([...raw.matchAll(/\[\[([^\]|#]+)/g)].map((m) => m[1].trim()).filter((x) => !/^\d{4}[-_]\d{2}[-_]\d{2}$/.test(x)));
-        fileRows.push({ day: key, path: f.path, line: t.line, label: t.label, est: t.est, actual, cats: [...new Set(cats)] });
+        const cats = extractCats(lines[t.line] || "");
+        fileRows.push({ day: key, path: f.path, line: t.line, label: t.label, est: t.est, actual, cats });
       }
-      fileCache.set(f.path, { mtime: f.stat.mtime, workSnap, rows: fileRows });
+      maxCache.set(f.path, { mtime: f.stat.mtime, workSnap, rows: fileRows });
       rows.push(...fileRows);
       if (i % 5 === 4) await new Promise((r) => setTimeout(r, 0));   // 别把界面卡住
     }
-    if (!rows.length) return { n: 0, days };
+    if (!rows.length) return { n: 0, days, catMap: {}, worstUnder: [], worst: [], cats: [] };
     const sumE = rows.reduce((n, r) => n + r.est, 0), sumA = rows.reduce((n, r) => n + r.actual, 0);
     const ratios = rows.map((r) => r.actual / r.est).sort((a, b) => a - b);
     const byCat = new Map();
     for (const r of rows) for (const c of r.cats) { const v = byCat.get(c) || { n: 0, e: 0, a: 0 }; v.n++; v.e += r.est; v.a += r.actual; byCat.set(c, v); }
+    const catMap = {};
+    for (const [cat, v] of byCat) if (v.e > 0) catMap[cat] = { cat, ...v, ratio: v.a / v.e };
     const cats = [...byCat].filter(([, v]) => v.n >= 2).map(([cat, v]) => ({ cat, ...v, ratio: v.a / v.e }))
       .sort((x, y) => Math.abs(Math.log(y.ratio)) - Math.abs(Math.log(x.ratio))).slice(0, 5);
     const worst = rows.filter((r) => r.actual > r.est * 1.2).sort((x, y) => (y.actual - y.est) - (x.actual - x.est)).slice(0, 3);
+    const worstUnder = rows.filter((r) => r.actual < r.est * 0.8).sort((x, y) => (x.actual - x.est) - (y.actual - y.est)).slice(0, 3);
     return { n: rows.length, days, sumE, sumA, ratio: sumA / sumE, median: ratios[Math.floor(ratios.length / 2)],
-      over: rows.filter((r) => r.actual > r.est * 1.2).length, under: rows.filter((r) => r.actual < r.est * 0.8).length, cats, worst };
+      over: rows.filter((r) => r.actual > r.est * 1.2).length, under: rows.filter((r) => r.actual < r.est * 0.8).length, cats, catMap, worst, worstUnder };
+  }
+
+  async computePeriodReview(mode = "week", offset = 0) {
+    const cfg = this.settings;
+    const today = this.today();
+    let start, end, label;
+    if (mode === "day") {
+      start = today.clone().add(offset, "days").startOf("day");
+      end = start.clone();
+      label = start.format(T("YYYY年M月D日 ddd", "ddd, MMM D, YYYY"));
+    } else if (mode === "month") {
+      const m = today.clone().add(offset, "months");
+      start = m.clone().startOf("month");
+      end = m.clone().endOf("month");
+      label = m.format(T("YYYY年M月", "MMMM YYYY"));
+    } else {
+      const w = today.clone().add(offset, "weeks");
+      start = w.clone().startOf("isoWeek");
+      end = w.clone().endOf("isoWeek");
+      label = `${start.format("M/D")}–${end.format("M/D")} (${w.isoWeekYear()}-W${String(w.isoWeek()).padStart(2, "0")})`;
+    }
+    if (end.isAfter(today, "day")) end = today.clone();
+    const aiStore = cfg.showAi !== false ? await this.aiUsage({ skipScan: true }) : null;
+    const gLog = cfg.trackGames !== false ? await this.gameLog() : null;
+    const nowM = moment();
+    const realNow = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
+    const snapshots = [];
+    const autoKeysByDay = {};
+    for (let d = start.clone(); !d.isAfter(end, "day"); d.add(1, "days")) {
+      const dayKey = d.format(cfg.format);
+      const path = this.journalPath(d);
+      const f = this.app.vault.getAbstractFileByPath(path);
+      const isToday = d.isSame(today, "day");
+      const content = f instanceof TFile ? (isToday ? await this.readLiveContent(f) : await this.app.vault.cachedRead(f)) : "";
+      const calSnap = f instanceof TFile ? (this.cal?.cache?.get?.(d.format("YYYY-MM-DD")) || null) : null;
+      autoKeysByDay[dayKey] = this.autoKeys(dayKey);
+      snapshots.push({
+        dayKey,
+        dateStr: d.format("YYYY-MM-DD"),
+        path: f instanceof TFile ? f.path : path,
+        content,
+        isToday,
+        now: isToday ? realNow : null,
+        bounds: (cfg.dayBounds || {})[dayKey] || {},
+        workLog: (cfg.workLog || {})[dayKey] || {},
+        mainLog: (cfg.mainLog || {})[dayKey] || null,
+        aiDay: aiPick(aiStore?.days?.[dayKey], cfg),
+        gameSegs: (gLog?.days?.[dayKey] || []),
+        pomoDone: (cfg.pomodoroHistory || {})[dayKey] || [],
+        pomoInterrupted: (cfg.pomodoroInterrupted || {})[dayKey] || [],
+        calItems: calSnap?.items || [],
+      });
+    }
+    // 近 8 周准确度趋势（复用 56 天缓存）
+    const weeklyRows = [];
+    for (let i = 0; i < 56; i++) {
+      const d = today.clone().subtract(i, "days");
+      const f = this.app.vault.getAbstractFileByPath(this.journalPath(d));
+      if (!(f instanceof TFile)) continue;
+      const key = d.format(cfg.format);
+      const wkLabel = `${d.isoWeekYear()}-W${String(d.isoWeek()).padStart(2, "0")}`;
+      const cached = this._revFileCache?.get(f.path);
+      if (cached && cached.mtime === f.stat.mtime) {
+        for (const r of cached.rows) weeklyRows.push({ ...r, weekLabel: wkLabel });
+        continue;
+      }
+      const text = await this.app.vault.cachedRead(f);
+      const items = parseJournal(text, cfg);
+      applyWork(items, cfg, key, 0, -1, {});
+      for (const t of items) {
+        if (t.kind === "task" && t.state === "done" && t.est > 0) {
+          const clockTot = useClockTotal(t);
+          const segs = [...(t.worked || []), ...(t.actual ? [t.actual] : [])];
+          if (!segs.length && !clockTot) continue;
+          const actual = Math.round((clockTot ? t.clock.total : (t._hasChildAiWork ? Math.max(t.spentToday || 0, unionMin(segs)) : unionMin(segs))) + (t.spentBefore || 0));
+          if (actual >= 1) weeklyRows.push({ day: key, est: t.est, actual, weekLabel: wkLabel });
+        }
+      }
+    }
+    return buildPeriodReview(snapshots, cfg, { mode, label, reasons: cfg.reviewReasons || {}, autoKeysByDay, fullWorkLog: cfg.workLog || {}, weeklyRows });
   }
 
   // 密钥（Google 的刷新令牌、客户端密钥）：放进 Obsidian 的密钥存储，那里用的是系统钥匙串，不进 data.json、不跟着库同步。
@@ -5206,9 +6766,64 @@ module.exports = class NautilusSpiral extends Plugin {
     return c;
   }
 
+  async resolveJournalMirrors(content, sourcePath = "") {
+    const lines = String(content || "").split("\n");
+    const resolvedByLine = new Map();
+    let inCode = false;
+    const embeds = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*```/.test(lines[i])) { inCode = !inCode; continue; }
+      if (inCode) continue;
+      const m = parseMirrorEmbed(lines[i]);
+      if (m) embeds.push([i, lines[i], m]);
+    }
+    if (!embeds.length) return { content: String(content || ""), mirrorMap: new Map(), sig: "" };
+    const deck = this.agentDeck();
+    const textCache = new Map();
+    for (const [idx, raw, m] of embeds) {
+      let rec = null;
+      if (deck && typeof deck.resolveMirrorLine === "function") {
+        try { rec = await deck.resolveMirrorLine(raw, sourcePath); } catch { rec = null; }
+      }
+      if (!rec) {
+        const dest = this.app?.metadataCache?.getFirstLinkpathDest?.(m.target, sourcePath || "");
+        if (dest instanceof TFile || dest?.path) {
+          try {
+            let txt = textCache.get(dest.path);
+            if (txt === undefined) {
+              txt = typeof this.readLiveContent === "function" ? await this.readLiveContent(dest) : await this.app.vault.cachedRead(dest);
+              textCache.set(dest.path, txt);
+            }
+            const srcLines = String(txt || "").split("\n");
+            const idRe = new RegExp(`\\^${m.blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
+            let srcCode = false;
+            const found = srcLines.findIndex((l) => {
+              if (/^\s*```/.test(l)) { srcCode = !srcCode; return false; }
+              return !srcCode && idRe.test(l.trimEnd());
+            });
+            if (found >= 0) rec = { path: dest.path, line: found, blockId: m.blockId, rawLine: srcLines[found] };
+          } catch { /* unreadable mirror target */ }
+        }
+      }
+      if (rec) resolvedByLine.set(idx, rec);
+    }
+    if (!resolvedByLine.size) return { content: String(content || ""), mirrorMap: new Map(), sig: "" };
+    const applied = applyMirrorLines(content, resolvedByLine);
+    const sig = [...applied.mirrorMap.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([ln, mr]) => `${ln}:${mr.path}:${mr.line}:${fastHash(mr.rawLine || "")}`)
+      .join("|");
+    return { content: applied.content, mirrorMap: applied.mirrorMap, sig };
+  }
+
   openItem(file, item) {
     if (item.cal && item.cal.url) window.open(item.cal.url);   // Google 日历的事件：在浏览器里打开它
     else if (item.cal) require("child_process").execFile("/usr/bin/open", ["-b", "com.apple.iCal"], () => {});   // macOS 日历的事件：打开「日历」App
+    else if (item?.mirror?.path) {
+      const mf = this.app.vault.getAbstractFileByPath(item.mirror.path);
+      if (mf instanceof TFile) return this.openLine(mf, item.mirror.line);
+      return this.openLine(file, item.line);
+    }
     else this.openLine(file, item.line);
   }
 
@@ -5546,8 +7161,22 @@ module.exports = class NautilusSpiral extends Plugin {
     finally { this._aiCacheSaving = false; }
   }
 
-  // 人机协作汇总：先用存下的（手机上也能看），再在后台读 Claude Code 日志更新，至多一分钟一次
+  // 人机协作汇总：检测到 Agent Deck 时直接复用其 21+ Agent 唯一数据源并跳过螺旋自身扫盘；独立使用时回退内置 AiUsage。
+  deckAiStore() {
+    const deck = this.agentDeck();
+    if (!deck || typeof deck.spiralUsageSnapshot !== "function") return null;
+    const snap = deck.spiralUsageSnapshot(this.settings.format);
+    if (!snap || !snap.days) return null;
+    this._deckAgentCatalog = snap.agents || {};
+    const days = {};
+    for (const [k, d] of Object.entries(snap.days)) {
+      if (d) days[k] = { ...d, _fromDeck: true };
+    }
+    return { days, _fromDeck: true, agents: snap.agents || {}, enabledAgents: snap.enabledAgents || [] };
+  }
   async aiUsage({ skipScan = false } = {}) {
+    const deckStore = this.deckAiStore();
+    if (deckStore) return deckStore;
     if (!this.aiStore) {
       try { this.aiStore = JSON.parse(await this.app.vault.adapter.read(this.aiStorePath)); } catch (e) { this.aiStore = { days: {} }; }
       this._aiStoreVer = (this._aiStoreVer || 0) + 1;
@@ -5559,6 +7188,7 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   async scanAi() {
+    if (this.deckAiStore()) return;
     this._aiBusy = true;
     try {
       if (!this._ai || this.aiCalendar(this._ai.cfg) !== this.aiCalendar()) this._ai = new AiUsage({ ...this.settings });
@@ -6104,27 +7734,44 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 实际做的时段写在那一行下面的第一个子项里（⏱ 开头，解析日记时跳过这种行）：⏱ 00:45–00:58、04:02–05:10 · 共 1h21m
-  // 隔了不到 10 分钟的两段并成一段写，免得太碎；太多段只写最后 8 段
+  // 隔了不到 10 分钟的两段并成一段写，免得太碎；太多段只写最后 8 段。保留并跳过 Agent Deck 的 ⏱ 行（带 ad-clock 或 Agent 尾缀）避免相互覆盖。
   autoClock(text, key, segs) {
     let merged = unionSegs(segs || []);
     const hits = parseJournal(text, this.settings).filter((i) => i.kind === "task" && workKey(i.label) === key);
     const it = hits.find((i) => i.state === "open") || hits[0];
     if (!it || !merged.length) return text;
-    if (it.clock && !it.clock.partial && !it.clock.who && !/←\s*\S+\s*$/.test(it.label)) {
-      const extra = (it.clock.segs || []).filter(([ea, eb]) => merged.every(([a, b]) => eb <= a || ea >= b));
-      if (extra.length) merged = unionSegs([...merged, ...extra]);
-    }
     const lines = text.split("\n");
     const at = it.line;
+    const base = /^\s*/.exec(lines[at])[0].replace(/\t/g, "    ").length;
+    const isAgentClockLine = (raw) => {
+      if (!/^\s*[-*+]\s+⏱/.test(raw)) return false;
+      if (/<!--\s*ad-clock:[a-f0-9]+\s*-->/.test(raw)) return true;
+      const parsed = parseClock(raw.replace(/^\s*[-*+]\s+/, ""), this.settings);
+      return Boolean(parsed?.isAgent);
+    };
+    for (let i = at + 1; i < lines.length; i++) {
+      if (lines[i].trim() && /^\s*/.exec(lines[i])[0].replace(/\t/g, "    ").length <= base) break;
+      if (!/^\s*[-*+]\s+⏱/.test(lines[i]) || isAgentClockLine(lines[i])) continue;
+      const mc = parseClock(lines[i].replace(/^\s*[-*+]\s+/, ""), this.settings);
+      if (mc && !mc.partial && !/←\s*\S+\s*$/.test(it.label)) {
+        const extra = (mc.segs || []).filter(([ea, eb]) => merged.every(([a, b]) => eb <= a || ea >= b));
+        if (extra.length) merged = unionSegs([...merged, ...extra]);
+      }
+      break;
+    }
     const shown = [];
     for (const [a, b] of merged) { const last = shown[shown.length - 1]; if (last && a - last[1] <= 10) last[1] = Math.max(last[1], b); else shown.push([a, b]); }
     const total = Math.round(merged.reduce((n, [a, b]) => n + b - a, 0));
     const indent = /^\s*/.exec(lines[at])[0] + "\t";
     const line = T(`${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join("、")} · 共 ${durTag(total)}`, `${indent}- ⏱ ${shown.length > 8 ? "… " : ""}${shown.slice(-8).map(([a, b]) => `${clock(a)}–${clock(b)}`).join(", ")} · total ${durTag(total)}`);
-    const base = /^\s*/.exec(lines[at])[0].replace(/\t/g, "    ").length;
     for (let i = at + 1; i < lines.length; i++) {
       if (lines[i].trim() && /^\s*/.exec(lines[i])[0].replace(/\t/g, "    ").length <= base) break;
-      if (/^\s*[-*+]\s+⏱/.test(lines[i])) { if (lines[i] === line) return text; lines[i] = line; return lines.join("\n"); }
+      if (/^\s*[-*+]\s+⏱/.test(lines[i])) {
+        if (isAgentClockLine(lines[i])) continue;
+        if (lines[i] === line) return text;
+        lines[i] = line;
+        return lines.join("\n");
+      }
     }
     lines.splice(at + 1, 0, line);
     return lines.join("\n");
@@ -6261,7 +7908,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const work = (log[dayKey] ||= {});
       const openSeg = (k) => (work[k] || []).find((x) => x[1] == null);
       const hasClockKeys = new Set();
-      for (const i of items) if (i.kind === "task" && i.clock && !i.clock.who && !/←\s*\S+\s*$/.test(i.label)) hasClockKeys.add(workKey(i.label));
+      for (const i of items) if (i.kind === "task" && i.hasManualClock && !/←\s*\S+\s*$/.test(i.label)) hasClockKeys.add(workKey(i.label));
       const closed = new Set();   // 这一回收掉了哪几件的时段
       const forceClock = new Set();
       const stop = (k, at) => {
@@ -6895,6 +8542,9 @@ module.exports = class NautilusSpiral extends Plugin {
     if (completed) {
       const list = (this.settings.pomodoroHistory[a.dayKey] ||= []);
       list.push({ start: a.start, end: a.end, minutes: a.minutes, label: a.task?.label || a.label || "" });
+    } else if (elapsedMin >= 1) {
+      const ilist = ((this.settings.pomodoroInterrupted ||= {})[a.dayKey] ||= []);
+      ilist.push({ start: a.start, end: endMs, planned: a.minutes, elapsed: elapsedMin, label: a.task?.label || a.label || "" });
     }
     const willAsk = (completed || ask) && Boolean(a.task) && Boolean(this.app);
     if (willAsk) this._pomoModalTask = { dayKey: a.dayKey, key: a.task.key };
@@ -6973,14 +8623,21 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 按天记的几份记录：完成时间、计时、番茄钟历史留 45 天，主线完成率留 90 天
+  // 按天记的几份记录：完成时间、计时、番茄钟历史/中断留 45 天，主线完成率留 90 天，偏差原因留 180 天
   pruneLogs() {
     const cfg = this.settings;
-    for (const [store, days] of [[cfg.doneTimes, 45], [(cfg.workLog ||= {}), 45], [(cfg.pomodoroHistory ||= {}), 45], [(cfg.mainLog ||= {}), 90]]) {
+    for (const [store, days] of [[cfg.doneTimes, 45], [(cfg.workLog ||= {}), 45], [(cfg.pomodoroHistory ||= {}), 45], [(cfg.pomodoroInterrupted ||= {}), 45], [(cfg.mainLog ||= {}), 90]]) {
       const cutoff = moment().subtract(days, "days");
       for (const k of Object.keys(store)) {
         const d = moment(k, cfg.format, true);
         if (!d.isValid() || d.isBefore(cutoff) || !Object.keys(store[k]).length) delete store[k];
       }
+    }
+    const reasonCutoff = moment().subtract(180, "days");
+    for (const rk of Object.keys((cfg.reviewReasons ||= {}))) {
+      const dayPart = rk.split("|")[0] || "";
+      const d = moment(dayPart, [cfg.format, "YYYY-MM-DD", "YYYY_MM_DD"], true);
+      if (d.isValid() && d.isBefore(reasonCutoff, "day")) delete cfg.reviewReasons[rk];
     }
   }
 
@@ -7002,6 +8659,7 @@ module.exports = class NautilusSpiral extends Plugin {
     window.clearTimeout(this._widgetBootT);
     window.clearTimeout(this._nqTimer);
     window.clearTimeout(this._clockTimer);
+    window.clearTimeout(this._minuteTimer);
     document.querySelectorAll(".naut-dot-tip").forEach((el) => el.remove());
     if (this._ai) this.saveAiCacheSync(this._ai);
     for (const k in COLORS) document.body.style.removeProperty(`--naut-c-${k}`);
@@ -7071,6 +8729,26 @@ class SpiralSettings extends PluginSettingTab {
     new Setting(containerEl).setName(T("DOING 并行排", "Run DOING tasks in parallel")).setDesc(T("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接", "Several DOING tasks all start now and overlap, taking only as long as the longest one; turn off to place them back to back"))
       .addToggle((t) => t.setValue(s.parallelDoing !== false).onChange(async (v) => { s.parallelDoing = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     num(T("最短一段（分钟）", "Shortest chunk (minutes)"), T("任务被事件隔开时每段至少这么长；不够切成两段的任务整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满", "When events split a task, each piece is at least this long. A task too short to split is placed whole; if it doesn't fit, it moves to the next gap and smaller tasks after it move up. 0 = split and fill as before"), "minChunk", 0, 240);
+    new Setting(containerEl).setName(T("按日记事件顺序排程", "Respect journal event order")).setDesc(T("开启后，写在日记某条固定事件下方的未开始待办，不会排到该事件结束之前（默认关闭，适合把固定事件与待办分区写的习惯）", "When on, open to-dos written below a fixed journal event won't be scheduled before that event ends (off by default, safe when events and to-dos live in separate sections)"))
+      .addToggle((t) => t.setValue(!!s.respectEventOrder).onChange(async (v) => { s.respectEventOrder = v; this.plugin.pastDayCache?.clear(); await this.plugin.saveData(s); this.plugin.refresh(); }));
+    new Setting(containerEl).setName(T("螺旋外圈标签", "Outer spiral labels")).setDesc(T("用引导线在螺旋外圈标注各段名称，宽屏视图下无需悬停即可扫读（自动模式下容器宽度 ≥ 520px 时开启）", "Show callout labels around the spiral with leader lines (Auto enables when panel width >= 520px)"))
+      .addDropdown((d) => d
+        .addOption("auto", T("自动（宽屏开启）", "Auto (wide view)"))
+        .addOption("on", T("始终显示", "Always on"))
+        .addOption("off", T("关闭", "Off"))
+        .setValue(s.showSpiralLabels || "auto")
+        .onChange(async (v) => { s.showSpiralLabels = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
+    new Setting(containerEl).setName(T("外圈标签最大字符宽", "Outer label max width")).setDesc(T("外圈标签超出后截断（1 个汉字计 2 格），可在 14–28 之间调整", "Truncate outer callout labels beyond this display width (1 CJK char = 2 cols)"))
+      .addDropdown((d) => {
+        for (const n of [14, 16, 18, 20, 22, 24, 26, 28]) d.addOption(String(n), String(n));
+        d.setValue(String(s.spiralLabelMaxCols || 18)).onChange(async (v) => { s.spiralLabelMaxCols = Number(v) || 18; await this.plugin.saveData(s); this.plugin.refresh(); });
+      });
+    new Setting(containerEl).setName(T("快捷进度步进", "Progress quick-step")).setDesc(T("螺旋色块 Shift + 单击或右键「推进 / 回退进度」每次变化的百分比（Alt + Shift + 单击为回退）", "Percentage step for Shift+Click or menu advance/step-back on spiral segments (Alt+Shift+Click steps back)"))
+      .addDropdown((d) => d
+        .addOption("25", T("25%（四档）", "25% (4 steps)"))
+        .addOption("10", T("10%（十档）", "10% (10 steps)"))
+        .setValue(String(s.progressStep || 25))
+        .onChange(async (v) => { s.progressStep = Number(v) || 25; await this.plugin.saveData(s); this.plugin.refresh(); }));
 
     containerEl.createEl("h3", { text: T("macOS 日历", "macOS Calendar") });
     new Setting(containerEl).setName(T("读 macOS 日历", "Read macOS Calendar")).setDesc(T("把「日历」App 里的事件当固定事件排进螺旋（只读，不改日历）。第一次打开会在本机编译一个读日历的小助手（要有 Xcode 命令行工具），并弹出日历权限请求，选「允许」", "Place events from the Calendar app on the spiral as fixed events (read-only; your calendars are not changed). The first time, a small calendar helper is compiled on this Mac (needs the Xcode command line tools) and macOS asks for calendar access; choose Allow"))
@@ -7164,10 +8842,15 @@ class SpiralSettings extends PluginSettingTab {
       .addToggle((t) => t.setValue(s.openTodayOnStartup !== false).onChange(async (v) => { s.openTodayOnStartup = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName(T("启动时左侧栏显示螺旋日程", "Show Nautilus Spiral in the left sidebar on startup")).setDesc(T("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）", "Expands the left sidebar and switches to the Nautilus Spiral tab (other tabs like the file list stay; click their icons to switch)"))
       .addToggle((t) => t.setValue(s.revealOnStartup !== false).onChange(async (v) => { s.revealOnStartup = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName(T("显示人机协作", "Show agent collaboration")).setDesc(T("读下面开着的那几个 AI 工具在本机的会话日志，在容量条下面「🤖」那一行显示当天协作时长和 token（悬停看细账），螺旋内圈画出它们在干活的时段；汇总另存在插件目录的 ai-usage.json", "Reads the local session logs of the AI tools turned on below; the 🤖 line under the capacity bar shows the day's collaboration time and tokens (hover for details), and the inner rings of the spiral show when they were at work; totals are also saved to ai-usage.json in the plugin folder"))
+    new Setting(containerEl).setName(T("显示人机协作", "Show agent collaboration")).setDesc(T("在容量条下面「🤖」那一行显示当天协作时长和 token，螺旋内圈画出各 Agent 干活时段。检测到 Agent Deck 时自动复用其全部 21+ Agent 唯一数据源（螺旋自身不再重复扫盘写 ai-usage.json）", "Shows daily agent collaboration time and tokens under the capacity bar, and draws active segments on the inner rings. When Agent Deck is enabled, reuses its unified 21+ agent store automatically without duplicate scanning."))
       .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     containerEl.createEl("h3", { text: T("🤖 主力 Agent 和要追踪的 Agent", "🤖 Primary agent and tracked agents") });
-    containerEl.createEl("p", { cls: "setting-item-description", text: T("主力 Agent 全量追踪：读它全部的会话历史。其余开着的只追踪今天有动静的会话：今天的时长和 token 照常，以前的会话不翻。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。", "The primary agent is tracked in full: all of its session history is read. The others that are on are tracked only for sessions active today: today's time and tokens as usual, older sessions are not read. Turned-off agents are no longer read; their history already summed up is kept but hidden, and comes back when turned on again.") });
+    const usingDeckSource = Boolean(this.plugin.deckAiStore());
+    if (usingDeckSource) {
+      containerEl.createEl("p", { cls: "setting-item-description", text: T("当前由 Agent Deck 提供统一会话与 Token 统计（支持 21+ 客户端，螺旋自身的重复扫盘已自动暂停）；要调整启用哪些 Agent 或扫描规则，请前往「Agent Deck → 记录」设置。下列选项仅在未启用 Agent Deck 时作为独立回退使用。", "Agent Deck currently provides unified session & token tracking (supporting 21+ clients, with Nautilus Spiral's duplicate disk scan paused). Configure tracked agents in Agent Deck Settings; options below are used only as standalone fallback.") });
+    } else {
+      containerEl.createEl("p", { cls: "setting-item-description", text: T("主力 Agent 全量追踪：读它全部的会话历史。其余开着的只追踪今天有动静的会话：今天的时长和 token 照常，以前的会话不翻。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。", "The primary agent is tracked in full: all of its session history is read. The others that are on are tracked only for sessions active today: today's time and tokens as usual, older sessions are not read. Turned-off agents are no longer read; their history already summed up is kept but hidden, and comes back when turned on again.") });
+    }
     {
       const reset = () => { this.plugin._ai = null; this.plugin._aiAt = 0; this.plugin.refresh(); };   // 换了要读的范围：把最近的日志重读一遍
       new Setting(containerEl).setName(T("主力 Agent", "Primary agent")).setDesc(T("平时干活主要用哪一个。它总是开着", "The one you mainly work with. It's always on"))
@@ -7834,4 +9517,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, SpiralView };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };

@@ -28,7 +28,7 @@ const ctx = {
 };
 vm.runInNewContext(fs.readFileSync(source, 'utf8') + '\nmodule.exports.TestSessionsModal = AiSessionsModal; module.exports.testProjectAiDay = projectAiDay;', ctx, { filename: source });
 const Plugin = ctx.module.exports;
-const { DEFAULTS, parseJournal, mainOf, schedule, taskStatus, statusCls, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS } = Plugin.core;
+const { DEFAULTS, parseJournal, mainOf, markMain, applyWork, dayReview, schedule, taskStatus, statusCls, toKeyword, taskPriority, toPriority, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS } = Plugin.core;
 
 {
   const p = Object.create(Plugin.prototype);
@@ -296,6 +296,150 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
     [['继承完成主线', 'done'], ['保留完成子步', 'done'], ['保留进行子步', 'doing']]
   );
   console.log('PASS 母块/子块状态继承（含 schedule 去重与 mainOf 一致性）验证通过');
+
+  // 7. 🤖 AI 子块：不被非 DONE 母块覆盖、不把未写时长 TODO 母块变容器、母块标 DONE 时未完子块收口、showTimeRange=false 读 ⏱
+  const aiChildDoc = parseJournal([
+    '- DOING 正在做的日注 1h',
+    '  - DONE 🤖 14:00-14:20 历史调研',
+    '  - TOREVIEW 🤖 14:25-14:40 待验收改动',
+    '- PAUSED 暂停的日注 1h',
+    '  - DOING 🤖 15:00-15:15 跑回归测试',
+    '- CANCELLED 放弃的方案',
+    '  - DONE 🤖 13:00-13:20 保留调研记录',
+    '- DONE 收口的日注',
+    '  - DONE 🤖 11:00-11:15 已完子块',
+    '  - TOREVIEW 🤖 11:20-11:35 未完子块',
+    '- TODO 未写时长的日注',
+    '  - DOING 🤖 16:00-16:15 异步调研',
+    '- TODO 带子任务的人类容器',
+    '  - TODO 普通人类子任务 15m',
+  ].join('\n'), DEFAULTS);
+  const byL = Object.fromEntries(aiChildDoc.map((it) => [it.label, it]));
+  assert.equal(byL['🤖 历史调研'].state, 'done');
+  assert.equal(byL['🤖 历史调研'].inheritedFrom, undefined);
+  assert.equal(byL['🤖 待验收改动'].kw, 'TOREVIEW');
+  assert.equal(byL['🤖 待验收改动'].paused, true);
+  assert.equal(byL['🤖 待验收改动'].inheritedFrom, undefined);
+  assert.equal(byL['🤖 跑回归测试'].kw, 'DOING');
+  assert.equal(byL['🤖 跑回归测试'].doing, true);
+  assert.equal(byL['🤖 跑回归测试'].inheritedFrom, undefined);
+  assert.equal(byL['🤖 保留调研记录']?.state, 'done', 'CANCELLED 母块不得丢弃历史 DONE 🤖 子块');
+  assert.equal(byL['🤖 已完子块'].state, 'done');
+  assert.equal(byL['🤖 已完子块'].inheritedFrom, undefined);
+  assert.equal(byL['🤖 未完子块'].state, 'done', 'DONE 母块应将未完成 🤖 子块收口为 done');
+  assert.equal(byL['🤖 未完子块'].inheritedFrom, byL['收口的日注'].line);
+  assert.equal(byL['未写时长的日注'].container, undefined, '挂 🤖 子块不把人工 TODO 降格为 container');
+  assert.equal(byL['带子任务的人类容器'].container, true, '普通人类子任务仍触发 container');
+
+  const aiMain = mainOf([
+    '- DOING 人类母块',
+    '  - DONE [#A] 🤖 历史主线调研',
+    '  - TODO [#A] 🤖 进行中主线',
+    '- DONE 完成母块',
+    '  - TODO [#A] 🤖 未完主线子块',
+  ].join('\n'));
+  assert.deepEqual(
+    Array.from(aiMain.tasks, (t) => [t.label, t.state]),
+    [['🤖 历史主线调研', 'done'], ['🤖 进行中主线', 'open'], ['🤖 未完主线子块', 'done']]
+  );
+
+  // showTimeRange=false（母块无时段、子块带 - ⏱）的 DOING 🤖 在 applyWork 与 dayReview 中正确读取实际耗时
+  const noRangeItems = parseJournal([
+    '- DOING 🤖 **纯子块时段任务**',
+    '  - ⏱ 10:00–10:25 · 共 25m · Codex',
+  ].join('\n'), DEFAULTS);
+  applyWork(noRangeItems, DEFAULTS, '2026_11_26', 11 * 60, 0);
+  assert.deepEqual(Array.from(noRangeItems[0].worked[0]), [10 * 60, 10 * 60 + 25]);
+  assert.equal(noRangeItems[0].spentToday, 25);
+  const rev = dayReview(noRangeItems, DEFAULTS, { live: true, auto: new Set(['🤖 纯子块时段任务']) });
+  assert.equal(rev.rows[0].actualMinutes, 25);
+  assert.equal(rev.rows[0].state, 'live');
+
+  // 8. 母块展示与排程优先级高于缩进 🤖 子块：不抢 main、顶格 DOING 拿 lane 0、非进行中母块排在子块前、paintSegs 浅层压深层
+  const prioMd = [
+    '- TODO [#A] 大任务母块 1h',
+    '  - TOREVIEW 🤖 14:10-14:30 子任务调研',
+    '  - DOING 🤖 14:40-14:55 子任务跑测',
+    '  - DOING [#A] 🤖 14:45-14:55 显式标A子任务',
+    '- DOING 14:05 顶格手写任务 45m',
+  ].join('\n');
+  const prioItems = parseJournal(prioMd, DEFAULTS);
+  const prioM = mainOf(prioMd);
+  markMain(prioItems, prioM);
+  const byP = Object.fromEntries(prioItems.map((it) => [it.label, it]));
+  assert.equal(byP['大任务母块'].main, true);
+  assert.equal(byP['🤖 子任务调研'].main, undefined, '挂在 [#A] 母块下的 🤖 子块不自动继承 main');
+  assert.equal(byP['🤖 子任务跑测'].main, undefined, '挂在 [#A] 母块下的 DOING 🤖 子块不自动继承 main');
+  assert.equal(byP['🤖 显式标A子任务'].main, true, '自身显式带 [#A] 的 🤖 子块保留 main');
+  const prioPlan = schedule(prioItems, DEFAULTS, 15 * 60, 0);
+  assert.equal(byP['顶格手写任务'].lane, 0, '顶格 DOING 优先占用中心泳道 lane 0');
+  assert.ok(byP['🤖 子任务跑测'].lane > 0, '缩进 DOING 🤖 子块排在顶格 DOING 之后');
+  const qLabels = prioPlan.queue.map((t) => t.label);
+  assert.ok(qLabels.indexOf('顶格手写任务') < qLabels.indexOf('🤖 子任务跑测'), qLabels.join(' -> '));
+  assert.ok(qLabels.indexOf('大任务母块') < qLabels.indexOf('🤖 子任务调研'), '母块待办排在非进行中 🤖 子块之前');
+
+  const srcText = fs.readFileSync(source, 'utf8');
+  assert.ok(srcText.includes('const shallowTop = (arr) => [...arr].sort((a, b) => (b.indent || 0) - (a.indent || 0));'), 'paintSegs 应按 shallowTop 保证母块绘制在子块之上');
+  console.log('PASS 🤖 AI 子块不覆盖 / DONE 收口 / 非容器 / 纯子块 ⏱ / 母块优先排程与绘制验证通过');
+
+  // 9. Agent Deck × 螺旋日程深度协同：ad-clock 签名剥离、多条 ⏱ 合并与共存、🤖 子块上卷母块对比、DOING 直绑实时读取、固定事件对比
+  const parsedAd = Plugin.core.parseClock('⏱ 10:00–10:25 · 共 25m · 12k tok · Claude <!-- ad-clock:7a2f8443 -->', DEFAULTS);
+  assert.equal(parsedAd?.who, 'Claude', 'parseClock 剥除 <!-- ad-clock:... --> 后正确识别 Agent 名称');
+  assert.equal(parsedAd?.total, 25);
+
+  const multiClockMd = [
+    '- DONE 调研鉴权方案 1h',
+    '  - ⏱ 09:00–09:25 · 共 25m',
+    '  - ⏱ 10:00–10:30 · 共 30m · Claude <!-- ad-clock:deadbeef -->',
+  ].join('\n');
+  const multiClockItems = parseJournal(multiClockMd, DEFAULTS);
+  assert.equal(multiClockItems[0].clock.total, 55, '同任务下多条 ⏱ 合并总分钟');
+  assert.equal(multiClockItems[0].clock.who, 'Claude');
+  assert.equal(multiClockItems[0].clock.segs.length, 2);
+
+  const pClock = Object.create(Plugin.prototype);
+  pClock.settings = { ...DEFAULTS };
+  const coexisting = pClock.autoClock([
+    '- DOING 调研鉴权方案 1h',
+    '  - ⏱ 10:00–10:30 · 共 30m · Claude <!-- ad-clock:deadbeef -->',
+  ].join('\n'), '调研鉴权方案', [[9 * 60, 9 * 60 + 25]]);
+  assert.ok(coexisting.includes('⏱ 10:00–10:30 · 共 30m · Claude <!-- ad-clock:deadbeef -->'), 'autoClock 保留 Agent Deck ⏱ 行');
+  assert.ok(/⏱ 09:00–09:25 · (?:共|total) 25m/.test(coexisting), 'autoClock 另起并更新螺旋自身 ⏱ 行');
+
+  const rollupMd = [
+    '- DONE 重构模块 1h',
+    '  - DONE 🤖 卡片搬迁',
+    '    - ⏱ 14:00–14:40 · 共 40m · Codex <!-- ad-clock:1111aaaa -->',
+  ].join('\n');
+  const rollupItems = parseJournal(rollupMd, DEFAULTS);
+  applyWork(rollupItems, DEFAULTS, '2026_11_27', 16 * 60, 0);
+  const rollupRev = dayReview(rollupItems, DEFAULTS, { live: false, auto: new Set(['🤖 卡片搬迁']) });
+  const parentRev = rollupRev.rows.find((r) => r.label === '重构模块');
+  assert.ok(parentRev, '挂接 🤖 子块的人工母块进入当日复盘');
+  assert.equal(parentRev.plannedMinutes, 60);
+  assert.equal(parentRev.actualMinutes, 40);
+  assert.equal(parentRev.varianceMinutes, -20);
+
+  const directDoing = parseJournal([
+    '- DOING 直绑人工任务 45m',
+    '  - ⏱ 11:00–11:20 · 共 20m · Claude <!-- ad-clock:2222bbbb -->',
+  ].join('\n'), DEFAULTS);
+  applyWork(directDoing, DEFAULTS, '2026_11_27', 12 * 60, 0);
+  assert.equal(directDoing[0].spentToday, 20, '直绑人工任务在 DOING 且无 workLog 时实时读取子块 ⏱');
+
+  const eventMd = [
+    '- 14:00-15:00 评审预约',
+    '  - ⏱ 14:05–14:45 · 共 40m · Claude <!-- ad-clock:3333cccc -->',
+    '- 16:00-17:00 普通日历会议',
+  ].join('\n');
+  const eventItems = parseJournal(eventMd, DEFAULTS);
+  applyWork(eventItems, DEFAULTS, '2026_11_27', 18 * 60, 0);
+  const evRev = dayReview(eventItems, DEFAULTS, { live: false });
+  assert.equal(evRev.rows.length, 1, '只有挂载了 ⏱ 或 🤖 子块的预约事件进入复盘，普通事件不计入');
+  assert.equal(evRev.rows[0].plannedMinutes, 60);
+  assert.equal(evRev.rows[0].actualMinutes, 40);
+  assert.equal(evRev.rows[0].varianceMinutes, -20);
+  console.log('PASS Agent Deck × 螺旋日程（ad-clock / 多 ⏱ / 🤖 上卷 / 直绑 DOING / 事件对比）验证通过');
 })().catch((err) => {
   console.error(err);
   process.exitCode = 1;

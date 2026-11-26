@@ -1,7 +1,7 @@
 /* 颜色：按浅色底配的一套低饱和纸面墨水色。主带上挨着的黄 / 蓝 / 红 / 青 / 绿彼此区分、不刺眼；
    内圈细线一个 Agent 一种颜色（Claude 橙、Codex 灰黑、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 柔彩渐变），游戏是紫的，靠位置和粗细再区分一层。
    Agent 以外的几种设置里能改：改过的由插件挂在 body 上（--naut-c-xxx），没改过用这里的默认值，和 main.js 的 COLORS 一致 */
-.naut-root, .naut-ai-modal, .naut-status-modal {
+.naut-root, .naut-rev-root, .naut-ai-modal, .naut-status-modal {
   --naut-event: var(--naut-c-event, #d9a441);
   --naut-task: var(--naut-c-task, #5c86b4);
   --naut-prio: var(--naut-c-prio, #c8635f);
@@ -38,11 +38,12 @@
 .naut-date { flex: 1; text-align: center; font-weight: 600; }
 .naut-head .naut-bounds-btn { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .naut-head .naut-bounds-btn.is-set { color: var(--text-normal); }
-/* 回放一整天 */
-.naut-head .naut-playback { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--text-muted); transition: color .16s ease-out, transform .14s var(--naut-ease); }
-.naut-head .naut-playback:hover:not(:disabled) { color: var(--naut-task); }
+/* 回放一整天 & 顶栏轻量操作（平时淡隐、悬停浮现、开启态保持常亮） */
+.naut-head .naut-playback { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--text-muted); opacity: 0.42; transition: opacity .18s ease-out, color .16s ease-out, transform .14s var(--naut-ease); }
+.naut-head:hover .naut-playback, .naut-head .naut-playback:focus-visible { opacity: 0.85; }
+.naut-head .naut-playback:hover:not(:disabled) { opacity: 1; color: var(--naut-task); transform: scale(1.08); }
 .naut-head .naut-playback:active:not(:disabled) { transform: scale(.9); }
-.naut-head .naut-playback:disabled, .naut-head .naut-playback.is-playing { color: var(--naut-task); opacity: 1; }
+.naut-head .naut-playback:disabled, .naut-head .naut-playback.is-playing, .naut-head .naut-head-btn.is-on { color: var(--naut-task); opacity: 1; }
 .naut-head .naut-playback svg { width: 14px; height: 14px; }
 /* 起床 / 收工弹窗 */
 .naut-bounds-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
@@ -117,14 +118,17 @@
 .naut-seg.naut-kw-delegated { stroke: var(--naut-kw-delegated); }
 .naut-seg.naut-main-done { stroke: color-mix(in srgb, var(--naut-main) 45%, var(--naut-kw-done)); }
 .naut-seg.naut-review { stroke: var(--naut-review); }
-.naut-done-event { opacity: 0.45; }
+.naut-done-event, .naut-seg.naut-expired-event { opacity: 0.42; }
+.naut-seg.naut-alt { filter: saturate(0.84) brightness(1.12); }
 /* 做到一半：已经做过的几段画淡，后面排的画实 */
 .naut-seg.naut-worked { opacity: 0.45; }
 .naut-hour { font-size: 8px; fill: var(--text-muted); opacity: 0.75; text-anchor: middle; dominant-baseline: middle; }
 .naut-log { fill: var(--text-normal); opacity: 0.7; }
-.naut-center { font-size: 16px; font-weight: 600; fill: var(--text-normal); text-anchor: middle; font-variant-numeric: tabular-nums; }
+.naut-center { font-size: 16px; font-weight: 600; fill: var(--text-normal); text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; }
+.naut-center-sub { font-size: 9.5px; font-weight: 500; fill: var(--text-muted); text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; }
+.naut-center-sub.is-over { fill: var(--naut-prio); font-weight: 600; }
 /* 中间时间下面的复习张数 */
-.naut-center-rev { font-size: 9px; font-weight: 600; fill: var(--naut-review); text-anchor: middle; font-variant-numeric: tabular-nums; cursor: help; }
+.naut-center-rev { font-size: 9.5px; font-weight: 600; fill: var(--naut-review); text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; cursor: help; }
 /* 现在：一根中性色的指针（红色留给「重要」），圆点外面一圈底色，压在线段上也看得清 */
 .naut-now { stroke: var(--naut-now); stroke-width: 1.1; stroke-linecap: round; opacity: 0.42; pointer-events: none; }
 .naut-now-dot { fill: var(--naut-now); stroke: var(--background-primary); stroke-width: 1.75; pointer-events: none; }
@@ -531,3 +535,114 @@ body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: ru
 .naut-prio-raw.is-prio-c { color: var(--naut-prio-c); background: color-mix(in srgb, var(--naut-prio-c) 12%, transparent); }
 .naut-row .naut-prio-badge, .naut-st-row .naut-prio-badge { margin-right: 5px; border-radius: 3px; min-width: 1.38em; height: 1.38em; }
 .naut-row.is-done .naut-prio-badge { opacity: 0.65; }
+
+/* 📏 独立螺旋复盘视图（日 / 周 / 月） */
+.naut-rev-linkbtn { margin-top: 6px; padding: 3px 9px; font-size: var(--font-ui-smaller); }
+.naut-rev-root { padding: 16px 22px 36px; overflow: auto; max-width: 1120px; margin: 0 auto; }
+.naut-rev-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--background-modifier-border); margin-bottom: 16px; }
+.naut-rev-title { font-size: 16px; font-weight: 700; color: var(--text-normal); }
+.naut-rev-seg { display: inline-flex; padding: 2px; border-radius: 7px; background: var(--background-modifier-border); gap: 2px; }
+.naut-rev-seg button { height: 24px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; box-shadow: none; font-size: var(--font-ui-small); color: var(--text-muted); cursor: pointer; }
+.naut-rev-seg button.is-on { background: var(--background-primary); color: var(--text-normal); font-weight: 600; }
+.naut-rev-nav { display: inline-flex; gap: 4px; }
+.naut-rev-nav button, .naut-rev-actions button { height: 26px; padding: 0 9px; font-size: var(--font-ui-smaller); cursor: pointer; }
+.naut-rev-range { font-size: var(--font-ui-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.naut-rev-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+
+.naut-rev-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.naut-rev-kpi { padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: 9px; background: var(--background-secondary); }
+.naut-rev-kpi.is-warn { border-color: color-mix(in srgb, var(--naut-main) 45%, var(--background-modifier-border)); }
+.naut-rev-kpi.is-ok { border-color: color-mix(in srgb, var(--naut-kw-done) 45%, var(--background-modifier-border)); }
+.naut-rev-kpi-k { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.naut-rev-kpi-v { font-size: 20px; font-weight: 700; color: var(--text-normal); font-variant-numeric: tabular-nums; margin: 2px 0; }
+.naut-rev-kpi-s { font-size: var(--font-ui-smaller); color: var(--text-faint); line-height: 1.4; }
+
+.naut-rev-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.naut-rev-card { padding: 12px 14px; border: 1px solid var(--background-modifier-border); border-radius: 10px; background: var(--background-primary); min-width: 0; }
+.naut-rev-card.is-wide { grid-column: 1 / -1; }
+.naut-rev-card-h { font-size: var(--font-ui-small); font-weight: 700; color: var(--text-normal); margin-bottom: 10px; }
+
+.naut-rev-svg-bar { width: 100%; height: 28px; display: block; margin-bottom: 8px; }
+.naut-rev-svg-trend { width: 100%; height: 120px; display: block; }
+.naut-rev-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.naut-rev-leg-item { display: inline-flex; align-items: center; gap: 4px; }
+.naut-rev-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+
+.naut-rev-daily { display: flex; align-items: flex-end; gap: 4px; height: 64px; margin-top: 10px; padding-top: 6px; border-top: 1px dashed var(--background-modifier-border); }
+.naut-rev-dcol { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 3px; }
+.naut-rev-dstack { width: 100%; max-width: 18px; flex: 1; display: flex; flex-direction: column-reverse; overflow: hidden; border-radius: 3px 3px 0 0; }
+.naut-rev-dseg { width: 100%; }
+.naut-rev-dlbl { font-size: 9px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+.naut-rev-heat { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 3px; margin-bottom: 8px; }
+.naut-rev-hcell { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.naut-rev-hwork { width: 100%; height: 18px; border-radius: 3px; background: var(--naut-task); }
+.naut-rev-hgap { width: 100%; height: 10px; border-radius: 2px; background: var(--text-faint); }
+.naut-rev-hlbl { font-size: 9px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.naut-rev-meta-row { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+
+.naut-rev-table { width: 100%; border-collapse: collapse; font-size: var(--font-ui-smaller); }
+.naut-rev-table th, .naut-rev-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--background-modifier-border); font-variant-numeric: tabular-nums; }
+.naut-rev-table th { color: var(--text-muted); font-weight: 600; }
+.naut-rev-table td.is-over { color: var(--naut-main); font-weight: 600; }
+.naut-rev-table td.is-under { color: var(--naut-kw-done); font-weight: 600; }
+
+.naut-rev-subh { font-size: var(--font-ui-smaller); font-weight: 600; color: var(--text-muted); margin: 8px 0 4px; }
+.naut-rev-dev { padding: 6px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.naut-rev-dev:last-child { border-bottom: 0; }
+.naut-rev-dev-top { display: flex; align-items: center; gap: 6px; font-size: var(--font-ui-small); flex-wrap: wrap; }
+.naut-rev-dev-lbl { font-weight: 600; cursor: pointer; color: var(--text-normal); }
+.naut-rev-dev-lbl:hover { text-decoration: underline; }
+.naut-rev-badge { font-size: var(--font-ui-smaller); padding: 1px 6px; border-radius: 99px; background: var(--background-modifier-border); font-variant-numeric: tabular-nums; }
+.naut-rev-badge.is-over { background: color-mix(in srgb, var(--naut-main) 18%, transparent); color: var(--naut-main); font-weight: 600; }
+.naut-rev-badge.is-under { background: color-mix(in srgb, var(--naut-kw-done) 18%, transparent); color: var(--naut-kw-done); font-weight: 600; }
+
+.naut-rev-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.naut-rev-pill { height: 20px; padding: 0 7px; border-radius: 99px; border: 1px solid var(--background-modifier-border); background: transparent; box-shadow: none; font-size: 10px; color: var(--text-muted); cursor: pointer; }
+.naut-rev-pill:hover { border-color: var(--text-muted); color: var(--text-normal); }
+.naut-rev-pill.is-on { background: color-mix(in srgb, var(--naut-main) 16%, transparent); border-color: var(--naut-main); color: var(--naut-main); font-weight: 600; }
+
+.naut-rev-roll { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--background-modifier-border); font-size: var(--font-ui-small); }
+.naut-rev-roll.is-stalled .naut-rev-badge { background: color-mix(in srgb, var(--naut-main) 18%, transparent); color: var(--naut-main); font-weight: 600; }
+
+/* nautilus-enhanced 灵感 9 项视觉增强 */
+.naut-head .naut-head-btn.is-on { color: var(--naut-task); background: color-mix(in srgb, var(--naut-task) 14%, transparent); }
+.naut-svg.has-labels { max-width: 620px; }
+.naut-seg.naut-alt:hover, .naut-seg.naut-alt.is-hot { stroke-width: 21; filter: brightness(1.1); opacity: 1; }
+.naut-seg-dots { fill: none; stroke-width: 14; stroke-linecap: butt; pointer-events: none; }
+.naut-prog-dot { fill: var(--background-primary); opacity: 0.72; }
+.naut-label-group { --naut-lbl-c: var(--naut-task); cursor: pointer; }
+.naut-label-group.is-main { --naut-lbl-c: var(--naut-main); }
+.naut-label-group.is-prio { --naut-lbl-c: var(--naut-prio); }
+.naut-label-group.is-event { --naut-lbl-c: var(--naut-event); }
+.naut-label-group.is-review { --naut-lbl-c: var(--naut-review); }
+.naut-label-group.is-kw-todo { --naut-lbl-c: var(--naut-kw-todo); }
+.naut-label-group.is-kw-doing { --naut-lbl-c: var(--naut-kw-doing); }
+.naut-label-group.is-kw-done { --naut-lbl-c: var(--naut-kw-done); }
+.naut-label-group.is-kw-paused { --naut-lbl-c: var(--naut-kw-paused); }
+.naut-label-group.is-kw-waiting { --naut-lbl-c: var(--naut-kw-waiting); }
+.naut-label-group.is-kw-suspended { --naut-lbl-c: var(--naut-kw-suspended); }
+.naut-label-group.is-kw-toreview { --naut-lbl-c: var(--naut-kw-toreview); }
+.naut-label-group.is-kw-needok { --naut-lbl-c: var(--naut-kw-needok); }
+.naut-label-group.is-kw-errored { --naut-lbl-c: var(--naut-kw-errored); }
+.naut-label-group.is-kw-hitlimit { --naut-lbl-c: var(--naut-kw-hitlimit); }
+.naut-label-group.is-kw-queued { --naut-lbl-c: var(--naut-kw-queued); }
+.naut-label-group.is-kw-delegated { --naut-lbl-c: var(--naut-kw-delegated); }
+.naut-link-line { fill: none; stroke: var(--naut-lbl-c); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.42; transition: opacity .18s, stroke-width .15s, stroke-dasharray .18s; }
+.naut-link-dot { fill: var(--naut-lbl-c); opacity: 0.6; transition: opacity .18s, transform .18s; }
+.naut-label-text { font-size: 10.5px; fill: color-mix(in srgb, var(--naut-lbl-c) 68%, var(--text-normal)); transition: fill .15s, transform .18s cubic-bezier(.175, .885, .32, 1.275), opacity .15s; user-select: none; }
+.naut-label-group.is-done .naut-label-text { text-decoration: line-through; opacity: 0.52; }
+.naut-label-group.is-done .naut-link-line, .naut-label-group.is-done .naut-link-dot { opacity: 0.28; }
+.naut-label-group:hover .naut-link-line, .naut-label-group.is-hot .naut-link-line { stroke-dasharray: none; stroke-width: 1.5; opacity: 0.92; }
+.naut-label-group:hover .naut-link-dot, .naut-label-group.is-hot .naut-link-dot { opacity: 1; }
+.naut-label-group:hover .naut-label-text, .naut-label-group.is-hot .naut-label-text { fill: var(--naut-lbl-c); font-weight: 600; opacity: 1; }
+.naut-label-group.is-right:hover .naut-label-text, .naut-label-group.is-right.is-hot .naut-label-text { transform: translateX(3px); }
+.naut-label-group.is-left:hover .naut-label-text, .naut-label-group.is-left.is-hot .naut-label-text { transform: translateX(-3px); }
+.naut-collapsed-bar { margin: 6px 0 4px; padding: 6px 10px; border: 1px dashed var(--background-modifier-border); border-radius: 6px; font-size: var(--font-ui-small); color: var(--text-muted); text-align: center; cursor: pointer; }
+.naut-collapsed-bar:hover { color: var(--text-normal); border-color: var(--text-faint); }
+.naut-mirror-tag { display: inline-block; margin-left: 4px; font-size: 0.8em; color: var(--text-faint); vertical-align: baseline; }
+
+@media (max-width: 780px) {
+  .naut-rev-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .naut-rev-grid { grid-template-columns: minmax(0, 1fr); }
+}
