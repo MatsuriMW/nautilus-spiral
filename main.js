@@ -406,12 +406,20 @@ function parseEnglishRange(text) {
   let h1 = +m[1], min1 = m[2] != null ? +m[2] : 0;
   let h2 = +m[4], min2 = m[5] != null ? +m[5] : 0;
   if (min1 > 59 || min2 > 59 || h1 > 23 || h2 > 23) return null;
-  const effA1 = a1 || (a2 && h1 <= h2 ? a2 : "");
+  if ((a1 && (h1 < 1 || h1 > 12)) || (a2 && (h2 < 1 || h2 > 12))) return null;
+  const effA1 = a1 || (a2
+    ? (a2 === "pm"
+      ? ((h1 === 12 || (h1 < h2 && h2 < 12)) ? "pm" : "am")
+      : ((h1 === 12 || (h1 < h2 && h2 < 12)) ? "am" : "pm"))
+    : "");
   const to24 = (h, ap) => (ap === "pm" ? (h < 12 ? h + 12 : h) : ap === "am" ? (h === 12 ? 0 : h) : h);
   const start = to24(h1, effA1) * 60 + min1;
   let end = to24(h2, a2) * 60 + min2;
-  if (end < start && !a2 && h2 <= 12) end += 720;
-  return { start, end, raw: m[0] };
+  if (end < start) {
+    if (a1 || a2) end += 1440;
+    else if (h2 <= 12) end += 720;
+  }
+  return { start, end, raw: m[0], explicitAp: Boolean(a1 || a2) };
 }
 
 function cleanLabel(s) {
@@ -898,8 +906,8 @@ function parseJournal(content, cfg) {
     const erm = parseEnglishRange(ps);
     if (erm) {
       const start = normalize(erm.start, cfg);
-      let end = normalize(erm.end, cfg);
-      if (end <= start) end += 720;
+      let end = erm.end >= 1440 ? erm.end : normalize(erm.end, cfg);
+      if (end <= start) end += erm.explicitAp ? 1440 : 720;
       items.push({ ...base, kind: "event", start, end });
       return;
     }
@@ -6309,6 +6317,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const offset = d.startOf("day").diff(this.today(), "days");
       for (const v of this.views()) if (v.offset !== offset) v.go(offset);
     }));
+    this._unloaded = false;
     this.registerEvent(this.app.vault.on("modify", (f) => this.onFileChange(f)));
     // 任务状态切换的音效：全库的笔记都看（TODOseq 的任务列表、看板改的不一定是日记）
     this.kw = new Map();   // path -> kwSnapshot
@@ -6323,7 +6332,9 @@ module.exports = class NautilusSpiral extends Plugin {
     this.registerEvent(this.app.vault.on("create", (f) => this.onFileChange(f)));
     this.registerEvent(this.app.workspace.on("agent-deck:sessions-changed", () => this.refresh()));
     const scheduleMinuteRefresh = () => {
+      if (this._unloaded) return;
       this._minuteTimer = window.setTimeout(() => {
+        if (this._unloaded) return;
         this.refresh();
         scheduleMinuteRefresh();
       }, msToNextMinute());
@@ -6985,6 +6996,10 @@ module.exports = class NautilusSpiral extends Plugin {
     }
     if (!resolvedByLine.size) return { content: String(content || ""), mirrorMap: new Map(), sig: "" };
     const applied = applyMirrorLines(content, resolvedByLine);
+    if (!this._mirrorSources) this._mirrorSources = new Set();
+    for (const mr of applied.mirrorMap.values()) {
+      if (mr?.path) this._mirrorSources.add(mr.path);
+    }
     const sig = [...applied.mirrorMap.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([ln, mr]) => `${ln}:${mr.path}:${mr.line}:${fastHash(mr.rawLine || "")}`)
@@ -8053,7 +8068,15 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   async onFileChange(f) {
-    if (!(f instanceof TFile) || !inJournalDir(f.path, this.settings.folder)) return;
+    if (!(f instanceof TFile)) return;
+    if (!inJournalDir(f.path, this.settings.folder)) {
+      if (this._mirrorSources?.has(f.path)) {
+        this.pastDayCache?.clear?.();
+        if (this.statusEl) this.refreshCapacity();
+        this.refresh();
+      }
+      return;
+    }
     const content = await this.app.vault.read(f);
     const prev = this.states.get(f.path);
     this.observe(f, content, true);
@@ -8831,6 +8854,7 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   onunload() {
+    this._unloaded = true;
     window.clearTimeout(this._reloadT);
     window.clearTimeout(this._widgetBootT);
     window.clearTimeout(this._nqTimer);
