@@ -7,17 +7,27 @@ const source = process.argv[2] || path.join(__dirname, '..', 'main.js');
 const openedModals = [];
 const builtMenus = [];
 const notices = [];
+const makeMockEl = (tag = 'div', opts = {}) => ({
+  tag,
+  cls: opts.cls || '',
+  text: opts.text || '',
+  children: [],
+  addClass() {},
+  empty() { this.children = []; },
+  createDiv(o = {}) { const c = makeMockEl('div', o); this.children.push(c); return c; },
+  createEl(t, o = {}) { const c = makeMockEl(t, o); this.children.push(c); return c; },
+});
 const OB = {
   Plugin: class {},
   ItemView: class {},
   PluginSettingTab: class {},
-  Modal: class { constructor() { this.contentEl = { empty() {} }; } open() { openedModals.push(this); } close() {} },
+  Modal: class { constructor() { this.modalEl = makeMockEl('div'); this.contentEl = makeMockEl('div'); } open() { openedModals.push(this); } close() {} },
   FuzzySuggestModal: class {},
   Menu: class {
     constructor() { this.items = []; builtMenus.push(this); }
     addSeparator() { this.items.push({ sep: true }); }
     addItem(fn) {
-      const it = { title: '', checked: false, setTitle(t) { this.title = t; }, setChecked(v) { this.checked = v; }, onClick(cb) { this.cb = cb; } };
+      const it = { title: '', checked: false, disabled: false, setTitle(t) { this.title = t; }, setChecked(v) { this.checked = v; }, setDisabled(v) { this.disabled = v; }, onClick(cb) { this.cb = cb; } };
       fn(it);
       this.items.push(it);
     }
@@ -519,7 +529,7 @@ assert.equal(pomoFormatLeft(-5000), '00:00');
     assert.match(curLines[0], /^- DOING /);
   }
 
-  // openUpNextMenu keeps Pomodoro start on 🤖 tasks, hides 按预估开始 on 🤖 tasks, and hides Pomodoro on non-today dates
+  // openUpNextMenu places Pomodoro at the top, supports segment header & active-task stop toggle, hides 按预估 on 🤖, and hides Pomodoro on non-today
   {
     const view = Object.create(SpiralView.prototype);
     view.plugin = p;
@@ -529,20 +539,185 @@ assert.equal(pomoFormatLeft(-5000), '00:00');
     await p.setPomodoroPreset('25');
     builtMenus.length = 0;
     view.openUpNextMenu(ev, f, '2026_11_21', { kind: 'task', state: 'open', kw: 'TODO', dur: 45, explicitDur: true, label: '写方案 45m' });
-    const titles1 = builtMenus.at(-1).items.filter((x) => !x.sep).map((x) => x.title);
-    assert.ok(titles1.some((t) => t.includes('用番茄钟开始（25m）')));
-    assert.ok(titles1.some((t) => t.includes('按预估开始（45m）')));
+    const items1 = builtMenus.at(-1).items.filter((x) => !x.sep);
+    const titles1 = items1.map((x) => x.title);
+    assert.ok(titles1[0].includes('用番茄钟开始（25m）'));
+    assert.ok(titles1[1].includes('按预估开始（45m）'));
+    assert.ok(titles1.indexOf('TODO · 待办') > 1);
+
+    // Spiral segment header + active task switches top action to "Stop current Pomodoro" (including inheritedFrom parent proxy)
+    p.settings.pomodoro.active = { id: 99, dayKey: '2026_11_21', start: Date.now() - 60e3, end: Date.now() + 24 * 60e3, minutes: 25, task: { path: f.path, key: '母块任务', label: '母块任务' } };
+    builtMenus.length = 0;
+    view.openUpNextMenu(ev, f, '2026_11_21', { kind: 'task', state: 'open', kw: 'DOING', dur: 25, inheritedFrom: 0, inheritedLabel: '母块任务', label: '子任务' }, '', { header: '子任务 · 14:00–14:25' });
+    const itemsAct = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.equal(itemsAct[0].title, '子任务 · 14:00–14:25');
+    assert.equal(itemsAct[0].disabled, true);
+    assert.ok(itemsAct[1].title.includes('结束当前番茄钟'));
+    assert.ok(!itemsAct.some((x) => x.title.includes('用番茄钟开始')));
+    await itemsAct[1].cb();
+    assert.equal(p.settings.pomodoro.active, null);
 
     builtMenus.length = 0;
     view.openUpNextMenu(ev, f, '2026_11_21', { kind: 'task', state: 'open', kw: 'TODO', dur: 25, explicitDur: true, auto: true, label: '🤖 AI任务' });
     const titles2 = builtMenus.at(-1).items.filter((x) => !x.sep).map((x) => x.title);
-    assert.ok(titles2.some((t) => t.includes('用番茄钟开始（25m）')));
+    assert.ok(titles2[0].includes('用番茄钟开始（25m）'));
+    assert.ok(titles2[1].includes('快速 15m'));
     assert.ok(!titles2.some((t) => t.includes('按预估')));
+
+    // Custom 90m preset offers quick 25m and 15m alternatives; inheritedFrom without opts.header shows parent header
+    await p.setPomodoroPreset('custom');
+    await p.setPomodoroCustom(90);
+    builtMenus.length = 0;
+    view.openUpNextMenu(ev, f, '2026_11_21', { kind: 'task', state: 'open', kw: 'TODO', dur: 15, inheritedFrom: 0, inheritedLabel: '主线母块', label: '子步骤' });
+    const items90 = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.equal(items90[0].disabled, true);
+    assert.ok(items90[0].title.includes('随母块「主线母块」'));
+    assert.ok(items90[1].title.includes('用番茄钟开始（1h30m）'));
+    assert.ok(items90[2].title.includes('快速 25m'));
+    assert.ok(items90[3].title.includes('快速 15m'));
+    await p.setPomodoroPreset('25');
 
     builtMenus.length = 0;
     view.openUpNextMenu(ev, f, '2026_11_20', { kind: 'task', state: 'open', kw: 'TODO', dur: 45, explicitDur: true, label: '昨天任务 45m' });
     const titles3 = builtMenus.at(-1).items.filter((x) => !x.sep).map((x) => x.title);
-    assert.ok(!titles3.some((t) => t.includes('番茄钟') || t.includes('按预估')));
+    assert.ok(!titles3.some((t) => t.includes('番茄钟') || t.includes('按预估') || t.includes('快速')));
+
+    // openDoneMenu shows disabled header + 定位到日记
+    builtMenus.length = 0;
+    view.openDoneMenu(ev, f, { kind: 'task', state: 'done', line: 3, label: '已做完的事' }, { header: '已做完的事 · 10:00–10:30' });
+    const doneItems = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.equal(doneItems[0].title, '已做完的事 · 10:00–10:30');
+    assert.equal(doneItems[0].disabled, true);
+    assert.equal(doneItems[1].title, '定位到日记');
+  }
+
+  // openEventMenu: standalone labeled Pomodoro (no auto-bind to DOING, no note edit, toggle to stop, history label, Another round keeps standalone)
+  {
+    const evView = Object.create(SpiralView.prototype);
+    let evNote = ['- DOING 正在做的任务'];
+    const evFile = new OB.TFile('日记/2026_11_21.md');
+    let evEdits = 0;
+    const ep = Object.create(Plugin.prototype);
+    ep.settings = JSON.parse(JSON.stringify(DEFAULTS));
+    ep.settings.folder = '日记';
+    ep.settings.format = 'YYYY_MM_DD';
+    ep.states = new Map();
+    ep.today = () => ({ format: () => '2026_11_21' });
+    ep.saveData = async () => {};
+    ep.saveSoon = () => {};
+    ep.sound = () => {};
+    ep.kwSound = () => {};
+    ep.kwFresh = () => [];
+    ep.refresh = () => {};
+    ep.app = { vault: { getAbstractFileByPath: (fp) => (fp === evFile.path ? evFile : null) } };
+    ep.readLiveContent = async () => evNote.join('\n');
+    ep.editFile = async () => { evEdits++; return 0; };
+    evView.plugin = ep;
+    evView._hideDotTip = () => {};
+    const ev = { preventDefault() {}, stopPropagation() {} };
+
+    const noteEvent = { kind: 'event', state: 'open', start: 840, end: 900, label: '产品评审' };
+    await ep.setPomodoroPreset('custom');
+    await ep.setPomodoroCustom(90);
+    builtMenus.length = 0;
+    evView.openEventMenu(ev, evFile, '2026_11_21', noteEvent, { header: '产品评审 · 14:00–15:00' });
+    const evItems90 = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.ok(evItems90[1].title.includes('独立番茄钟（1h30m，不改日记）'));
+    assert.ok(evItems90[2].title.includes('独立 25m（不改日记）'));
+    assert.ok(evItems90[3].title.includes('独立 15m（不改日记）'));
+    await ep.setPomodoroPreset('25');
+
+    builtMenus.length = 0;
+    evView.openEventMenu(ev, evFile, '2026_11_21', noteEvent, { header: '产品评审 · 14:00–15:00' });
+    const evItems1 = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.equal(evItems1[0].title, '产品评审 · 14:00–15:00');
+    assert.equal(evItems1[0].disabled, true);
+    assert.ok(evItems1[1].title.includes('独立番茄钟（25m，不改日记）'));
+    assert.ok(evItems1[2].title.includes('独立 15m（不改日记）'));
+    assert.equal(evItems1[3].title, '定位到日记');
+    await evItems1[1].cb();
+    assert.equal(ep.settings.pomodoro.active.task, null);
+    assert.equal(ep.settings.pomodoro.active.label, '产品评审');
+    assert.equal(evEdits, 0);
+
+    // Same event right-click now toggles to Stop current Pomodoro
+    builtMenus.length = 0;
+    evView.openEventMenu(ev, evFile, '2026_11_21', noteEvent, { header: '产品评审 · 14:00–15:00' });
+    const evItems2 = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.ok(evItems2[1].title.includes('结束当前番茄钟'));
+
+    // openActivePomoMenu without 2nd arg reads live settings.pomodoro.active, and hides 定位到日记 for standalone
+    builtMenus.length = 0;
+    evView.openActivePomoMenu(ev);
+    const actStandalone = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.equal(actStandalone[0].disabled, true);
+    assert.ok(actStandalone[0].title.includes('产品评审'));
+    assert.ok(actStandalone[1].title.includes('结束当前番茄钟'));
+    assert.ok(!actStandalone.some((x) => x.title === '定位到日记'));
+
+    // openActivePomoMenu with no active Pomodoro (2nd arg omitted) does not build a stale menu
+    const savedAct = ep.settings.pomodoro.active;
+    ep.settings.pomodoro.active = null;
+    const menuCountBeforeNull = builtMenus.length;
+    evView.openActivePomoMenu(ev);
+    assert.equal(builtMenus.length, menuCountBeforeNull);
+    ep.settings.pomodoro.active = savedAct;
+
+    // openActivePomoMenu on task-bound active Pomodoro shows 定位到日记
+    builtMenus.length = 0;
+    evView.openActivePomoMenu(ev, { dayKey: '2026_11_21', start: Date.now(), end: Date.now() + 10 * 60e3, minutes: 25, task: { path: evFile.path, key: '写周报', label: '写周报' } });
+    const actBound = builtMenus.at(-1).items.filter((x) => !x.sep);
+    assert.equal(actBound[0].disabled, true);
+    assert.ok(actBound[1].title.includes('结束当前番茄钟'));
+    assert.equal(actBound[2].title, '定位到日记');
+
+    // Complete standalone labeled Pomodoro -> records label in history, keeps note untouched, and "Another round" preserves standalone label
+    await ep.completePomodoro(ep.settings.pomodoro.active);
+    assert.equal(ep.settings.pomodoroHistory['2026_11_21'].at(-1).label, '产品评审');
+    assert.equal(evEdits, 0);
+    const doneModal = openedModals.at(-1);
+    doneModal.onOpen();
+    assert.ok(doneModal.contentEl.children.some((c) => c.text && c.text.includes('产品评审')));
+    const btnBar = doneModal.contentEl.children.at(-1);
+    const againBtn = btnBar.children.find((b) => b.text === '再来一轮');
+    assert.ok(againBtn);
+    await againBtn.onclick();
+    assert.equal(ep.settings.pomodoro.active.task, null);
+    assert.equal(ep.settings.pomodoro.active.label, '产品评审');
+
+    // Calendar event uses 打开日历, non-today & done events hide Pomodoro
+    const calEvent = { kind: 'event', state: 'open', start: 960, end: 1020, label: '外部会议', cal: { calendar: 'Work' } };
+    builtMenus.length = 0;
+    evView.openEventMenu(ev, evFile, '2026_11_21', calEvent, { header: '外部会议 · 16:00–17:00' });
+    assert.equal(builtMenus.at(-1).items.filter((x) => !x.sep).at(-1).title, '打开日历');
+
+    builtMenus.length = 0;
+    evView.openEventMenu(ev, evFile, '2026_11_20', noteEvent);
+    assert.ok(!builtMenus.at(-1).items.some((x) => x.title && x.title.includes('番茄钟')));
+
+    builtMenus.length = 0;
+    evView.openEventMenu(ev, evFile, '2026_11_21', { ...noteEvent, state: 'done' });
+    assert.ok(!builtMenus.at(-1).items.some((x) => x.title && x.title.includes('番茄钟')));
+
+    // Early stop on 🤖 auto task >= 1m (logged: false) must report elapsed minutes via session tracking, NOT "未满 1 分钟"
+    const aiStart = Date.now() - 12 * 60e3;
+    ep.settings.pomodoro.active = {
+      id: aiStart,
+      dayKey: '2026_11_21',
+      start: aiStart,
+      end: aiStart + 25 * 60e3,
+      minutes: 25,
+      task: { path: evFile.path, key: '🤖 AI任务', label: '🤖 AI任务' },
+    };
+    const modalsBeforeAi = openedModals.length;
+    await ep.stopPomodoro(false, { ask: true });
+    assert.equal(openedModals.length, modalsBeforeAi + 1);
+    const aiModal = openedModals.at(-1);
+    aiModal.onOpen();
+    const aiTexts = aiModal.contentEl.children.map((c) => c.text).join('\n');
+    assert.ok(aiTexts.includes('已做 12m'));
+    assert.ok(aiTexts.includes('由会话自动统计'));
+    assert.ok(!aiTexts.includes('未满 1 分钟'));
   }
 
   // _mutateUpNext recovers when a ⏱ line inserted above shifted item.line by +1

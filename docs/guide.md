@@ -165,7 +165,7 @@ The list under the spiral is grouped: Fixed events, Up next, Won't fit, ⏸ On h
 
 There is no separate "Start" button: making a task `DOING` in the note is starting it.
 
-- Click the status icon in "Up next" to cycle states, or right-click to pick a human status (`TODO` / `DOING` / `DONE` / `PAUSED` / `WAITING` / `SUSPENDED` / `CANCELLED`), set priority (`[#A]` / `[#B]` / `[#C]` / clear), or "Start Pomodoro"; you can also edit the keyword directly in the note, or use the Task status toggle plugin's `⌘/`.
+- Click the status icon in "Up next" to cycle states, or right-click a task row or an open task segment on the spiral to start/stop a Pomodoro (at the top of the menu), pick a human status (`TODO` / `DOING` / `DONE` / `PAUSED` / `WAITING` / `SUSPENDED` / `CANCELLED`), or set priority (`[#A]` / `[#B]` / `[#C]` / clear); you can also edit the keyword directly in the note, or use the Task status toggle plugin's `⌘/`.
 - When the line says `DOING`, the plugin takes the time after it (or the current time if none is written) as the start and counts from there; when it becomes `DONE`, `PAUSED` or back to `TODO`, counting stops. Interrupt and resume, and it is several spans, recorded span by span.
 - The estimate can go after the keyword or at the end of the line, both work (`15 minutes`, `15 分钟`, `15m`, `1.5h`); without one, "Default task length" applies. Scheduling and the reviews both use it.
 
@@ -173,9 +173,9 @@ There is no separate "Start" button: making a task `DOING` in the note is starti
 
 On today's view, the compact bar under capacity offers `15m` / `25m` / `Custom` presets and a play button:
 
-- **Independent or task-bound**: click play to reserve an upcoming block independently (or auto-bind your active manual `DOING` task), right-click any open manual task in "Mainline", "Up next", "Won't fit", or "Parked" → "🍅 Start Pomodoro" (or "🍅 Start with estimate" when the task has an explicit estimate), or run the command "Start Pomodoro on task at cursor" in today's daily note.
+- **Independent or task-bound**: click play to reserve an upcoming block independently (or auto-bind your active manual `DOING` task), right-click any open manual task in "Mainline", "Up next", "Won't fit", "Parked", or directly on **open task segments on the spiral** (the menu shows the segment title, time, and parent block if inherited, places Pomodoro actions first, and switches to "⏹ Stop current Pomodoro" when that task is already running; otherwise shows "🍅 Start Pomodoro", "🍅 Start with estimate", and quick `25m` / `15m` options), or run the command "Start Pomodoro on task at cursor" in today's daily note. Right-clicking a **fixed event row or segment** offers "🍅 Standalone Pomodoro (won't edit note)" plus opening the journal/calendar, and right-clicking a completed segment jumps to its journal line.
 - **Automatic `⏱` time logging**: when a task-bound Pomodoro finishes or stops early after ≥1 minute, it automatically writes and accumulates `- ⏱ HH:MM–HH:MM · total Xm` under the task block (even if "Write actual time into the note" is off) and prompts "Pause / Another round (or Keep DOING) / Mark DONE". Switching to another task settles and pauses the previous task; marking the task `DONE` or `PAUSED` manually automatically ends the active Pomodoro and writes its `⏱` span.
-- **On the spiral's outer rail**: an active Pomodoro splits into a solid arc for elapsed time and a dashed arc with a hollow end dot for the unrealized reservation, without pushing scheduled tasks back; completed rounds stay as subtle arcs on the outer rail (cancelling early leaves no trace).
+- **On the spiral's outer rail**: an active Pomodoro splits into a solid arc for elapsed time and a dashed arc with a hollow end dot for the unrealized reservation, without pushing scheduled tasks back; clicking jumps to the bound task and right-clicking stops the active Pomodoro; completed rounds stay as subtle arcs on the outer rail (cancelling early leaves no trace).
 
 ## Timing: how long something actually took
 
