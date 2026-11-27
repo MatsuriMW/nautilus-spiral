@@ -952,6 +952,8 @@ function expandSpiralTemplateVars(raw, app, d, path = "", keepAiAnchor = false) 
   }).join("\n");
 }
 
+const normalizeSpiralPromptDay = (d) => String(d || "").trim().replace(/\D+/g, "");
+
 function getSharedJournalPromptState(app) {
   const store = (globalThis.__obSharedJournalPromptState ||= {});
   const key = app?.vault?.getName?.() || "__default__";
@@ -4371,7 +4373,7 @@ class SpiralJournalSetupModal extends OB.Modal {
   constructor(app, plugin, { day = "", targetPath = "", initialPolicy = null, onResolve = null } = {}) {
     super(app);
     this.plugin = plugin;
-    this.day = day;
+    this.day = normalizeSpiralPromptDay(day);
     this.targetPath = targetPath;
     this.onResolve = onResolve;
     this._settled = false;
@@ -4382,6 +4384,10 @@ class SpiralJournalSetupModal extends OB.Modal {
     const base = initialPolicy || plugin?.getJournalPolicy?.() || {};
     this.state = normalizeSpiralJournalPolicy(base, { legacyAutoCreate: plugin?.settings?.autoCreateJournal !== false });
     if (this.state.configured && base?.aiPlacement) this._userPickedPlacement = true;
+  }
+
+  noteExists() {
+    return Boolean(this.targetPath && this.app?.vault?.getAbstractFileByPath?.(this.targetPath));
   }
 
   onOpen() {
@@ -4395,7 +4401,7 @@ class SpiralJournalSetupModal extends OB.Modal {
     if (!this._settled) {
       this._settled = true;
       const shared = getSharedJournalPromptState(this.app);
-      if (this.day) shared.dismissedDay = this.day;
+      if (this.day && !this.noteExists()) shared.dismissedDay = this.day;
       this.onResolve?.({ saved: false, dismissed: true });
     }
   }
@@ -4432,9 +4438,10 @@ class SpiralJournalSetupModal extends OB.Modal {
     el.empty();
     const hasDeck = !!this.plugin?.agentDeck?.();
     const obsTpl = detectObsidianDailyTemplatePath(this.app);
+    const exists = this.noteExists();
 
     const head = el.createDiv({ cls: "naut-jsetup-head" });
-    head.createEl("h3", { text: T("今日日记还未创建", "Today's daily note doesn't exist yet") });
+    head.createEl("h3", { text: exists ? T("配置今日日记创建规则", "Configure daily note creation") : T("今日日记还未创建", "Today's daily note doesn't exist yet") });
     head.createEl("p", {
       cls: "naut-jsetup-why",
       text: hasDeck
@@ -4474,13 +4481,13 @@ class SpiralJournalSetupModal extends OB.Modal {
       } else if (this.state.templateSource === "file") {
         const row = s2.createDiv({ cls: "naut-jsetup-filerow" });
         const inp = row.createEl("input", { type: "text", value: this.state.templatePath, attr: { placeholder: T("输入库内模板路径，如：Templates/Daily.md", "Template path, e.g. Templates/Daily.md") } });
-        inp.oninput = () => { this.state.templatePath = inp.value.trim(); this.refreshHints({ autoSuggestPlaceholder: false }); };
+        inp.oninput = () => { this.state.templatePath = inp.value.trim(); this.refreshHints(); };
         const pick = row.createEl("button", { text: T("选择文件", "Choose file"), attr: { type: "button" } });
         pick.onclick = () => new VaultTemplatePickerModal(this.app, (f) => { this.state.templatePath = f.path; this.render(); this.refreshHints(); }).open();
       } else if (this.state.templateSource === "custom") {
         const ta = s2.createEl("textarea", { cls: "naut-jsetup-ta", attr: { rows: "5", placeholder: T("---\n日期: {{date:YYYY-MM-DD}}\n---\n\n## 今日计划\n\n## 复盘", "---\ndate: {{date:YYYY-MM-DD}}\n---\n\n## Today\n\n## Review") } });
         ta.value = this.state.templateText || "";
-        ta.oninput = () => { this.state.templateText = ta.value; this.refreshHints({ autoSuggestPlaceholder: false }); };
+        ta.oninput = () => { this.state.templateText = ta.value; this.refreshHints(); };
         s2.createDiv({ cls: "naut-jsetup-hint", text: T("支持 {{title}}、{{date}}、{{date:YYYY-MM-DD}}、{{time}}。", "Supports {{title}}, {{date}}, {{date:YYYY-MM-DD}}, {{time}}.") });
       }
     }
@@ -4489,13 +4496,19 @@ class SpiralJournalSetupModal extends OB.Modal {
     this.renderPlacement();
 
     const foot = el.createDiv({ cls: "naut-jsetup-foot" });
-    const later = foot.createEl("button", { text: T("今天先不建", "Not today"), attr: { type: "button" } });
+    const later = foot.createEl("button", { text: exists ? T("取消", "Cancel") : T("今天先不建", "Not today"), attr: { type: "button" } });
     later.onclick = () => {
       const shared = getSharedJournalPromptState(this.app);
-      if (this.day) shared.dismissedDay = this.day;
+      if (this.day && !exists) shared.dismissedDay = this.day;
       this.settle({ saved: false, dismissed: true });
     };
-    const ok = foot.createEl("button", { cls: "mod-cta", text: this.state.mode === "auto" ? T("保存并新建今日日记", "Save & create today's note") : T("记住设定", "Remember choice"), attr: { type: "button" } });
+    const ok = foot.createEl("button", {
+      cls: "mod-cta",
+      text: this.state.mode === "auto"
+        ? (exists ? T("保存设定", "Save settings") : T("保存并新建今日日记", "Save & create today's note"))
+        : T("记住设定", "Remember choice"),
+      attr: { type: "button" },
+    });
     ok.onclick = async () => {
       if (this.state.mode === "auto" && this.state.templateSource === "file" && !this.state.templatePath.trim()) this.state.templateSource = "none";
       const shared = getSharedJournalPromptState(this.app);
@@ -4552,10 +4565,11 @@ async function openStandaloneJournalSetupModal(plugin, { day = "", targetPath = 
   if (!app) return { saved: false, dismissed: false };
   const shared = getSharedJournalPromptState(app);
   if (shared.modalPromise) return shared.modalPromise;
-  if (!manualTrigger && day && shared.dismissedDay === day) return { saved: false, dismissed: true };
+  const dayKey = normalizeSpiralPromptDay(day);
+  if (!manualTrigger && dayKey && normalizeSpiralPromptDay(shared.dismissedDay) === dayKey) return { saved: false, dismissed: true };
   const initialPolicy = plugin.getJournalPolicy?.();
   shared.modalPromise = new Promise((resolve) => {
-    new SpiralJournalSetupModal(app, plugin, { day, targetPath, initialPolicy, onResolve: resolve }).open();
+    new SpiralJournalSetupModal(app, plugin, { day: dayKey, targetPath, initialPolicy, onResolve: resolve }).open();
   }).finally(() => { shared.modalPromise = null; });
   return shared.modalPromise;
 }
@@ -9900,7 +9914,17 @@ class SpiralSettings extends PluginSettingTab {
         .onChange(async (v) => { await this.plugin.updateJournalPolicy({ mode: v, configured: true }); this.display(); }))
       .addButton((b) => b
         .setButtonText(T("打开引导弹窗", "Open setup wizard"))
-        .onClick(async () => { await this.plugin.promptJournalPolicyIfNeeded({ manualTrigger: true }); this.display(); }));
+        .onClick(async () => {
+          const res = await this.plugin.promptJournalPolicyIfNeeded({ manualTrigger: true });
+          if (res?.saved && res?.policy?.mode === "auto") {
+            const d = this.plugin.today();
+            const path = this.plugin.journalPath(d);
+            if (!this.app.vault.getAbstractFileByPath(path)) {
+              await this.plugin.openToday(true);
+            }
+          }
+          this.display();
+        }));
     if (jp.mode !== "manual") {
       new Setting(containerEl)
         .setName(T("新建日记模板", "Daily note template"))
