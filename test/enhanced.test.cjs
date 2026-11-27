@@ -336,6 +336,142 @@ const { DEFAULTS } = C;
     assert.equal(C.msToNextMinute(60000 + 45000), 15050);
   }
 
+  // 6. Cross-cutoff & overnight 24h time ranges wrap by +1440 (never +720)
+  {
+    const sleepEv = C.parseJournal('- 2:46~9:42 😴 睡觉', DEFAULTS)[0];
+    assert.equal(sleepEv.kind, 'event');
+    assert.equal(sleepEv.start, 1606);
+    assert.equal(sleepEv.end, 2022);
+    assert.equal(sleepEv.end - sleepEv.start, 416);
+
+    const sleepDoneEv = C.parseJournal('- DONE 😴 睡觉 2:46~9:42', DEFAULTS)[0];
+    assert.equal(sleepDoneEv.kind, 'event');
+    assert.equal(sleepDoneEv.state, 'done');
+    assert.equal(sleepDoneEv.start, 1606);
+    assert.equal(sleepDoneEv.end, 2022);
+    assert.equal(sleepDoneEv.end - sleepDoneEv.start, 416);
+
+    const sleepDoneTask = C.parseJournal('- DONE 2:46~9:42 😴 睡觉', DEFAULTS)[0];
+    assert.equal(sleepDoneTask.kind, 'task');
+    assert.equal(sleepDoneTask.state, 'done');
+    assert.deepEqual([...sleepDoneTask.actual], [1606, 2022]);
+    assert.equal(sleepDoneTask.dur, 416);
+
+    const sleepBareDone = C.parseJournal('- DONE 2-9 😴 睡觉', DEFAULTS)[0];
+    assert.equal(sleepBareDone.kind, 'task');
+    assert.deepEqual([...sleepBareDone.actual], [1560, 1980]);
+    assert.equal(sleepBareDone.dur, 420);
+
+    const sleepToEv = C.parseJournal('- 2:46 to 9:42 Sleep', DEFAULTS)[0];
+    assert.equal(sleepToEv.kind, 'event');
+    assert.equal(sleepToEv.start, 1606);
+    assert.equal(sleepToEv.end, 2022);
+    assert.equal(sleepToEv.end - sleepToEv.start, 416);
+
+    const overnight23 = C.parseJournal('- 23:00~09:42 睡觉', DEFAULTS)[0];
+    assert.equal(overnight23.start, 1380);
+    assert.equal(overnight23.end, 2022);
+    assert.equal(overnight23.end - overnight23.start, 642);
+
+    const overnight21 = C.parseJournal('- 21:00~09:42 睡觉', DEFAULTS)[0];
+    assert.equal(overnight21.start, 1260);
+    assert.equal(overnight21.end, 2022);
+    assert.equal(overnight21.end - overnight21.start, 762);
+
+    const cfgCutoff0 = { ...DEFAULTS, dayStart: 8, dayEnd: 24, dayCutoff: 0 };
+    const overnight22 = C.parseJournal('- 22:00~02:00 加班', cfgCutoff0)[0];
+    assert.equal(overnight22.start, 1320);
+    assert.equal(overnight22.end, 1560);
+    assert.equal(overnight22.end - overnight22.start, 240);
+
+    const morningCutoff0 = C.parseJournal('- 2:46~9:42 😴 睡觉', cfgCutoff0)[0];
+    assert.equal(morningCutoff0.start, 166);
+    assert.equal(morningCutoff0.end, 582);
+    assert.equal(morningCutoff0.end - morningCutoff0.start, 416);
+
+    const enOver1 = C.parseEnglishRange('23:00 to 09:42 Sleep');
+    assert.deepEqual([enOver1.start, enOver1.end], [1380, 2022]);
+    const enOver2 = C.parseEnglishRange('22:00 to 02:00 Work');
+    assert.deepEqual([enOver2.start, enOver2.end], [1320, 1560]);
+
+    // End-to-end pipeline check for 2:46~9:42 😴 睡觉
+    assert.equal(C.clock(sleepEv.start), '02:46');
+    assert.equal(C.clock(sleepEv.end), '09:42');
+    assert.equal(C.dur(sleepEv.end - sleepEv.start), '6h56m');
+    const sleepNote = '- 2:46~9:42 😴 睡觉\n- TODO 整理笔记 30m';
+    const sleepItems = C.parseJournal(sleepNote, DEFAULTS);
+    C.applyWork(sleepItems, { ...DEFAULTS, workLog: {} }, '2026_11_27', 1700, 0, {});
+    const sleepPlan = C.schedule(sleepItems, DEFAULTS, 1700, 0, {});
+    const sleepCap = C.capacity(sleepItems, sleepPlan, DEFAULTS, 1700, 0, {});
+    const sleepGaps = C.pastGaps(DEFAULTS.dayStart * 60, DEFAULTS.dayEnd * 60, 1700, [[sleepEv.start, sleepEv.end]]);
+    const sleepDayRev = C.dayReview(sleepItems, DEFAULTS, { live: true });
+    const sleepPeriodRev = C.buildPeriodReview([{ dayKey: '2026_11_27', dateStr: '2026-11-27', content: sleepNote, isToday: true, now: 1700 }], DEFAULTS);
+    assert.ok(sleepPlan.available >= 0 && sleepCap.totalFixed === 314);
+    assert.ok(sleepGaps.every(([a, b]) => b > a));
+    assert.ok(sleepDayRev.rows.every((r) => (r.actualMinutes ?? 0) >= 0));
+    assert.ok(sleepPeriodRev.timeBudget.events >= 0 && sleepPeriodRev.timeBudget.unrecorded >= 0);
+
+    // English AM/PM precedence over RANGE_RE & DONE leading ranges
+    const pm1 = C.parseJournal('- 2:30-4pm Meeting', DEFAULTS)[0];
+    assert.equal(pm1.kind, 'event');
+    assert.deepEqual([pm1.start, pm1.end], [870, 960]);
+    assert.equal(pm1.label, 'Meeting');
+
+    const pm2 = C.parseJournal('- 11:00-1:00pm Lunch', DEFAULTS)[0];
+    assert.equal(pm2.kind, 'event');
+    assert.deepEqual([pm2.start, pm2.end], [660, 780]);
+    assert.equal(pm2.label, 'Lunch');
+
+    const pm3 = C.parseJournal('- 9:30-11pm Dinner', DEFAULTS)[0];
+    assert.equal(pm3.kind, 'event');
+    assert.deepEqual([pm3.start, pm3.end], [1290, 1380]);
+    assert.equal(pm3.label, 'Dinner');
+
+    const pmDone1 = C.parseJournal('- DONE 2:30-4pm Meeting', DEFAULTS)[0];
+    assert.equal(pmDone1.kind, 'task');
+    assert.deepEqual([...pmDone1.actual], [870, 960]);
+    assert.equal(pmDone1.dur, 90);
+
+    const pmDone2 = C.parseJournal('- DONE 2-4pm Meeting', DEFAULTS)[0];
+    assert.equal(pmDone2.kind, 'task');
+    assert.deepEqual([...pmDone2.actual], [840, 960]);
+    assert.equal(pmDone2.dur, 120);
+
+    const pmGuard = C.parseJournal('- 14:00-15:00 pm review', DEFAULTS)[0];
+    assert.equal(pmGuard.kind, 'event');
+    assert.deepEqual([pmGuard.start, pmGuard.end], [840, 900]);
+    assert.equal(pmGuard.label, 'pm review');
+
+    // Bare integer range br must not hijack duration ranges
+    const durDoneM = C.parseJournal('- DONE 10-15m 整理', DEFAULTS)[0];
+    assert.equal(durDoneM.actual, undefined);
+    assert.equal(durDoneM.dur, 15);
+
+    const durDoneH = C.parseJournal('- DONE 1-2h 写稿', DEFAULTS)[0];
+    assert.equal(durDoneH.actual, undefined);
+    assert.equal(durDoneH.dur, 120);
+
+    const durDoneCn = C.parseJournal('- DONE 2-3小时 写稿', DEFAULTS)[0];
+    assert.equal(durDoneCn.actual, undefined);
+    assert.equal(durDoneCn.dur, 180);
+
+    // Invalid clock bounds rejected
+    assert.equal(C.parseJournal('- 10:00-99 价格', DEFAULTS).length, 0);
+    assert.equal(C.parseJournal('- 10:75-11:00 错误分钟', DEFAULTS).length, 0);
+    assert.equal(C.parseClock('⏱ 10:75–11:00', DEFAULTS), null);
+
+    // clock() and dur() edge cases
+    assert.equal(C.clock(59.7), '01:00');
+    assert.equal(C.clock(14 * 60 + 59.6), '15:00');
+    assert.equal(C.clock(1439.8), '00:00');
+    assert.equal(C.clock(-10), '23:50');
+    assert.equal(C.clock(1606), '02:46');
+    assert.equal(C.clock(2022), '09:42');
+    assert.equal(C.dur(416), '6h56m');
+    assert.equal(C.dur(-304), '-5h4m');
+    assert.equal(C.dur(0), '0m');
+  }
+
   console.log('PASS enhanced: progress advance, event order barrier, outer labels, mirror sync, polish 1-9 & cache sigs');
 })().catch((e) => {
   console.error(e);

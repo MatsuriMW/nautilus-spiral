@@ -327,6 +327,12 @@ function tokenMinutes(h, mm, half, cnMin) {
   const m = mm !== undefined ? +mm : half ? 30 : cnMin !== undefined ? +cnMin : 0;
   return +h * 60 + m;
 }
+function validToken(h, mm, half, cnMin) {
+  const hh = +h, m = mm !== undefined ? +mm : half ? 30 : cnMin !== undefined ? +cnMin : 0;
+  return hh >= 0 && hh <= 24 && m >= 0 && m < 60 && (hh < 24 || m === 0);
+}
+const validRangeMatch = (m) => validToken(m[1], m[2], m[3], m[4])
+  && (m[5] !== undefined ? validToken(m[5], m[6], m[7], m[8]) : (+m[9] >= 0 && +m[9] <= 24));
 
 const journalDayCutoff = (cfg) => cfg.dayCutoff ?? Math.max(0, cfg.dayEnd - 24);
 
@@ -415,10 +421,7 @@ function parseEnglishRange(text) {
   const to24 = (h, ap) => (ap === "pm" ? (h < 12 ? h + 12 : h) : ap === "am" ? (h === 12 ? 0 : h) : h);
   const start = to24(h1, effA1) * 60 + min1;
   let end = to24(h2, a2) * 60 + min2;
-  if (end < start) {
-    if (a1 || a2) end += 1440;
-    else if (h2 <= 12) end += 720;
-  }
+  if (end < start) end += 1440;
   return { start, end, raw: m[0], explicitAp: Boolean(a1 || a2) };
 }
 
@@ -552,6 +555,7 @@ function parseClock(s, cfg) {
   const clean = raw.replace(/\s*<!--[\s\S]*?-->\s*/g, " ").replace(/\s+\^[\w-]+\s*$/, "").trim();
   const segs = [];
   for (const m of clean.matchAll(/(\d{1,2})[:：](\d{2})\s*(?:[–—~～-]|到|至)\s*(\d{1,2})[:：](\d{2})/g)) {
+    if (!validToken(m[1], m[2]) || !validToken(m[3], m[4])) continue;
     const a = normalize(+m[1] * 60 + +m[2], cfg);
     let b = normalize(+m[3] * 60 + +m[4], cfg);
     if (b < a) b += 1440;
@@ -812,7 +816,7 @@ function parseJournal(content, cfg) {
     const indent = lm[1].replace(/\t/g, "    ").length;
     const p = parseStatusPrefix(s);
     s = p.rest;
-    const stamp = p.stamp ? normalize(tokenMinutes(p.stamp[1], p.stamp[2]), cfg) : null;
+    const stamp = p.stamp && validToken(p.stamp[1], p.stamp[2]) ? normalize(tokenMinutes(p.stamp[1], p.stamp[2]), cfg) : null;
     let kwName = p.kwName;
     let state = !kwName ? "none" : /DONE|^YES$/.test(kwName) ? "done" : /CANCEL|FAILED|^NO$/.test(kwName) ? "drop" : "open";
     let doing = !!(kwName && /DOING|NOW|IN-PROGRESS/.test(kwName));
@@ -850,8 +854,19 @@ function parseJournal(content, cfg) {
     // 紧跟在关键词后面的时间是「记录」：DONE 18:02 = 几点做完；DONE 14:00-15:30 = 实际花在这段；DOING 14:05 = 几点开始做的
     if (state !== "none") {
       const ts = stripLinkUrls(s.replace(/^(?:🤖\s*|\[#[ABC]\]\s*)+/i, ""));   // 自动记的「🤖 」和优先级记号不挡住紧跟在关键词后面的时间
-      const lr = new RegExp("^" + RANGE_RE.source).exec(ts);
-      const ls = !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
+      const erHead = parseEnglishRange(ts);
+      const ler = erHead && ts.startsWith(erHead.raw) ? erHead : null;
+      const lrRaw = !ler && new RegExp("^" + RANGE_RE.source).exec(ts);
+      const lr = lrRaw && validRangeMatch(lrRaw) ? lrRaw : null;
+      const lsRaw = !ler && !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
+      const ls = lsRaw && validToken(lsRaw[1], lsRaw[2], lsRaw[3], lsRaw[4]) ? lsRaw : null;
+      if (state === "done" && ler) {
+        const start = normalize(ler.start, cfg);
+        let end = ler.end >= 1440 ? ler.end : normalize(ler.end, cfg);
+        if (end <= start) end += 1440;
+        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(ler.raw.length)) });
+        return;
+      }
       if (state === "done" && lr) {
         const start = normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
         let end = normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
@@ -860,12 +875,12 @@ function parseJournal(content, cfg) {
         items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(lr[0].length)) });
         return;
       }
-      // 「DONE 10-12 hsy」这种只写整点的时间段，只在紧跟关键词的位置认
-      const br = !lr && state === "done" && /^(\d{1,2})\s*(?:-|–|~|～|到|至)\s*(\d{1,2})(?![\d:：点])/.exec(ts);
+      // 「DONE 10-12 hsy」这种只写整点的时间段，只在紧跟关键词的位置认（排除 10-15m / 1-2h / 2-4pm）
+      const br = !ler && !lr && state === "done" && /^(\d{1,2})\s*(?:-|–|~|～|到|至)\s*(\d{1,2})(?![\d:：点a-zA-Z]|个?小时|分钟?)/.exec(ts);
       if (br && +br[1] <= 24 && +br[2] <= 24) {
         const start = normalize(+br[1] * 60, cfg);
         let end = normalize(+br[2] * 60, cfg);
-        if (end <= start) end += 720;
+        if (end <= start) end += 1440;
         items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(br[0].length)) });
         return;
       }
@@ -876,38 +891,38 @@ function parseJournal(content, cfg) {
         return;
       }
       // SUSPENDED 17:12 / PAUSED 17:12 / WAITING 17:12 / PAUSED 🤖 19:17-19:23：后面的时刻是当初开始做的记录，不是约好的时间，不当事件
-      if (state === "open" && (doing || suspended || paused) && (lr || ls)) {
+      if (state === "open" && (doing || suspended || paused) && (ler || lr || ls)) {
         const m = lr || ls;
-        const d = parseDuration(ts.slice(m[0].length));
+        const d = parseDuration(ts.slice(ler ? ler.raw.length : m[0].length));
         // 自动记的行「TOREVIEW 🤖 21:59-00:06」：这一段就是这回事真实占用的时间（AI 回传的那个时间），
         // 整段算一块、没写时长时也当时长；几件同时在跑就叠着画
         let span = null;
-        if (lr && auto) {
-          const a = normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
-          let b = normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
+        if (auto && (ler || lr)) {
+          const a = ler ? normalize(ler.start, cfg) : normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
+          let b = ler ? (ler.end >= 1440 ? ler.end : normalize(ler.end, cfg)) : normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
           if (b < a) b += 1440;   // 06:42-08:19 这种：分界前的时刻归到了前一天，结束时刻要跟着跨过来
           span = b > a ? [a, b] : null;
         }
-        const startedAt = doing ? normalize(tokenMinutes(m[1], m[2], m[3], m[4]), cfg) : undefined;
+        const startedAt = doing ? (ler ? normalize(ler.start, cfg) : normalize(tokenMinutes(m[1], m[2], m[3], m[4]), cfg)) : undefined;
         items.push({ ...base, kind: "task", dur: d ?? (span ? span[1] - span[0] : cfg.defaultDur), explicitDur: d != null, ...(startedAt !== undefined ? { startedAt } : {}), ...(span ? { aiSpan: span } : {}) });
         return;
       }
     }
 
-    const rm = RANGE_RE.exec(ps);
-    if (rm) {
-      const start = normalize(tokenMinutes(rm[1], rm[2], rm[3], rm[4]), cfg);
-      let end = rm[5] !== undefined ? tokenMinutes(rm[5], rm[6], rm[7], rm[8]) : +rm[9] * 60;
-      end = normalize(end, cfg);
-      if (end <= start) end += 720;                 // 「3:00-5」这种按下午理解
-      items.push({ ...base, kind: "event", start, end });
-      return;
-    }
     const erm = parseEnglishRange(ps);
     if (erm) {
       const start = normalize(erm.start, cfg);
       let end = erm.end >= 1440 ? erm.end : normalize(erm.end, cfg);
-      if (end <= start) end += erm.explicitAp ? 1440 : 720;
+      if (end <= start) end += 1440;
+      items.push({ ...base, kind: "event", start, end });
+      return;
+    }
+    const rm = RANGE_RE.exec(ps);
+    if (rm && validRangeMatch(rm)) {
+      const start = normalize(tokenMinutes(rm[1], rm[2], rm[3], rm[4]), cfg);
+      let end = rm[5] !== undefined ? tokenMinutes(rm[5], rm[6], rm[7], rm[8]) : +rm[9] * 60;
+      end = normalize(end, cfg);
+      if (end <= start) end += 1440;   // 跨日界（如 2:46~9:42）或跨午夜（如 23:00~09:42）时结束时刻顺延一天
       items.push({ ...base, kind: "event", start, end });
       return;
     }
@@ -917,7 +932,7 @@ function parseJournal(content, cfg) {
     }
     const dur = parseDuration(ps) ?? cfg.defaultDur;
     const single = SINGLE_RE.exec(ps);
-    if (single) {
+    if (single && validToken(single[1], single[2], single[3], single[4])) {
       const start = normalize(tokenMinutes(single[1], single[2], single[3], single[4]), cfg);
       items.push({ ...base, kind: "event", start, end: start + dur, pinned: true });
       return;
@@ -2109,7 +2124,10 @@ let hatchSeq = 0;   // 每个螺旋的斜纹图案一个号，几个视图同时
 // ---------------- 工具 ----------------
 
 const pad = (n) => String(n).padStart(2, "0");
-const clock = (t) => `${pad(Math.floor(t / 60) % 24)}:${pad(Math.round(t % 60))}`;
+const clock = (t) => {
+  const m = ((Math.round(t) % 1440) + 1440) % 1440;
+  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+};
 // 「日记日期分界」这类按 24 小时制填的时刻 ↔ 小时数（可以带小数）。认「8」「8.5」「08:00」「4:30」「23：30」，不认就返回 null；范围 00:00–23:59
 function parseHourClock(v) {
   const s = String(v ?? "").trim().replace(/：/g, ":");
@@ -2124,6 +2142,7 @@ const REVIEW_RE = /^复习卡片\s*(\d+)\s*张/;
 const isReview = (t) => t.kind === "task" && t.state === "done" && REVIEW_RE.test(t.label || "");
 function dur(m) {
   m = Math.round(m);
+  if (m < 0) return `-${dur(-m)}`;
   const h = Math.floor(m / 60), r = m % 60;
   return h ? (r ? `${h}h${r}m` : `${h}h`) : `${r}m`;
 }
@@ -4920,7 +4939,8 @@ class SpiralView extends ItemView {
             spanSum += Math.max(1, m.b - m.a);
             if ((m.b - m.a) > (best.b - best.a)) best = m;
           }
-          const mid = (best.a + best.b) / 2;
+          const visA = Math.max(best.a, S), visB = Math.min(best.b, E);
+          const mid = visB > visA ? (visA + visB) / 2 : (best.a + best.b) / 2;
           const [ax, ay] = pt(mid, best.laneOff + 8.5);
           labelCands.push({
             item,
@@ -9717,4 +9737,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, clock, dur, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
