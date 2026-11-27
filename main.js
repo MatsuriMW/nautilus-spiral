@@ -44,7 +44,17 @@ const DEFAULTS = {
   gameProcs: "Hearthstone, steamapps/common",   // 进程路径里含这些词 = 在玩（steamapps/common 下的按游戏文件夹名记）
   gameFrontApps: "Steam",                       // 这些 App 只有在最前面时才算（Steam 客户端后台常驻，不能一开着就算）
   openTodayOnStartup: true,    // 启动 Obsidian 时打开今天的日记（按 dayCutoff 算「今天」）
-  autoCreateJournal: true,     // 今天日记不存在时自动新建；关掉后只读取已有日记
+  autoCreateJournal: true,     // 今天日记不存在时自动新建；关掉后只读取已有日记（同步 journalPolicy.mode）
+  journalPolicy: {
+    configured: false,
+    mode: "auto",              // "auto" | "manual"
+    templateSource: "obsidian",// "obsidian" | "file" | "custom" | "none"
+    templatePath: "",
+    templateText: "",
+    aiPlacement: "bottom",     // "bottom" | "top" | "after-heading" | "placeholder"
+    aiAnchorHeading: "",
+    updatedAt: 0,
+  },
   revealOnStartup: true,       // 启动时把左侧栏切到螺旋日程
   minChunk: 25,         // 最短一段（分钟）：切开的任务每段至少这么长；不够切成两段的整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满
   calendar: false,      // 读 macOS「日历」里的事件当固定事件（只读）
@@ -840,6 +850,113 @@ const trimSlash = (s) => String(s || "").trim().replace(/^\/+|\/+$/g, "");
 // 目录为空 = 库根目录：那时候「在日记目录里」就是路径里没有斜杠
 const inJournalDir = (path, folder) => (folder ? path.startsWith(folder + "/") : !path.includes("/"));
 const joinFolder = (folder, name) => (folder ? `${folder}/${name}` : name);
+
+const SPIRAL_DEFAULT_JOURNAL_POLICY = {
+  configured: false,
+  mode: "auto",
+  templateSource: "obsidian",
+  templatePath: "",
+  templateText: "",
+  aiPlacement: "bottom",
+  aiAnchorHeading: "",
+  updatedAt: 0,
+};
+const SPIRAL_AI_ANCHOR_COMMENT = "<!-- agent-deck:ai-anchor -->";
+
+function normalizeSpiralJournalPolicy(raw, { legacyAutoCreate = true } = {}) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const mode = src.mode === "auto" || src.mode === "manual" ? src.mode : (legacyAutoCreate === false ? "manual" : "auto");
+  const templateSource = ["obsidian", "file", "custom", "none"].includes(src.templateSource) ? src.templateSource : "obsidian";
+  const aiPlacement = ["bottom", "top", "after-heading", "placeholder"].includes(src.aiPlacement) ? src.aiPlacement : "bottom";
+  return {
+    configured: src.configured === true,
+    mode,
+    templateSource,
+    templatePath: String(src.templatePath || "").trim(),
+    templateText: String(src.templateText ?? ""),
+    aiPlacement,
+    aiAnchorHeading: String(src.aiAnchorHeading || "").trim(),
+    updatedAt: Number.isFinite(Number(src.updatedAt)) ? Number(src.updatedAt) : 0,
+  };
+}
+
+function spiralExtractHeadings(md) {
+  const lines = String(md || "").replace(/\r\n/g, "\n").split("\n");
+  let start = 0;
+  if ((lines[0] || "").trim() === "---") {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() !== "---") continue;
+      if (lines.slice(1, i).some((l) => /^[^\s:#-][^\n:]*\s*:/.test(l))) start = i + 1;
+      break;
+    }
+  }
+  const out = [];
+  let inFence = false;
+  for (let i = start; i < lines.length; i++) {
+    if (/^\s*(?:```|~~~)/.test(lines[i])) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = /^(#{1,6})\s+(.+?)\s*#*$/.exec(lines[i]);
+    if (m) out.push({ level: m[1].length, raw: `${m[1]} ${m[2]}`, text: m[2].trim() });
+  }
+  return out;
+}
+
+function detectObsidianDailyTemplatePath(app) {
+  let tplPath = "";
+  try {
+    const dn = app?.internalPlugins?.getPluginById?.("daily-notes");
+    if (dn?.enabled) tplPath = String(dn.instance?.options?.template || "").trim();
+  } catch (e) { /* 没装也没有 */ }
+  if (!tplPath) {
+    try {
+      const pn = app?.plugins?.plugins?.["periodic-notes"]?.settings?.daily;
+      if (pn?.enabled) tplPath = String(pn.template || "").trim();
+    } catch (e) { /* 没装也没有 */ }
+  }
+  return tplPath;
+}
+
+function resolveSpiralTemplateFile(app, tplPath) {
+  const p = String(tplPath || "").trim();
+  if (!p || !app?.vault) return null;
+  const f = app.vault.getAbstractFileByPath?.(p)
+    || (/\.md$/i.test(p) ? null : app.vault.getAbstractFileByPath?.(`${p}.md`))
+    || app.metadataCache?.getFirstLinkpathDest?.(p, "");
+  return f && typeof f.extension === "string" ? f : null;
+}
+
+function expandSpiralTemplateVars(raw, app, d, path = "", keepAiAnchor = false) {
+  let tplOpts = {};
+  try { tplOpts = app?.internalPlugins?.getPluginById?.("templates")?.instance?.options || {}; } catch (e) { /* ignore */ }
+  const dateFmt = String(tplOpts.dateFormat || "YYYY-MM-DD").trim() || "YYYY-MM-DD";
+  const timeFmt = String(tplOpts.timeFormat || "HH:mm").trim() || "HH:mm";
+  const cleanPath = String(path || "");
+  const title = cleanPath.slice(cleanPath.lastIndexOf("/") + 1).replace(/\.md$/i, "");
+  const now = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  const tMap = { HH: p2(now.getHours()), H: now.getHours(), mm: p2(now.getMinutes()), m: now.getMinutes(), ss: p2(now.getSeconds()), s: now.getSeconds() };
+  const expanded = String(raw).replace(/\{\{\s*(date|time|title)\s*(?::([^{}]*))?\s*\}\}/g, (_, name, fmt) => {
+    if (name === "title") return title;
+    const format = String(fmt || "").trim() || (name === "date" ? dateFmt : timeFmt);
+    if (name === "date") {
+      if (d && typeof d.format === "function") return d.format(format);
+      return fmtDate(now, format);
+    }
+    return format.replace(/\[[^\]]*\]|HH|H|mm|m|ss|s/g, (tk) => (tk[0] === "[" ? tk.slice(1, -1) : tMap[tk]));
+  });
+  let inFence = false;
+  return expanded.replace(/\r\n/g, "\n").split("\n").map((line) => {
+    if (/^\s*(?:```|~~~)/.test(line)) { inFence = !inFence; return line; }
+    if (inFence || !/\{\{\s*ai\s*\}\}/i.test(line)) return line;
+    return line.replace(/\{\{\s*ai\s*\}\}/gi, keepAiAnchor ? SPIRAL_AI_ANCHOR_COMMENT : "");
+  }).join("\n");
+}
+
+function getSharedJournalPromptState(app) {
+  const store = (globalThis.__obSharedJournalPromptState ||= {});
+  const key = app?.vault?.getName?.() || "__default__";
+  return (store[key] ||= { modalPromise: null, dismissedDay: "" });
+}
 
 let _jdet = null;   // 60 秒缓存：翻一遍库不便宜，设置没变就复用
 function detectJournal(app, cfg) {
@@ -4236,6 +4353,213 @@ class QuickPanel extends OB.FuzzySuggestModal {
   onChooseItem(a) { if (a.editor) a.run(this.view.editor, this.view); else a.run(); }
 }
 
+class VaultTemplatePickerModal extends OB.FuzzySuggestModal {
+  constructor(app, onChoose) {
+    super(app);
+    this.onChoose = onChoose;
+    this.setPlaceholder(T("输入模板笔记路径或文件名…", "Type template path or note name…"));
+  }
+  getItems() {
+    const files = this.app?.vault?.getMarkdownFiles?.() || [];
+    return [...files].sort((a, b) => a.path.localeCompare(b.path));
+  }
+  getItemText(file) { return file.path; }
+  onChooseItem(file) { this.onChoose?.(file); }
+}
+
+class SpiralJournalSetupModal extends OB.Modal {
+  constructor(app, plugin, { day = "", targetPath = "", initialPolicy = null, onResolve = null } = {}) {
+    super(app);
+    this.plugin = plugin;
+    this.day = day;
+    this.targetPath = targetPath;
+    this.onResolve = onResolve;
+    this._settled = false;
+    this._userPickedPlacement = false;
+    this._headings = [];
+    this._hasAiToken = false;
+    this._headingsReq = 0;
+    const base = initialPolicy || plugin?.getJournalPolicy?.() || {};
+    this.state = normalizeSpiralJournalPolicy(base, { legacyAutoCreate: plugin?.settings?.autoCreateJournal !== false });
+    if (this.state.configured && base?.aiPlacement) this._userPickedPlacement = true;
+  }
+
+  onOpen() {
+    this.modalEl?.addClass?.("naut-jsetup");
+    this.render();
+    this.refreshHints();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    if (!this._settled) {
+      this._settled = true;
+      const shared = getSharedJournalPromptState(this.app);
+      if (this.day) shared.dismissedDay = this.day;
+      this.onResolve?.({ saved: false, dismissed: true });
+    }
+  }
+
+  settle(res) {
+    if (this._settled) return;
+    this._settled = true;
+    this.onResolve?.(res);
+    this.close();
+  }
+
+  async refreshHints({ autoSuggestPlaceholder = true } = {}) {
+    const req = ++this._headingsReq;
+    let raw = "";
+    if (this.state.templateSource === "custom") {
+      raw = this.state.templateText || "";
+    } else if (this.state.templateSource === "file" || this.state.templateSource === "obsidian") {
+      const p = this.state.templateSource === "file" ? this.state.templatePath : detectObsidianDailyTemplatePath(this.app);
+      const f = p ? resolveSpiralTemplateFile(this.app, p) : null;
+      if (f) { try { raw = await this.app.vault.read(f); } catch (e) { raw = ""; } }
+    }
+    if (req !== this._headingsReq) return;
+    this._headings = spiralExtractHeadings(raw);
+    this._hasAiToken = /\{\{\s*ai\s*\}\}|<!--\s*agent-deck:ai-anchor\s*-->/i.test(raw);
+    if (autoSuggestPlaceholder && !this._userPickedPlacement && this.state.mode === "auto") {
+      if (this._hasAiToken) this.state.aiPlacement = "placeholder";
+      else if (this.state.aiPlacement === "placeholder") this.state.aiPlacement = "bottom";
+    }
+    this.renderPlacement();
+  }
+
+  render() {
+    const el = this.contentEl;
+    el.empty();
+    const hasDeck = !!this.plugin?.agentDeck?.();
+    const obsTpl = detectObsidianDailyTemplatePath(this.app);
+
+    const head = el.createDiv({ cls: "naut-jsetup-head" });
+    head.createEl("h3", { text: T("今日日记还未创建", "Today's daily note doesn't exist yet") });
+    head.createEl("p", {
+      cls: "naut-jsetup-why",
+      text: hasDeck
+        ? T("螺旋日程用今日日记规划时间轴，Agent Deck 用它自动记录 AI 会话与结论。设好一次后，两款插件会共用这套规则，以后随时可在设置里修改。", "Nautilus Spiral uses today's note for your timeline, and Agent Deck logs AI sessions there. Configure once—both plugins share the rule, editable anytime in Settings.")
+        : T("螺旋日程需要今日日记来读取任务、日程块并记录实际耗时。设好一次后后续将自动沿用，以后随时可在设置里修改。", "Nautilus Spiral needs today's daily note to read your tasks and events and log time. Set this once to apply going forward; editable anytime in Settings."),
+    });
+    if (this.targetPath) head.createDiv({ cls: "naut-jsetup-path", text: T(`今日日记路径：${this.targetPath}`, `Today's note path: ${this.targetPath}`) });
+
+    const s1 = el.createDiv({ cls: "naut-jsetup-sec" });
+    s1.createDiv({ cls: "naut-jsetup-lbl", text: T("1. 今天没有日记时怎么做？", "1. When today's note is missing:") });
+    const grid = s1.createDiv({ cls: "naut-jsetup-choices" });
+    const addChoice = (mode, title, desc) => {
+      const b = grid.createEl("button", { cls: "naut-jsetup-choice" + (this.state.mode === mode ? " is-on" : ""), attr: { type: "button" } });
+      b.createDiv({ cls: "naut-jsetup-choice-t", text: title });
+      b.createDiv({ cls: "naut-jsetup-choice-d", text: desc });
+      b.onclick = () => { if (this.state.mode !== mode) { this.state.mode = mode; this.render(); this.refreshHints(); } };
+    };
+    addChoice("auto", T("帮我自动新建", "Create automatically"), T("按下方选定的模板创建今日日记", "Create today's note using the template chosen below"));
+    addChoice("manual", T("我自己手动新建", "I'll create it manually"), T("不抢先建文件，等你手动或用 Templater 建好后再读取/写入", "Don't pre-create a file; wait until you create it manually or with Templater"));
+
+    if (this.state.mode === "auto") {
+      const s2 = el.createDiv({ cls: "naut-jsetup-sec" });
+      s2.createDiv({ cls: "naut-jsetup-lbl", text: T("2. 新建日记时套用什么模板？", "2. Template for auto-created notes:") });
+      const seg = s2.createDiv({ cls: "naut-jsetup-seg" });
+      const opts = [
+        ["obsidian", obsTpl ? T(`Obsidian 模板（${obsTpl}）`, `Obsidian template (${obsTpl})`) : T("Obsidian 模板（未配置）", "Obsidian template (none)")],
+        ["file", T("选库内文件", "Pick vault file")],
+        ["custom", T("手动输入模板", "Custom text")],
+        ["none", T("空白日记", "Blank / default")],
+      ];
+      for (const [id, lbl] of opts) {
+        const b = seg.createEl("button", { cls: "naut-jsetup-segbtn" + (this.state.templateSource === id ? " is-on" : ""), text: lbl, attr: { type: "button" } });
+        b.onclick = () => { this.state.templateSource = id; this.render(); this.refreshHints(); };
+      }
+      if (this.state.templateSource === "obsidian") {
+        s2.createDiv({ cls: "naut-jsetup-hint", text: obsTpl ? T(`将读取模板「${obsTpl}」并展开 {{date}}、{{time}}、{{title}}。`, `Reads “${obsTpl}” and expands {{date}}, {{time}}, {{title}}.`) : T("未检测到核心「日记」或 Periodic Notes 模板，将使用默认属性头。", "No Daily notes or Periodic Notes template found; uses default frontmatter.") });
+      } else if (this.state.templateSource === "file") {
+        const row = s2.createDiv({ cls: "naut-jsetup-filerow" });
+        const inp = row.createEl("input", { type: "text", value: this.state.templatePath, attr: { placeholder: T("输入库内模板路径，如：Templates/Daily.md", "Template path, e.g. Templates/Daily.md") } });
+        inp.oninput = () => { this.state.templatePath = inp.value.trim(); this.refreshHints({ autoSuggestPlaceholder: false }); };
+        const pick = row.createEl("button", { text: T("选择文件", "Choose file"), attr: { type: "button" } });
+        pick.onclick = () => new VaultTemplatePickerModal(this.app, (f) => { this.state.templatePath = f.path; this.render(); this.refreshHints(); }).open();
+      } else if (this.state.templateSource === "custom") {
+        const ta = s2.createEl("textarea", { cls: "naut-jsetup-ta", attr: { rows: "5", placeholder: T("---\n日期: {{date:YYYY-MM-DD}}\n---\n\n## 今日计划\n\n## 复盘", "---\ndate: {{date:YYYY-MM-DD}}\n---\n\n## Today\n\n## Review") } });
+        ta.value = this.state.templateText || "";
+        ta.oninput = () => { this.state.templateText = ta.value; this.refreshHints({ autoSuggestPlaceholder: false }); };
+        s2.createDiv({ cls: "naut-jsetup-hint", text: T("支持 {{title}}、{{date}}、{{date:YYYY-MM-DD}}、{{time}}。", "Supports {{title}}, {{date}}, {{date:YYYY-MM-DD}}, {{time}}.") });
+      }
+    }
+
+    this._placeSec = el.createDiv({ cls: "naut-jsetup-sec" });
+    this.renderPlacement();
+
+    const foot = el.createDiv({ cls: "naut-jsetup-foot" });
+    const later = foot.createEl("button", { text: T("今天先不建", "Not today"), attr: { type: "button" } });
+    later.onclick = () => {
+      const shared = getSharedJournalPromptState(this.app);
+      if (this.day) shared.dismissedDay = this.day;
+      this.settle({ saved: false, dismissed: true });
+    };
+    const ok = foot.createEl("button", { cls: "mod-cta", text: this.state.mode === "auto" ? T("保存并新建今日日记", "Save & create today's note") : T("记住设定", "Remember choice"), attr: { type: "button" } });
+    ok.onclick = async () => {
+      if (this.state.mode === "auto" && this.state.templateSource === "file" && !this.state.templatePath.trim()) this.state.templateSource = "none";
+      const shared = getSharedJournalPromptState(this.app);
+      shared.dismissedDay = "";
+      const saved = await this.plugin?.updateJournalPolicy?.({ ...this.state, configured: true });
+      this.settle({ saved: true, policy: saved || { ...this.state, configured: true } });
+    };
+  }
+
+  renderPlacement() {
+    const sec = this._placeSec;
+    if (!sec) return;
+    sec.empty();
+    const hasDeck = !!this.plugin?.agentDeck?.();
+    if (!hasDeck) { sec.style.display = "none"; return; }
+    sec.style.display = "";
+    const step = this.state.mode === "auto" ? "3" : "2";
+    sec.createDiv({
+      cls: "naut-jsetup-lbl",
+      text: this.state.mode === "auto"
+        ? T(`${step}. AI 自动记录区域放到模板的哪里？`, `${step}. Where should Agent Deck's AI log region go?`)
+        : T(`${step}. 等你建好日记后，AI 自动记录默认放哪里？`, `${step}. Where should AI logs go once your note exists?`),
+    });
+    const seg = sec.createDiv({ cls: "naut-jsetup-seg" });
+    for (const [id, lbl] of [
+      ["bottom", T("日记末尾", "Bottom")],
+      ["top", T("日记开头", "Top")],
+      ["after-heading", T("指定标题下", "Under heading")],
+      ["placeholder", this._hasAiToken ? T("模板 {{ai}} 处（已检测到）", "At {{ai}} (detected)") : T("模板 {{ai}} 处", "At {{ai}}")],
+    ]) {
+      const b = seg.createEl("button", { cls: "naut-jsetup-segbtn" + (this.state.aiPlacement === id ? " is-on" : ""), text: lbl, attr: { type: "button" } });
+      b.onclick = () => { this._userPickedPlacement = true; this.state.aiPlacement = id; this.renderPlacement(); };
+    }
+    if (this.state.aiPlacement === "after-heading") {
+      if (this._headings.length) {
+        const sel = sec.createEl("select", { cls: "naut-jsetup-select" });
+        if (!this.state.aiAnchorHeading) this.state.aiAnchorHeading = this._headings[0].raw;
+        for (const h of this._headings) {
+          const opt = sel.createEl("option", { value: h.raw, text: h.raw });
+          if (h.raw === this.state.aiAnchorHeading || h.text === this.state.aiAnchorHeading) opt.selected = true;
+        }
+        sel.onchange = () => { this.state.aiAnchorHeading = sel.value; };
+      } else {
+        const inp = sec.createEl("input", { cls: "naut-jsetup-input", type: "text", value: this.state.aiAnchorHeading || "", attr: { placeholder: T("输入标题名，如：## AI 记录", "Heading name, e.g. ## AI Log") } });
+        inp.oninput = () => { this.state.aiAnchorHeading = inp.value.trim(); };
+      }
+      sec.createDiv({ cls: "naut-jsetup-hint", text: T("当天日记里若找不到该标题，将自动落到日记末尾。", "Falls back to the bottom if that heading isn't found.") });
+    }
+  }
+}
+
+async function openStandaloneJournalSetupModal(plugin, { day = "", targetPath = "", manualTrigger = false } = {}) {
+  const app = plugin?.app;
+  if (!app) return { saved: false, dismissed: false };
+  const shared = getSharedJournalPromptState(app);
+  if (shared.modalPromise) return shared.modalPromise;
+  if (!manualTrigger && day && shared.dismissedDay === day) return { saved: false, dismissed: true };
+  const initialPolicy = plugin.getJournalPolicy?.();
+  shared.modalPromise = new Promise((resolve) => {
+    new SpiralJournalSetupModal(app, plugin, { day, targetPath, initialPolicy, onResolve: resolve }).open();
+  }).finally(() => { shared.modalPromise = null; });
+  return shared.modalPromise;
+}
+
 // ---------------- 视图 ----------------
 
 const displayWidth = (s) => {
@@ -6263,15 +6587,35 @@ class SpiralReviewView extends ItemView {
     const path = this.plugin.journalPath(d);
     let file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
-      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      file = await this.app.vault.create(path, await this.plugin.journalInitialContent(d, path));
+      let policy = typeof this.plugin.getJournalPolicy === "function"
+        ? this.plugin.getJournalPolicy()
+        : { configured: true, mode: this.plugin.settings.autoCreateJournal === false ? "manual" : "auto" };
+      if (!policy.configured && typeof this.plugin.promptJournalPolicyIfNeeded === "function") {
+        const res = await this.plugin.promptJournalPolicyIfNeeded({
+          day: typeof d?.format === "function" ? d.format("YYYY-MM-DD") : fmtDate(d, "YYYY-MM-DD"),
+          targetPath: path,
+          manualTrigger: true,
+        });
+        file = this.app.vault.getAbstractFileByPath(path);
+        policy = res?.policy || this.plugin.getJournalPolicy();
+      }
+      if (!(file instanceof TFile)) {
+        if (policy.mode !== "auto" || !policy.configured) {
+          new OB.Notice(T("今天的日记还没创建，请先新建后再写入复盘", "Today's daily note does not exist yet; please create it before saving the review"));
+          return null;
+        }
+        const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+        if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+        file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) file = await this.app.vault.create(path, await this.plugin.journalInitialContent(d, path));
+      }
     }
     return file;
   }
 
   async _writeToTodayJournal(data) {
     const file = await this._ensureTodayNote();
+    if (!(file instanceof TFile)) return;
     const md = formatReviewMarkdown(data, this.plugin.settings);
     let targetLine = 0;
     await this.plugin.editFile(file, (lines) => {
@@ -6705,8 +7049,14 @@ module.exports = class NautilusSpiral extends Plugin {
       this.openLine(f, hit ? hit.line : 0);
     });
     this.setupWidgetInbox();
-    this.addSettingTab(new SpiralSettings(this.app, this));
+    this.settingTab = new SpiralSettings(this.app, this);
+    this.addSettingTab(this.settingTab);
     this.setupStatusBar();
+    this.registerEvent(this.app.workspace.on("shared:journal-policy-changed", (payload) => {
+      if (payload && payload.from !== "nautilus-spiral" && payload.policy) {
+        this.applySharedJournalPolicy(payload.policy, { from: payload.from });
+      }
+    }));
 
     // 在日历里点某一天（或打开任何一篇日记），螺旋跟着切到那一天
     this.registerEvent(this.app.workspace.on("file-open", (f) => {
@@ -6743,6 +7093,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
     this.app.workspace.onLayoutReady(async () => {
       this.journalDetect();   // 库这时候才完整索引好，翻库猜的结论这时候才准
+      this.getJournalPolicy();
       this.tickPomodoro();
       const f = this.app.vault.getAbstractFileByPath(this.journalPath(this.today()));
       if (f instanceof TFile) this.observe(f, await this.app.vault.read(f), false);
@@ -8425,60 +8776,134 @@ module.exports = class NautilusSpiral extends Plugin {
     return T(`---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`, `---\njournal: Daily\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`);
   }
 
-  // 新建今天的日记时的初始内容：优先读取核心「日记」或 Periodic Notes 的模板（展开基础 {{title}}/{{date}}/{{time}}），无模板时回退 journalSeed(d)
+  getOwnJournalPolicy() {
+    return normalizeSpiralJournalPolicy(this.settings.journalPolicy, {
+      legacyAutoCreate: this.settings.autoCreateJournal !== false,
+    });
+  }
+
+  getJournalPolicy() {
+    const own = this.getOwnJournalPolicy();
+    const deck = typeof this.agentDeck === "function" ? this.agentDeck() : null;
+    const peerRaw = typeof deck?.getOwnJournalPolicy === "function" ? deck.getOwnJournalPolicy() : null;
+    if (!peerRaw) return own;
+    const peer = normalizeSpiralJournalPolicy(peerRaw);
+    const peerWins = (peer.configured && !own.configured)
+      || (peer.updatedAt > own.updatedAt && (peer.configured || !own.configured));
+    if (peerWins) {
+      this.settings.journalPolicy = { ...peer };
+      this.settings.autoCreateJournal = peer.mode === "auto";
+      this.saveData?.(this.settings)?.catch?.(() => {});
+      return peer;
+    }
+    return own;
+  }
+
+  async applySharedJournalPolicy(policy, { from = "" } = {}) {
+    if (from === "nautilus-spiral" || !policy) return;
+    const incoming = normalizeSpiralJournalPolicy(policy);
+    const own = this.getOwnJournalPolicy();
+    if (own.configured && incoming.updatedAt > 0 && own.updatedAt > incoming.updatedAt) return;
+    const same = own.configured === incoming.configured
+      && own.mode === incoming.mode
+      && own.templateSource === incoming.templateSource
+      && own.templatePath === incoming.templatePath
+      && own.templateText === incoming.templateText
+      && own.aiPlacement === incoming.aiPlacement
+      && own.aiAnchorHeading === incoming.aiAnchorHeading
+      && own.updatedAt === incoming.updatedAt;
+    if (same) return;
+    this.settings.journalPolicy = { ...incoming };
+    this.settings.autoCreateJournal = incoming.mode === "auto";
+    await this.saveData?.(this.settings);
+    if (this.app.setting?.activeTab === this.settingTab && this.settingTab?.containerEl?.isConnected) {
+      this.settingTab.display();
+    }
+  }
+
+  async updateJournalPolicy(patch = {}) {
+    const cur = this.getJournalPolicy();
+    const next = normalizeSpiralJournalPolicy({
+      ...SPIRAL_DEFAULT_JOURNAL_POLICY,
+      ...cur,
+      ...patch,
+      configured: patch.configured ?? true,
+      updatedAt: Number(patch.updatedAt) || Date.now(),
+    });
+    this.settings.journalPolicy = { ...next };
+    this.settings.autoCreateJournal = next.mode === "auto";
+    await this.saveData?.(this.settings);
+    const deck = typeof this.agentDeck === "function" ? this.agentDeck() : null;
+    try { await deck?.applySharedJournalPolicy?.(next, { from: "nautilus-spiral" }); } catch (e) { /* ignore */ }
+    try { this.app?.workspace?.trigger?.("shared:journal-policy-changed", { from: "nautilus-spiral", policy: next }); } catch (e) { /* ignore */ }
+    return next;
+  }
+
+  async promptJournalPolicyIfNeeded({ day = "", targetPath = "", manualTrigger = false } = {}) {
+    const policy = this.getJournalPolicy();
+    if (policy.configured && !manualTrigger) return { saved: true, policy };
+    const dayStr = day || (typeof this.today()?.format === "function" ? this.today().format("YYYY-MM-DD") : fmtDate(this.today(), "YYYY-MM-DD"));
+    const pathStr = targetPath || this.journalPath(this.today());
+    const deck = typeof this.agentDeck === "function" ? this.agentDeck() : null;
+    if (typeof deck?.promptJournalPolicyIfNeeded === "function") {
+      return deck.promptJournalPolicyIfNeeded({
+        day: dayStr,
+        targetPath: pathStr,
+        caller: "nautilus-spiral",
+        manualTrigger,
+      });
+    }
+    return openStandaloneJournalSetupModal(this, {
+      day: dayStr,
+      targetPath: pathStr,
+      manualTrigger,
+    });
+  }
+
+  // 新建今天的日记时的初始内容：按共享日记创建策略（默认/指定库内文件/自定义文本/无模板），并展开 {{title}}/{{date}}/{{time}} 与 {{ai}}
   async journalInitialContent(d, path = "") {
     const app = this.app;
-    let tplPath = "";
-    try {
-      const dn = app?.internalPlugins?.getPluginById?.("daily-notes");
-      if (dn?.enabled) tplPath = String(dn.instance?.options?.template || "").trim();
-    } catch (e) { /* 没装也没有 */ }
-    if (!tplPath) {
-      try {
-        const pn = app?.plugins?.plugins?.["periodic-notes"]?.settings?.daily;
-        if (pn?.enabled) tplPath = String(pn.template || "").trim();
-      } catch (e) { /* 没装也没有 */ }
+    const policy = this.getJournalPolicy();
+    if (policy.templateSource === "none") return this.journalSeed(d);
+    const cleanPath = String(path || this.journalPath(d) || "");
+    const keepAiAnchor = !!(typeof this.agentDeck === "function" && this.agentDeck());
+    if (policy.templateSource === "custom") {
+      return expandSpiralTemplateVars(policy.templateText || "", app, d, cleanPath, keepAiAnchor);
     }
+    const tplPath = policy.templateSource === "file"
+      ? policy.templatePath
+      : detectObsidianDailyTemplatePath(app);
     if (tplPath) {
-      const tplFile = app?.vault?.getAbstractFileByPath?.(tplPath)
-        || app?.vault?.getAbstractFileByPath?.(`${tplPath}.md`)
-        || app?.metadataCache?.getFirstLinkpathDest?.(tplPath, "");
-      if (tplFile && typeof tplFile.extension === "string") {
+      const tplFile = resolveSpiralTemplateFile(app, tplPath);
+      if (tplFile) {
         try {
           const raw = await app.vault.read(tplFile);
-          let tplOpts = {};
-          try { tplOpts = app.internalPlugins?.getPluginById?.("templates")?.instance?.options || {}; } catch (e) { /* ignore */ }
-          const dateFmt = String(tplOpts.dateFormat || "YYYY-MM-DD").trim() || "YYYY-MM-DD";
-          const timeFmt = String(tplOpts.timeFormat || "HH:mm").trim() || "HH:mm";
-          const cleanPath = String(path || this.journalPath(d) || "");
-          const title = cleanPath.slice(cleanPath.lastIndexOf("/") + 1).replace(/\.md$/i, "");
-          const now = new Date();
-          const p2 = (n) => String(n).padStart(2, "0");
-          const tMap = { HH: p2(now.getHours()), H: now.getHours(), mm: p2(now.getMinutes()), m: now.getMinutes(), ss: p2(now.getSeconds()), s: now.getSeconds() };
-          return String(raw).replace(/\{\{\s*(date|time|title)\s*(?::([^{}]*))?\s*\}\}/g, (_, name, fmt) => {
-            if (name === "title") return title;
-            const format = String(fmt || "").trim() || (name === "date" ? dateFmt : timeFmt);
-            if (name === "date") {
-              if (d && typeof d.format === "function") return d.format(format);
-              return fmtDate(now, format);
-            }
-            return format.replace(/\[[^\]]*\]|HH|H|mm|m|ss|s/g, (tk) => (tk[0] === "[" ? tk.slice(1, -1) : tMap[tk]));
-          });
+          return expandSpiralTemplateVars(raw, app, d, cleanPath, keepAiAnchor);
         } catch (e) { /* 模板读取失败时回退默认种子 */ }
       }
     }
     return this.journalSeed(d);
   }
 
-  // 今天的日记被删了或者还没建：面板刷着的时候顺手补一篇回来（不在后台无声建文件；关闭自动新建时跳过）
+  // 今天的日记被删了或者还没建：面板刷着的时候先确认策略（未配置时弹一次引导窗；手动模式或当天已跳过时不建文件）
   async ensureToday() {
-    if (this.settings.autoCreateJournal === false) return;
     if (this._ensuringToday || !this.views().length) return;
     const d = this.today();
     const path = this.journalPath(d);
     if (this.app.vault.getAbstractFileByPath(path)) return;
     this._ensuringToday = true;
     try {
+      let policy = this.getJournalPolicy();
+      if (!policy.configured) {
+        const res = await this.promptJournalPolicyIfNeeded({
+          day: typeof d?.format === "function" ? d.format("YYYY-MM-DD") : fmtDate(d, "YYYY-MM-DD"),
+          targetPath: path,
+          manualTrigger: false,
+        });
+        policy = res?.policy || this.getJournalPolicy();
+      }
+      if (!policy.configured || policy.mode !== "auto") return;
+      if (this.app.vault.getAbstractFileByPath(path)) return;
       const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
       await this.app.vault.create(path, await this.journalInitialContent(d, path));
@@ -8509,20 +8934,33 @@ module.exports = class NautilusSpiral extends Plugin {
     return leaf;
   }
 
-  // 打开「今天」的日记：在当前页打开（替换当前页，不新开标签）；当前页是钉住的才开新标签；没有就建一篇。
+  // 打开「今天」的日记：在当前页打开（替换当前页，不新开标签）；当前页是钉住的才开新标签；没有就走共享引导/创建策略。
   // 启动时（reuse）已经有标签开着它就切过去，免得恢复工作区后多出一个一样的标签
   async openToday(reuse = false) {
     const d = this.today();
     const path = this.journalPath(d);
     let file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
-      if (this.settings.autoCreateJournal === false) {
-        if (!reuse) new OB.Notice(T("今天的日记还没创建（已关闭自动新建日记）", "Today's daily note does not exist yet (auto-create is off)"));
-        return;
+      let policy = this.getJournalPolicy();
+      if (!policy.configured) {
+        const res = await this.promptJournalPolicyIfNeeded({
+          day: typeof d?.format === "function" ? d.format("YYYY-MM-DD") : fmtDate(d, "YYYY-MM-DD"),
+          targetPath: path,
+          manualTrigger: !reuse,
+        });
+        file = this.app.vault.getAbstractFileByPath(path);
+        policy = res?.policy || this.getJournalPolicy();
       }
-      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      file = await this.app.vault.create(path, await this.journalInitialContent(d, path));
+      if (!(file instanceof TFile)) {
+        if (!policy.configured || policy.mode !== "auto") {
+          if (!reuse) new OB.Notice(T("今天的日记还没创建（当前设为手动新建）", "Today's daily note does not exist yet (manual creation mode)"));
+          return;
+        }
+        const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+        if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
+        file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) file = await this.app.vault.create(path, await this.journalInitialContent(d, path));
+      }
     }
     let open = null;
     if (reuse) this.app.workspace.iterateRootLeaves((l) => { if (!open && l.view?.file?.path === path) open = l; });
@@ -9447,8 +9885,81 @@ class SpiralSettings extends PluginSettingTab {
       .onChange(async (v) => { s[key] = v.trim(); s.journalAuto = false; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
     jt(T("日记文件夹", "Daily note folder"), T("填了就不再自动认；空着 = 库根目录", "Filled in = stop auto-detecting; empty = vault root"), "folder");
     jt(T("日记文件名格式", "Daily note file name format"), T("moment.js 格式，例如 YYYY-MM-DD；固定文字用方括号，如 YYYYMMDD[ - 日笔记]。填了就不再自动认", "moment.js format, e.g. YYYY-MM-DD; wrap literal text in brackets, e.g. YYYYMMDD[ - Daily]. Filling it in turns auto-detect off"), "format");
-    new Setting(containerEl).setName(T("自动新建今天的日记", "Auto-create today's daily note")).setDesc(T("今天日记不存在时按核心「日记」或 Periodic Notes 模板自动新建（无模板时用默认属性头）；关掉后只读取已有日记，避免抢在自定义模板或 Templater 之前建空文件", "Create today's note from Daily notes or Periodic Notes template if missing (falls back to default frontmatter); turn off to only read existing notes without racing ahead of your manual template or Templater"))
-      .addToggle((t) => t.setValue(s.autoCreateJournal !== false).onChange(async (v) => { s.autoCreateJournal = v; await this.plugin.saveData(s); }));
+    const jp = this.plugin.getJournalPolicy();
+    const hasDeck = !!this.plugin.agentDeck?.();
+    const obsTpl = detectObsidianDailyTemplatePath(this.app);
+    new Setting(containerEl)
+      .setName(T("今日日记创建方式", "Daily note creation"))
+      .setDesc(hasDeck
+        ? T("与 Agent Deck 共用同一套设定；选「手动新建」时两款插件都会等你建好后再读写", "Shared with Agent Deck; Manual waits until you create today's note")
+        : T("今天日记不存在时的处理方式；选「手动新建」时会等你建好后再读取/写入", "What to do when today's daily note is missing; Manual waits until you create it"))
+      .addDropdown((d) => d
+        .addOption("auto", T("自动新建", "Auto-create"))
+        .addOption("manual", T("手动新建", "Create manually"))
+        .setValue(jp.mode === "manual" ? "manual" : "auto")
+        .onChange(async (v) => { await this.plugin.updateJournalPolicy({ mode: v, configured: true }); this.display(); }))
+      .addButton((b) => b
+        .setButtonText(T("打开引导弹窗", "Open setup wizard"))
+        .onClick(async () => { await this.plugin.promptJournalPolicyIfNeeded({ manualTrigger: true }); this.display(); }));
+    if (jp.mode !== "manual") {
+      new Setting(containerEl)
+        .setName(T("新建日记模板", "Daily note template"))
+        .setDesc(T("指定自动新建日记时套用的模板；支持 {{title}}、{{date}}、{{date:YYYY-MM-DD}}、{{time}} 与 {{ai}}", "Template used when auto-creating today's note; supports {{title}}, {{date}}, {{date:YYYY-MM-DD}}, {{time}}, and {{ai}}"))
+        .addDropdown((d) => d
+          .addOption("obsidian", obsTpl ? T(`跟随 Obsidian 模板（${obsTpl}）`, `Follow Obsidian template (${obsTpl})`) : T("跟随 Obsidian 模板（未配置）", "Follow Obsidian template (none)"))
+          .addOption("file", T("指定库内文件", "Vault template file"))
+          .addOption("custom", T("手动输入模板", "Custom template text"))
+          .addOption("none", T("空白 / 默认属性头", "Blank / default frontmatter"))
+          .setValue(jp.templateSource || "obsidian")
+          .onChange(async (v) => { await this.plugin.updateJournalPolicy({ templateSource: v, configured: true }); this.display(); }));
+      if (jp.templateSource === "file") {
+        new Setting(containerEl)
+          .setName(T("模板文件路径", "Template file path"))
+          .setDesc(T("选择库内 Markdown 文件作为新建日记模板", "Choose a Markdown file in this vault as your template"))
+          .addText((t) => t
+            .setPlaceholder("Templates/Daily.md")
+            .setValue(jp.templatePath || "")
+            .onChange(async (v) => { await this.plugin.updateJournalPolicy({ templatePath: v.trim(), configured: true }); }))
+          .addButton((b) => b
+            .setButtonText(T("选择文件", "Choose file"))
+            .onClick(() => new VaultTemplatePickerModal(this.app, async (f) => {
+              await this.plugin.updateJournalPolicy({ templatePath: f.path, configured: true });
+              this.display();
+            }).open()));
+      } else if (jp.templateSource === "custom") {
+        const taSetting = new Setting(containerEl)
+          .setName(T("模板内容", "Template content"))
+          .setDesc(T("输入模板正文（支持 {{title}}、{{date}}、{{date:YYYY-MM-DD}}、{{time}}、{{ai}}）", "Enter template body (supports {{title}}, {{date}}, {{date:YYYY-MM-DD}}, {{time}}, {{ai}})"));
+        taSetting.addTextArea((ta) => {
+          ta.setPlaceholder(T("---\n日期: {{date:YYYY-MM-DD}}\n---\n\n## 今日计划\n\n## AI 记录\n{{ai}}", "---\ndate: {{date:YYYY-MM-DD}}\n---\n\n## Today\n\n## AI Log\n{{ai}}"));
+          ta.setValue(jp.templateText || "");
+          ta.inputEl.rows = 4;
+          ta.inputEl.addClass("naut-jpolicy-ta");
+          ta.onChange(async (v) => { await this.plugin.updateJournalPolicy({ templateText: v, configured: true }); });
+        });
+      }
+    }
+    if (hasDeck) {
+      new Setting(containerEl)
+        .setName(T("AI 自动记录区域位置", "AI auto-log placement"))
+        .setDesc(T("决定 Agent Deck 首次写入或整理时，AI 区块插在日记哪个位置（与 Agent Deck 共用）", "Where Agent Deck inserts its AI block on first write or organize (shared with Agent Deck)"))
+        .addDropdown((d) => d
+          .addOption("bottom", T("日记末尾（默认）", "Bottom of note (default)"))
+          .addOption("top", T("日记开头（属性头下方）", "Top of note (below frontmatter)"))
+          .addOption("after-heading", T("指定标题下方", "Under a heading"))
+          .addOption("placeholder", T("模板里的 {{ai}} 位置", "At template {{ai}} placeholder"))
+          .setValue(jp.aiPlacement || "bottom")
+          .onChange(async (v) => { await this.plugin.updateJournalPolicy({ aiPlacement: v, configured: true }); this.display(); }));
+      if (jp.aiPlacement === "after-heading") {
+        new Setting(containerEl)
+          .setName(T("目标标题名称", "Target heading"))
+          .setDesc(T("输入模板中的标题（如 ## AI 记录），找不到时自动落到日记末尾", "Heading from your template (e.g. ## AI Log); falls back to bottom if missing"))
+          .addText((t) => t
+            .setPlaceholder(T("## AI 记录", "## AI Log"))
+            .setValue(jp.aiAnchorHeading || "")
+            .onChange(async (v) => { await this.plugin.updateJournalPolicy({ aiAnchorHeading: v.trim(), configured: true }); }));
+      }
+    }
     text(T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
     new Setting(containerEl).setName(T("DOING 并行排", "Run DOING tasks in parallel")).setDesc(T("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接", "Several DOING tasks all start now and overlap, taking only as long as the longest one; turn off to place them back to back"))
       .addToggle((t) => t.setValue(s.parallelDoing !== false).onChange(async (v) => { s.parallelDoing = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
@@ -10241,4 +10752,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, parseScheduleHour, fmtScheduleHour, formatScheduleDesc, sanitizeCustomPresets, allSchedulePresets, matchSchedulePreset, computeSpiralBounds, parseClockInput, resolveBoundInput, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, parseScheduleHour, fmtScheduleHour, formatScheduleDesc, sanitizeCustomPresets, allSchedulePresets, matchSchedulePreset, computeSpiralBounds, parseClockInput, resolveBoundInput, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt, SPIRAL_DEFAULT_JOURNAL_POLICY, normalizeSpiralJournalPolicy, spiralExtractHeadings, expandSpiralTemplateVars, detectObsidianDailyTemplatePath };

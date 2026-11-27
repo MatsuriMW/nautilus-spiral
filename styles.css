@@ -661,3 +661,21 @@ body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: ru
   .naut-rev-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .naut-rev-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.naut-jsetup-why { font-size: var(--font-ui-small); color: var(--text-muted); line-height: 1.6; margin: 6px 0 8px; }
+.naut-jsetup-path { display: inline-block; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); font-size: var(--font-ui-smaller); }
+.naut-jsetup-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--background-modifier-border); }
+.naut-jsetup-lbl { font-size: var(--font-ui-small); font-weight: 600; margin-bottom: 8px; }
+.naut-jsetup-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.naut-jsetup-choice { text-align: left; padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); cursor: pointer; height: auto; white-space: normal; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.naut-jsetup-choice.is-on { border-color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary)); }
+.naut-jsetup-choice-t { font-size: var(--font-ui-small); font-weight: 600; }
+.naut-jsetup-choice-d { font-size: var(--font-ui-smaller); color: var(--text-muted); line-height: 1.5; }
+.naut-jsetup-seg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.naut-jsetup-segbtn.is-on { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
+.naut-jsetup-filerow { display: flex; gap: 8px; align-items: center; }
+.naut-jsetup-filerow input { flex: 1; min-width: 0; }
+.naut-jsetup-ta, .naut-jpolicy-ta { width: 100%; min-height: 92px; font-family: var(--font-monospace); font-size: var(--font-ui-smaller); line-height: 1.5; }
+.naut-jsetup-select, .naut-jsetup-input { width: 100%; margin-top: 4px; }
+.naut-jsetup-hint { margin-top: 6px; font-size: var(--font-ui-smaller); color: var(--text-muted); line-height: 1.55; }
+.naut-jsetup-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--background-modifier-border); }

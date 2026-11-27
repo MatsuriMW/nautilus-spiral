@@ -441,10 +441,16 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   assert.equal(evRev.rows[0].actualMinutes, 40);
   assert.equal(evRev.rows[0].varianceMinutes, -20);
 
-  // autoCreateJournal: false 防抢跑建文件 + journalInitialContent 模板优先读取
+  // journalPolicy：首次缺失日记弹引导、拒绝/手动模式防抢跑建文件 + journalInitialContent 多模板与双向同步
   const created = [];
   const pNoCreate = Object.create(Plugin.prototype);
-  pNoCreate.settings = { ...DEFAULTS, folder: '笔记/Log', format: 'YYYYMMDD', autoCreateJournal: false };
+  pNoCreate.settings = {
+    ...DEFAULTS,
+    folder: '笔记/Log',
+    format: 'YYYYMMDD',
+    autoCreateJournal: false,
+    journalPolicy: { ...Plugin.core.SPIRAL_DEFAULT_JOURNAL_POLICY, configured: true, mode: 'manual', updatedAt: 10 },
+  };
   pNoCreate.today = () => ({ format: (fmt) => (fmt === 'YYYY/MM/DD' ? '2026/11/27' : fmt === 'YYYYMMDD' ? '20261127' : '2026-11-27') });
   pNoCreate.views = () => [{}];
   pNoCreate.app = {
@@ -457,11 +463,22 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   };
   await pNoCreate.ensureToday();
   await pNoCreate.openToday(true);
-  assert.equal(created.length, 0, 'autoCreateJournal: false 时 ensureToday 与 openToday(true) 均不新建日记');
+  assert.equal(created.length, 0, 'configured manual mode 时 ensureToday 与 openToday(true) 均不新建日记');
 
+  // 未配置状态时调用 promptJournalPolicyIfNeeded（关闭弹窗不建文件）
+  let prompted = 0;
+  pNoCreate.settings.journalPolicy = { ...Plugin.core.SPIRAL_DEFAULT_JOURNAL_POLICY, configured: false, mode: 'auto' };
+  pNoCreate.promptJournalPolicyIfNeeded = async () => { prompted++; return { saved: false, dismissed: true }; };
+  await pNoCreate.ensureToday();
+  assert.equal(prompted, 1, '首次缺失日记且未配置时先触发引导');
+  assert.equal(created.length, 0, '关闭引导弹窗后不建文件');
+
+  // 4 种 templateSource（obsidian / file / custom / none）与 {{ai}} 标记保留/剥离
   const coreTpl = { path: 'Templates/CoreDaily.md', extension: 'md' };
   const pnTpl = { path: 'Templates/PNDaily.md', extension: 'md' };
+  const customFileTpl = { path: 'Templates/CustomFile.md', extension: 'md' };
   let coreEnabled = true;
+  pNoCreate.settings.journalPolicy = { ...Plugin.core.SPIRAL_DEFAULT_JOURNAL_POLICY, configured: true, mode: 'auto', templateSource: 'obsidian' };
   pNoCreate.app.internalPlugins = {
     getPluginById: (id) => {
       if (id === 'daily-notes') return { enabled: coreEnabled, instance: { options: { template: coreTpl.path } } };
@@ -470,16 +487,43 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
     },
   };
   pNoCreate.app.plugins = { plugins: { 'periodic-notes': { settings: { daily: { enabled: true, template: pnTpl.path } } } } };
-  pNoCreate.app.vault.getAbstractFileByPath = (pPath) => (pPath === coreTpl.path ? coreTpl : pPath === pnTpl.path ? pnTpl : null);
-  pNoCreate.app.vault.read = async (f) => (f === coreTpl ? 'core:{{title}}:{{date:YYYY/MM/DD}}' : 'pn:{{title}}:{{date}}');
+  pNoCreate.app.vault.getAbstractFileByPath = (pPath) => (pPath === coreTpl.path ? coreTpl : pPath === pnTpl.path ? pnTpl : pPath === customFileTpl.path ? customFileTpl : null);
+  pNoCreate.app.vault.read = async (f) => (f === coreTpl ? 'core:{{title}}:{{date:YYYY/MM/DD}}' : f === customFileTpl ? 'file:{{title}}\n{{ai}}' : 'pn:{{title}}:{{date}}');
   const dMock = pNoCreate.today();
   assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'core:20261127 - 日笔记:2026/11/27');
   coreEnabled = false;
   assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'pn:20261127 - 日笔记:2026-11-27');
-  pNoCreate.app.plugins.plugins['periodic-notes'].settings.daily.enabled = false;
+
+  // file 模板（独立运行时 {{ai}} 清空；接入 agent-deck 时保留 <!-- agent-deck:ai-anchor -->）
+  pNoCreate.settings.journalPolicy.templateSource = 'file';
+  pNoCreate.settings.journalPolicy.templatePath = customFileTpl.path;
+  assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'file:20261127 - 日笔记\n');
+  pNoCreate.app.plugins.plugins['agent-deck'] = { applySharedJournalPolicy: () => {} };
+  assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'file:20261127 - 日笔记\n<!-- agent-deck:ai-anchor -->');
+
+  // custom 文本模板与 none 回退
+  pNoCreate.settings.journalPolicy.templateSource = 'custom';
+  pNoCreate.settings.journalPolicy.templateText = 'inline:{{title}}\n{{ai}}';
+  assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'inline:20261127 - 日笔记\n<!-- agent-deck:ai-anchor -->');
+  pNoCreate.settings.journalPolicy.templateSource = 'none';
   assert.ok((await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md')).includes('journal-date: 2026-11-27'));
 
-  console.log('PASS Agent Deck × 螺旋日程（ad-clock / 多 ⏱ / 🤖 上卷 / 直绑 DOING / 事件对比 / 防抢建与模板）验证通过');
+  // 双向同步到 agent-deck（含防回环）
+  const deckUpdates = [];
+  pNoCreate.app.plugins.plugins['agent-deck'] = {
+    getOwnJournalPolicy: () => ({ ...Plugin.core.SPIRAL_DEFAULT_JOURNAL_POLICY }),
+    applySharedJournalPolicy: async (pol, meta) => { deckUpdates.push({ pol, meta }); },
+  };
+  pNoCreate.saveData = async () => {};
+  const nextPol = await pNoCreate.updateJournalPolicy({ mode: 'manual', aiPlacement: 'top', updatedAt: 500 });
+  assert.equal(pNoCreate.settings.autoCreateJournal, false);
+  assert.equal(nextPol.mode, 'manual');
+  assert.equal(deckUpdates.length, 1);
+  assert.equal(deckUpdates[0].meta.from, 'nautilus-spiral');
+  await pNoCreate.applySharedJournalPolicy({ configured: true, mode: 'auto', updatedAt: 600 }, { from: 'agent-deck' });
+  assert.equal(pNoCreate.settings.autoCreateJournal, true);
+
+  console.log('PASS Agent Deck × 螺旋日程（ad-clock / 多 ⏱ / 🤖 上卷 / 直绑 DOING / 事件对比 / 共享日记引导与模板）验证通过');
 })().catch((err) => {
   console.error(err);
   process.exitCode = 1;
