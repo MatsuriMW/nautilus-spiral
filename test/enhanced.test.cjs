@@ -472,6 +472,64 @@ const { DEFAULTS } = C;
     assert.equal(C.dur(0), '0m');
   }
 
+  // 7. Chinese period prefixes, symmetric AM/PM inference & zero-length range rejection
+  {
+    const cnCases = [
+      ['- 下午3点到5点 上课', 900, 1020, '上课'],
+      ['- 下午3点到4点 开会', 900, 960, '开会'],
+      ['- 下午3点-3点半 站会', 900, 930, '站会'],
+      ['- 中午12点-1点半 午饭', 720, 810, '午饭'],
+      ['- 中午11点半-1点 午饭', 690, 780, '午饭'],
+      ['- 晚上8点半-10点 直播', 1230, 1320, '直播'],
+      ['- 晚上10点-12点 写总结', 1320, 1440, '写总结'],
+      ['- 晚上11点-2点 加班', 1380, 1560, '加班'],
+      ['- 晚上11点到早上7点 睡觉', 1380, 1860, '睡觉'],
+      ['- 凌晨2点46到早上9点42 睡觉', 1606, 2022, '睡觉'],
+    ];
+    for (const [line, expS, expE, expLabel] of cnCases) {
+      const it = C.parseJournal(line, DEFAULTS)[0];
+      assert.equal(it.kind, 'event', line);
+      assert.equal(it.start, expS, `${line} start`);
+      assert.equal(it.end, expE, `${line} end`);
+      assert.equal(it.label, expLabel, `${line} label`);
+    }
+    const cnPin = C.parseJournal('- TODO 下午3点 打电话 15m', DEFAULTS)[0];
+    assert.equal(cnPin.kind, 'event');
+    assert.deepEqual([cnPin.start, cnPin.end], [900, 915]);
+    assert.equal(cnPin.label, '打电话');
+    const cnNoFalse = C.parseJournal('- TODO 下午整理笔记 30m', DEFAULTS)[0];
+    assert.equal(cnNoFalse.kind, 'task');
+    assert.equal(cnNoFalse.dur, 30);
+    assert.equal(cnNoFalse.label, '下午整理笔记');
+
+    const symCases = [
+      ['- 2pm-4 Meeting', 840, 960],
+      ['- 2:30pm-4 Meeting', 870, 960],
+      ['- 12pm-2 Lunch', 720, 840],
+      ['- 11:30pm-7:20 Sleep', 1410, 1880],
+      ['- 11pm-12 Late', 1380, 1440],
+      ['- 10am-12 Morning', 600, 720],
+      ['- 11am-1 Lunch', 660, 780],
+      ['- 2:00-2:30pm Standup', 840, 870],
+      ['- 2:00pm-2:30 Standup', 840, 870],
+    ];
+    for (const [line, expS, expE] of symCases) {
+      const it = C.parseJournal(line, DEFAULTS)[0];
+      assert.equal(it.kind, 'event', line);
+      assert.deepEqual([it.start, it.end], [expS, expE], line);
+    }
+
+    // Zero-length range rejection (explicit 00:00~24:00 preserved)
+    assert.equal(C.parseJournal('- 08:00~08:00 同起止', DEFAULTS).length, 0);
+    assert.equal(C.parseJournal('- 下午3点半-3点半 测试', DEFAULTS).length, 0);
+    assert.equal(C.parseJournal('- 08:00 to 08:00 Test', DEFAULTS).length, 0);
+    assert.equal(C.parseJournal('- 2pm-2 Test', DEFAULTS).length, 0);
+    const doneZero = C.parseJournal('- DONE 8-8 占位', DEFAULTS)[0];
+    assert.equal(doneZero.actual, undefined);
+    const fullDay = C.parseJournal('- 00:00~24:00 全天', { ...DEFAULTS, dayStart: 0, dayEnd: 24, dayCutoff: 0 })[0];
+    assert.equal(fullDay.end - fullDay.start, 1440);
+  }
+
   console.log('PASS enhanced: progress advance, event order barrier, outer labels, mirror sync, polish 1-9 & cache sigs');
 })().catch((e) => {
   console.error(e);

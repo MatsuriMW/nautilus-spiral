@@ -286,9 +286,10 @@ function appendPriorityBadge(parent, prio) {
   if (!prio || !parent) return;
   parent.appendChild(createPriorityBadgeEl(parent.ownerDocument || document, prio, false));
 }
+const CN_PERIOD = String.raw`(?:(凌晨|早上|早晨|清晨|上午|中午|下午|傍晚|晚上|夜里)\s*)?`;
 const TIME = String.raw`(\d{1,2})(?:[:：](\d{2})|点(?:(半)|(\d{1,2})分?)?)`;
-const RANGE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}\s*(?:-|–|—|~|～|到|至)\s*(?:${TIME}|(\d{1,2})(?![\d:：点]))`);
-const SINGLE_RE = new RegExp(String.raw`(?<![\d:：])${TIME}(?![\d])`);
+const RANGE_RE = new RegExp(String.raw`${CN_PERIOD}(?<![\d:：])${TIME}\s*(?:-|–|—|~|～|到|至)\s*(?:${CN_PERIOD}${TIME}|${CN_PERIOD}(\d{1,2})(?![\d:：点]))`);
+const SINGLE_RE = new RegExp(String.raw`${CN_PERIOD}(?<![\d:：])${TIME}(?![\d])`);
 const CN_NUM = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
 
 // 「todos：」母块：一行只写「- todos：」（大小写、全角半角冒号都认，冒号后面可以接说明），它下面直接挂着的那一层子条目没写关键词的也当 TODO：
@@ -331,8 +332,51 @@ function validToken(h, mm, half, cnMin) {
   const hh = +h, m = mm !== undefined ? +mm : half ? 30 : cnMin !== undefined ? +cnMin : 0;
   return hh >= 0 && hh <= 24 && m >= 0 && m < 60 && (hh < 24 || m === 0);
 }
-const validRangeMatch = (m) => validToken(m[1], m[2], m[3], m[4])
-  && (m[5] !== undefined ? validToken(m[5], m[6], m[7], m[8]) : (+m[9] >= 0 && +m[9] <= 24));
+function applyCnPeriod(h, p) {
+  if (!p) return h;
+  if (p === "下午" || p === "傍晚") return h >= 1 && h <= 11 ? h + 12 : h;
+  if (p === "晚上" || p === "夜里") return h >= 1 && h <= 11 ? h + 12 : h === 12 ? 0 : h;
+  if (p === "中午") return h >= 1 && h <= 6 ? h + 12 : h;
+  if (p === "凌晨" && h === 12) return 0;
+  return h;
+}
+function parseSingleMatch(m) {
+  if (!m || !validToken(m[2], m[3], m[4], m[5])) return null;
+  const h = applyCnPeriod(+m[2], m[1]);
+  const min = m[3] !== undefined ? +m[3] : m[4] ? 30 : m[5] !== undefined ? +m[5] : 0;
+  if (h > 24 || (h === 24 && min > 0)) return null;
+  return h * 60 + min;
+}
+function parseRangeMatch(m) {
+  if (!m || !validToken(m[2], m[3], m[4], m[5])) return null;
+  const hasEndTime = m[7] !== undefined;
+  if (hasEndTime) {
+    if (!validToken(m[7], m[8], m[9], m[10])) return null;
+  } else if (!(+m[12] >= 0 && +m[12] <= 24)) {
+    return null;
+  }
+  const p1 = m[1], p2 = hasEndTime ? m[6] : m[11];
+  const rawH1 = +m[2], rawH2 = hasEndTime ? +m[7] : +m[12];
+  const min1 = m[3] !== undefined ? +m[3] : m[4] ? 30 : m[5] !== undefined ? +m[5] : 0;
+  const min2 = hasEndTime ? (m[8] !== undefined ? +m[8] : m[9] ? 30 : m[10] !== undefined ? +m[10] : 0) : 0;
+  const h1 = applyCnPeriod(rawH1, p1);
+  let h2;
+  if (p2) {
+    h2 = applyCnPeriod(rawH2, p2);
+  } else if (p1 && rawH2 >= 1 && rawH2 <= 12) {
+    const m1 = rawH1 * 60 + min1, m2 = rawH2 * 60 + min2;
+    if (p1 === "下午" || p1 === "傍晚") h2 = (rawH2 < 12 && (rawH1 === 12 || m1 <= m2)) ? rawH2 + 12 : rawH2;
+    else if (p1 === "晚上" || p1 === "夜里") h2 = (rawH2 < 12 && m1 <= m2) ? rawH2 + 12 : (rawH2 === 12 && (rawH1 === 12 || (rawH1 >= 6 && rawH1 < 12))) ? 0 : rawH2;
+    else if (p1 === "中午") h2 = (rawH2 <= 6 && (rawH1 >= 11 || m1 <= m2)) ? rawH2 + 12 : rawH2;
+    else h2 = rawH2;
+  } else {
+    h2 = rawH2;
+  }
+  if (h1 > 24 || (h1 === 24 && min1 > 0) || h2 > 24 || (h2 === 24 && min2 > 0)) return null;
+  const start = h1 * 60 + min1, end = h2 * 60 + min2;
+  if (start === end) return null;
+  return { start, end };
+}
 
 const journalDayCutoff = (cfg) => cfg.dayCutoff ?? Math.max(0, cfg.dayEnd - 24);
 
@@ -413,14 +457,14 @@ function parseEnglishRange(text) {
   let h2 = +m[4], min2 = m[5] != null ? +m[5] : 0;
   if (min1 > 59 || min2 > 59 || h1 > 23 || h2 > 23) return null;
   if ((a1 && (h1 < 1 || h1 > 12)) || (a2 && (h2 < 1 || h2 > 12))) return null;
-  const effA1 = a1 || (a2
-    ? (a2 === "pm"
-      ? ((h1 === 12 || (h1 < h2 && h2 < 12)) ? "pm" : "am")
-      : ((h1 === 12 || (h1 < h2 && h2 < 12)) ? "am" : "pm"))
-    : "");
+  const flip = (ap) => (ap === "pm" ? "am" : "pm");
+  const c1 = (h1 % 12) * 60 + min1, c2 = (h2 % 12) * 60 + min2;
+  const effA1 = a1 || (a2 && h1 >= 1 && h1 <= 12 ? (c1 <= c2 ? a2 : flip(a2)) : "");
+  const effA2 = a2 || (a1 && h2 >= 1 && h2 <= 12 ? (c1 <= c2 ? a1 : flip(a1)) : "");
   const to24 = (h, ap) => (ap === "pm" ? (h < 12 ? h + 12 : h) : ap === "am" ? (h === 12 ? 0 : h) : h);
   const start = to24(h1, effA1) * 60 + min1;
-  let end = to24(h2, a2) * 60 + min2;
+  let end = to24(h2, effA2) * 60 + min2;
+  if (end === start) return null;
   if (end < start) end += 1440;
   return { start, end, raw: m[0], explicitAp: Boolean(a1 || a2) };
 }
@@ -857,9 +901,9 @@ function parseJournal(content, cfg) {
       const erHead = parseEnglishRange(ts);
       const ler = erHead && ts.startsWith(erHead.raw) ? erHead : null;
       const lrRaw = !ler && new RegExp("^" + RANGE_RE.source).exec(ts);
-      const lr = lrRaw && validRangeMatch(lrRaw) ? lrRaw : null;
+      const lr = lrRaw ? parseRangeMatch(lrRaw) : null;
       const lsRaw = !ler && !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
-      const ls = lsRaw && validToken(lsRaw[1], lsRaw[2], lsRaw[3], lsRaw[4]) ? lsRaw : null;
+      const ls = lsRaw ? parseSingleMatch(lsRaw) : null;
       if (state === "done" && ler) {
         const start = normalize(ler.start, cfg);
         let end = ler.end >= 1440 ? ler.end : normalize(ler.end, cfg);
@@ -868,16 +912,16 @@ function parseJournal(content, cfg) {
         return;
       }
       if (state === "done" && lr) {
-        const start = normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
-        let end = normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
+        const start = normalize(lr.start, cfg);
+        let end = normalize(lr.end, cfg);
         if (end <= start) end += 1440;   // 06:42-08:19 这种：分界前的开始时刻归到了前一天，结束时刻要跟着跨过来
         // est = 写着的预估（DONE 14:05-14:20 写周报 15分钟 里的 15 分钟），复盘「预估 vs 实际」用
-        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(lr[0].length)) });
+        items.push({ ...base, kind: "task", dur: end - start, explicitDur: true, doneAt: end, actual: [start, end], est: parseDuration(ts.slice(lrRaw[0].length)) });
         return;
       }
-      // 「DONE 10-12 hsy」这种只写整点的时间段，只在紧跟关键词的位置认（排除 10-15m / 1-2h / 2-4pm）
+      // 「DONE 10-12 hsy」这种只写整点的时间段，只在紧跟关键词的位置认（排除 10-15m / 1-2h / 2-4pm / 同起止 8-8）
       const br = !ler && !lr && state === "done" && /^(\d{1,2})\s*(?:-|–|~|～|到|至)\s*(\d{1,2})(?![\d:：点a-zA-Z]|个?小时|分钟?)/.exec(ts);
-      if (br && +br[1] <= 24 && +br[2] <= 24) {
+      if (br && +br[1] <= 24 && +br[2] <= 24 && +br[1] !== +br[2]) {
         const start = normalize(+br[1] * 60, cfg);
         let end = normalize(+br[2] * 60, cfg);
         if (end <= start) end += 1440;
@@ -885,25 +929,25 @@ function parseJournal(content, cfg) {
         return;
       }
       // DONE 18:02 写稿 2h：这里的 2h 是做了多久（Telegram 的 done 写稿 2h），不是预估
-      if (state === "done" && ls) {
-        const at = normalize(tokenMinutes(ls[1], ls[2], ls[3], ls[4]), cfg);
-        items.push({ ...base, kind: "task", dur: parseDuration(ts.slice(ls[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(ts.slice(ls[0].length)) != null, doneAt: at });
+      if (state === "done" && ls != null) {
+        const at = normalize(ls, cfg);
+        items.push({ ...base, kind: "task", dur: parseDuration(ts.slice(lsRaw[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(ts.slice(lsRaw[0].length)) != null, doneAt: at });
         return;
       }
       // SUSPENDED 17:12 / PAUSED 17:12 / WAITING 17:12 / PAUSED 🤖 19:17-19:23：后面的时刻是当初开始做的记录，不是约好的时间，不当事件
-      if (state === "open" && (doing || suspended || paused) && (ler || lr || ls)) {
-        const m = lr || ls;
-        const d = parseDuration(ts.slice(ler ? ler.raw.length : m[0].length));
+      if (state === "open" && (doing || suspended || paused) && (ler || lr || ls != null)) {
+        const tailLen = ler ? ler.raw.length : (lr ? lrRaw[0].length : lsRaw[0].length);
+        const d = parseDuration(ts.slice(tailLen));
         // 自动记的行「TOREVIEW 🤖 21:59-00:06」：这一段就是这回事真实占用的时间（AI 回传的那个时间），
         // 整段算一块、没写时长时也当时长；几件同时在跑就叠着画
         let span = null;
         if (auto && (ler || lr)) {
-          const a = ler ? normalize(ler.start, cfg) : normalize(tokenMinutes(lr[1], lr[2], lr[3], lr[4]), cfg);
-          let b = ler ? (ler.end >= 1440 ? ler.end : normalize(ler.end, cfg)) : normalize(lr[5] !== undefined ? tokenMinutes(lr[5], lr[6], lr[7], lr[8]) : +lr[9] * 60, cfg);
+          const a = ler ? normalize(ler.start, cfg) : normalize(lr.start, cfg);
+          let b = ler ? (ler.end >= 1440 ? ler.end : normalize(ler.end, cfg)) : normalize(lr.end, cfg);
           if (b < a) b += 1440;   // 06:42-08:19 这种：分界前的时刻归到了前一天，结束时刻要跟着跨过来
           span = b > a ? [a, b] : null;
         }
-        const startedAt = doing ? (ler ? normalize(ler.start, cfg) : normalize(tokenMinutes(m[1], m[2], m[3], m[4]), cfg)) : undefined;
+        const startedAt = doing ? normalize(ler ? ler.start : (lr ? lr.start : ls), cfg) : undefined;
         items.push({ ...base, kind: "task", dur: d ?? (span ? span[1] - span[0] : cfg.defaultDur), explicitDur: d != null, ...(startedAt !== undefined ? { startedAt } : {}), ...(span ? { aiSpan: span } : {}) });
         return;
       }
@@ -917,11 +961,11 @@ function parseJournal(content, cfg) {
       items.push({ ...base, kind: "event", start, end });
       return;
     }
-    const rm = RANGE_RE.exec(ps);
-    if (rm && validRangeMatch(rm)) {
-      const start = normalize(tokenMinutes(rm[1], rm[2], rm[3], rm[4]), cfg);
-      let end = rm[5] !== undefined ? tokenMinutes(rm[5], rm[6], rm[7], rm[8]) : +rm[9] * 60;
-      end = normalize(end, cfg);
+    const rmRaw = RANGE_RE.exec(ps);
+    const rm = rmRaw ? parseRangeMatch(rmRaw) : null;
+    if (rm) {
+      const start = normalize(rm.start, cfg);
+      let end = normalize(rm.end, cfg);
       if (end <= start) end += 1440;   // 跨日界（如 2:46~9:42）或跨午夜（如 23:00~09:42）时结束时刻顺延一天
       items.push({ ...base, kind: "event", start, end });
       return;
@@ -931,9 +975,10 @@ function parseJournal(content, cfg) {
       return;
     }
     const dur = parseDuration(ps) ?? cfg.defaultDur;
-    const single = SINGLE_RE.exec(ps);
-    if (single && validToken(single[1], single[2], single[3], single[4])) {
-      const start = normalize(tokenMinutes(single[1], single[2], single[3], single[4]), cfg);
+    const singleRaw = SINGLE_RE.exec(ps);
+    const single = singleRaw ? parseSingleMatch(singleRaw) : null;
+    if (single != null) {
+      const start = normalize(single, cfg);
       items.push({ ...base, kind: "event", start, end: start + dur, pinned: true });
       return;
     }
