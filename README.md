@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-3b82f6.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/MatsuriMW/nautilus-spiral?color=ef5b5b&label=release)](https://github.com/MatsuriMW/nautilus-spiral/releases)
 
-[**Install**](#quick-start-install--use) · [User Guide](./docs/guide.md) · [Works with Agent Deck](#works-with-agent-deck) · [Roadmap](https://matsuri.site/portfolio/journal-workflow/#wishlist) · [X (@Matsurimywaifu)](https://x.com/Matsurimywaifu)
+[**Install**](#quick-start-install--use) · [What's New](#whats-new) · [User Guide](./docs/guide.md) · [Works with Agent Deck](#works-with-agent-deck) · [Roadmap](https://matsuri.site/portfolio/journal-workflow/#wishlist) · [X (@Matsurimywaifu)](https://x.com/Matsurimywaifu)
 
 </div>
 
@@ -27,10 +27,58 @@ The interface switches automatically between English and Chinese based on Obsidi
 
 ## Contents
 
+- [What's New](#whats-new)
 - [What It Does](#what-it-does)
 - [Quick Start: Install & Use](#quick-start-install--use)
 - [Works with Agent Deck](#works-with-agent-deck)
 - [Feedback & Updates](#feedback--updates)
+
+---
+
+## What's New
+
+Recent updates (v2.6.8–v2.6.16) introduce **outer spiral callout labels**, **interactive segment & unrecorded-gap inspection**, a **compact schedule & label toolbar**, and a **6-dimensional Spiral Review dashboard** (Day / Week / Month).
+
+- **Outer spiral callout labels**: Two-line detail cards and compact contour-aligned labels automatically stack along the spiral rim—or drop below the dial for lower-arc blocks—to stay collision-free even on dense multi-agent days.
+- **Hover-linked inspection**: Hovering any task arc or hatched unrecorded gap highlights its leader line and reveals the exact time span, duration, and project summary in the top bar.
+- **Unified sidebar & 6-dimensional review**: Toggle outer labels or switch custom schedule presets from the header toolbar, track combined human + AI collaboration time and tokens, and review estimation accuracy, time bills, 8-week calibration trends, 24-hour rhythms, and multi-day rollovers—or hand the review straight to your primary AI agent.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-labels-cards.png" width="420" alt="Two-line outer spiral label cards with color-coded bars, AI icons, time spans, and durations" />
+      <br />
+      <sub><b>Two-line outer label cards</b> — time span, duration, and status color at a glance</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-hover-highlight.png" width="420" alt="Hovering a spiral segment highlights the arc and solid leader line while showing full details in the top bar" />
+      <br />
+      <sub><b>Hover-linked highlighting</b> — active arc, solid leader line, and top inspection bar</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-contour-labels.png" width="420" alt="Compact contour-aligned outer spiral labels stacked cleanly alongside multi-ring AI activity arcs" />
+      <br />
+      <sub><b>Contour-aligned compact labels</b> — collision-free stacking on busy multi-session days</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-unrecorded-bottom-label.png" width="420" alt="Hovering a hatched unrecorded stretch shows its span at the top, while lower-arc blocks place their callout below the spiral" />
+      <br />
+      <sub><b>Unrecorded-gap inspection &amp; bottom callouts</b> — adaptive label placement below the dial</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="./assets/whats-new-full-panel.png" width="420" alt="Full Nautilus Spiral sidebar showing compact schedule and label toggles, AI collaboration metrics, Pomodoro presets, outer spiral labels, and Up Next task list" />
+</p>
+<p align="center"><b>Refreshed sidebar view</b> — compact schedule &amp; label controls, live AI collaboration totals, Pomodoro bar, and unified "Up next" list.</p>
+
+<p align="center">
+  <img src="./assets/whats-new-review-dashboard.png" width="840" alt="6-dimensional Spiral Review dashboard with Day/Week/Month switcher, estimation accuracy, mainline fulfillment, human-AI parallel leverage, time bill breakdown, 8-week trend, 24-hour rhythm heatmap, and rollover list" />
+</p>
+<p align="center"><b>6-dimensional Spiral Review</b> — Day / Week / Month analytics for time distribution, 8-week estimate calibration, 24-hour rhythm, human-AI leverage, and one-click journal writeback or AI agent review.</p>
 
 ---
 

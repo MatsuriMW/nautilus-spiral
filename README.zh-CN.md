@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-3b82f6.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/MatsuriMW/nautilus-spiral?color=ef5b5b&label=release)](https://github.com/MatsuriMW/nautilus-spiral/releases)
 
-[**安装插件**](#快速开始安装与使用) · [使用指南](./docs/guide.zh-CN.md) · [与 Agent Deck 联动](#与-agent-deck-联动) · [Roadmap](https://matsuri.site/portfolio/journal-workflow/#wishlist) · [X (@Matsurimywaifu)](https://x.com/Matsurimywaifu)
+[**安装插件**](#快速开始安装与使用) · [What's New](#whats-new) · [使用指南](./docs/guide.zh-CN.md) · [与 Agent Deck 联动](#与-agent-deck-联动) · [Roadmap](https://matsuri.site/portfolio/journal-workflow/#wishlist) · [X (@Matsurimywaifu)](https://x.com/Matsurimywaifu)
 
 </div>
 
@@ -27,10 +27,58 @@ https://github.com/user-attachments/assets/1e0967bc-d498-456a-9d82-46750d761c08
 
 ## 目录
 
+- [What's New](#whats-new)
 - [它有什么功能](#它有什么功能)
 - [快速开始：安装与使用](#快速开始安装与使用)
 - [与 Agent Deck 联动](#与-agent-deck-联动)
 - [反馈与后续](#反馈与后续)
+
+---
+
+## What's New
+
+近期版本（v2.6.8–v2.6.16）新增了**螺旋外圈引导标签**、**悬停联动高亮与未记录时段查看**、**紧凑顶栏作息与标签开关**，以及全新的**六维螺旋复盘面板**（支持日 / 周 / 月视角）。
+
+- **外圈引导标签与自适应避让**：支持双行详情卡片与沿轮廓排布的紧凑单行标签，密集日程下自动错开防遮挡；底部时段自动向下引出标注，避免拥挤。
+- **悬停联动与顶部详情条**：鼠标移到任意任务弧段或未记录斜纹区时，同步高亮弧段与实线引导线，并在顶部直接展示完整时段、用时与项目标题。
+- **一体化侧栏与六维螺旋复盘**：顶栏集成作息预设菜单与标签显隐切换，容量区汇总人机协作时长与 Token 消耗；复盘面板覆盖预估准确度、主线兑现、人机并行杠杆、时间账单、近 8 周预估趋势、24 小时节律热力图与跨天卡壳清单，支持一键写入日记或交给主力 Agent 复盘。
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-labels-cards.png" width="420" alt="双行外圈标签卡片：带颜色竖条、AI 图标、起止时段与总用时" />
+      <br />
+      <sub><b>双行外圈标签卡片</b> — 一眼看清起止时段、总用时与状态色</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-hover-highlight.png" width="420" alt="悬停螺旋弧段联动高亮弧段与实线引导线，顶部展示完整时段与项目摘要" />
+      <br />
+      <sub><b>悬停联动高亮</b> — 高亮当前弧段与实线引线，顶部同步显示详情</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-contour-labels.png" width="420" alt="沿螺旋轮廓紧凑排布的多条外圈标签与内圈多 Agent 活跃弧线" />
+      <br />
+      <sub><b>沿轮廓紧凑排布</b> — 多会话密集日也能整齐错开、不重叠</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/whats-new-unrecorded-bottom-label.png" width="420" alt="悬停未记录斜纹时段显示未记录时长，底部时段标签自适应放置在螺旋下方" />
+      <br />
+      <sub><b>未记录时段查看与底部自适应标注</b> — 底部弧段自动向下引出标签</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="./assets/whats-new-full-panel.png" width="420" alt="完整螺旋侧栏界面：紧凑顶栏、容量与 AI 协作汇总、番茄钟、外圈标签与「接下来」任务列表" />
+</p>
+<p align="center"><b>新版侧栏全景</b> — 紧凑作息与标签开关、AI 协作时长与 Token 汇总、番茄钟与「接下来」任务列表。</p>
+
+<p align="center">
+  <img src="./assets/whats-new-review-dashboard.png" width="840" alt="六维螺旋复盘面板：日/周/月切换、预估准确度、主线兑现、人机并行杠杆、时间账单分布、近 8 周预估趋势、24 小时节律与跨天卡壳清单" />
+</p>
+<p align="center"><b>六维螺旋复盘</b> — 日 / 周 / 月维度统计时间账单、近 8 周预估校准趋势、24 小时节律与人机并行杠杆，支持一键写入日记或交给主力 Agent 复盘。</p>
 
 ---
 
