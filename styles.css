@@ -417,6 +417,7 @@
 .naut-goal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; animation: naut-rise .32s ease-out .12s backwards; }
 @media (prefers-reduced-motion: reduce) { .naut-main-slider, .naut-goal-input, .naut-goal-btns { animation: none !important; } .naut-main-slider input.naut-ms-range::-webkit-slider-thumb { transition: none; } }
 :is(input, textarea).naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px rgba(200, 99, 95, .25) !important; }
+.naut-setting-warn { color: var(--color-orange, #bf7a45); margin: -6px 0 12px; font-size: 12px; line-height: 1.5; }
 
 /* 进度条下面那几行：左边一格图标、文字从同一条线开始，数字等宽；细账在悬停提示里 */
 .naut-cap-row { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); align-items: baseline; margin-top: 3px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; cursor: help; }

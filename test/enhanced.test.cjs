@@ -402,11 +402,15 @@ const { DEFAULTS } = C;
     const sleepItems = C.parseJournal(sleepNote, DEFAULTS);
     C.applyWork(sleepItems, { ...DEFAULTS, workLog: {} }, '2026_11_27', 1700, 0, {});
     const sleepPlan = C.schedule(sleepItems, DEFAULTS, 1700, 0, {});
-    const sleepCap = C.capacity(sleepItems, sleepPlan, DEFAULTS, 1700, 0, {});
+    const sleepCapDefault = C.capacity(sleepItems, sleepPlan, DEFAULTS, 1700, 0, {});
+    const owlCfg = { ...DEFAULTS, dayStart: 8, dayEnd: 32, dayCutoff: 8 };
+    const sleepItemsOwl = C.parseJournal(sleepNote, owlCfg);
+    const sleepPlanOwl = C.schedule(sleepItemsOwl, owlCfg, 1700, 0, {});
+    const sleepCapOwl = C.capacity(sleepItemsOwl, sleepPlanOwl, owlCfg, 1700, 0, {});
     const sleepGaps = C.pastGaps(DEFAULTS.dayStart * 60, DEFAULTS.dayEnd * 60, 1700, [[sleepEv.start, sleepEv.end]]);
     const sleepDayRev = C.dayReview(sleepItems, DEFAULTS, { live: true });
     const sleepPeriodRev = C.buildPeriodReview([{ dayKey: '2026_11_27', dateStr: '2026-11-27', content: sleepNote, isToday: true, now: 1700 }], DEFAULTS);
-    assert.ok(sleepPlan.available >= 0 && sleepCap.totalFixed === 314);
+    assert.ok(sleepPlan.available >= 0 && sleepCapDefault.totalFixed === 74 && sleepCapOwl.totalFixed === 314);
     assert.ok(sleepGaps.every(([a, b]) => b > a));
     assert.ok(sleepDayRev.rows.every((r) => (r.actualMinutes ?? 0) >= 0));
     assert.ok(sleepPeriodRev.timeBudget.events >= 0 && sleepPeriodRev.timeBudget.unrecorded >= 0);
@@ -528,6 +532,92 @@ const { DEFAULTS } = C;
     assert.equal(doneZero.actual, undefined);
     const fullDay = C.parseJournal('- 00:00~24:00 全天', { ...DEFAULTS, dayStart: 0, dayEnd: 24, dayCutoff: 0 })[0];
     assert.equal(fullDay.end - fullDay.start, 1440);
+  }
+
+  // 8. 次日/第二天, single AM/PM, N点 measure guard, cleanLabel preservation, clockDay/clockRange & schedule presets
+  {
+    const nextDayCases = [
+      ['- 23:00-次日7:20 睡觉', 1380, 1880, '睡觉'],
+      ['- 23:00~次日07:20 睡觉', 1380, 1880, '睡觉'],
+      ['- 23点50分-次日7点20分 睡觉', 1430, 1880, '睡觉'],
+      ['- 23:00-第二天7:20 睡觉', 1380, 1880, '睡觉'],
+      ['- 晚上11点-次日7点 睡觉', 1380, 1860, '睡觉'],
+      ['- 08:00-次日08:00 全天', 480, 1920, '全天'],
+    ];
+    for (const [line, expS, expE, expL] of nextDayCases) {
+      const it = C.parseJournal(line, DEFAULTS)[0];
+      assert.equal(it.kind, 'event', line);
+      assert.deepEqual([it.start, it.end], [expS, expE], line);
+      assert.equal(it.label, expL, `${line} label`);
+    }
+
+    const pCall = C.parseJournal('- TODO 3pm Call mom 15m', DEFAULTS)[0];
+    assert.equal(pCall.kind, 'event');
+    assert.deepEqual([pCall.start, pCall.end], [900, 915]);
+    assert.equal(pCall.label, 'Call mom');
+
+    const pStand = C.parseJournal('- TODO 9:30am Standup 30m', DEFAULTS)[0];
+    assert.equal(pStand.kind, 'event');
+    assert.deepEqual([pStand.start, pStand.end], [570, 600]);
+    assert.equal(pStand.label, 'Standup');
+
+    const pRev = C.parseJournal('- TODO 2:30pm Review 30m', DEFAULTS)[0];
+    assert.equal(pRev.kind, 'event');
+    assert.deepEqual([pRev.start, pRev.end], [870, 900]);
+    assert.equal(pRev.label, 'Review');
+
+    const dFinish = C.parseJournal('- DONE 3pm Finish doc', DEFAULTS)[0];
+    assert.equal(dFinish.kind, 'task');
+    assert.equal(dFinish.doneAt, 900);
+    assert.equal(dFinish.label, 'Finish doc');
+
+    const gSpec = C.parseJournal('- DOING 2:30pm Write spec 1h', DEFAULTS)[0];
+    assert.equal(gSpec.kind, 'task');
+    assert.equal(gSpec.startedAt, 870);
+    assert.equal(gSpec.dur, 60);
+    assert.equal(gSpec.label, 'Write spec');
+
+    const pGuard = C.parseJournal('- TODO 14:00 pm review 30m', DEFAULTS)[0];
+    assert.equal(pGuard.kind, 'event');
+    assert.deepEqual([pGuard.start, pGuard.end], [840, 870]);
+    assert.equal(pGuard.label, 'pm review');
+
+    // Measure-word "N点" guard
+    for (const [line, expDur, expLabel] of [
+      ['- TODO 总结3点心得 30m', 30, '总结3点心得'],
+      ['- TODO 整理5点反馈 20m', 20, '整理5点反馈'],
+      ['- TODO 读第3点到第5点 30m', 30, '读第3点到第5点'],
+    ]) {
+      const it = C.parseJournal(line, DEFAULTS)[0];
+      assert.equal(it.kind, 'task', line);
+      assert.equal(it.dur, expDur, line);
+      assert.equal(it.label, expLabel, line);
+    }
+    const call16 = C.parseJournal('- TODO 16点打电话 15m', DEFAULTS)[0];
+    assert.equal(call16.kind, 'event');
+    assert.deepEqual([call16.start, call16.end], [960, 975]);
+
+    // cleanLabel preservation
+    assert.equal(C.parseJournal('- 07:30~08:30 跨8点起床', DEFAULTS)[0].label, '跨8点起床');
+    assert.equal(C.parseJournal('- 23:00-07:30 睡了8个半小时', DEFAULTS)[0].label, '睡了8个半小时');
+    assert.equal(C.parseJournal('- TODO 报错 10:75 排查', DEFAULTS)[0].label, '报错 10:75 排查');
+
+    // clockDay & clockRange
+    assert.equal(C.clockRange(840, 900), '14:00–15:00');
+    assert.equal(C.clockRange(1320, 1440), '22:00–00:00');
+    assert.equal(C.clockRange(1380, 1880), '23:00–次日07:20');
+    assert.equal(C.clockRange(1606, 2022), '次日 02:46–09:42');
+    assert.equal(C.clockDay(1606), '次日 02:46');
+    assert.equal(C.clockDay(600), '10:00');
+
+    // scheduleConflictHint & SCHEDULE_PRESETS
+    const badHint = C.scheduleConflictHint({ dayStart: 8, dayEnd: 24, dayCutoff: 4 });
+    assert.ok(badHint.includes('00:00') && badHint.includes('04:00'), badHint);
+    assert.ok(C.scheduleConflictHint({ dayStart: 12, dayEnd: 12, dayCutoff: 0 }).length > 0);
+    assert.equal(C.SCHEDULE_PRESETS.length, 3);
+    for (const pr of C.SCHEDULE_PRESETS) {
+      assert.equal(C.scheduleConflictHint(pr), '', `preset ${pr.id} has no conflict`);
+    }
   }
 
   console.log('PASS enhanced: progress advance, event order barrier, outer labels, mirror sync, polish 1-9 & cache sigs');

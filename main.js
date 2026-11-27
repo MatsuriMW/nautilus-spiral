@@ -8,8 +8,8 @@ const VIEW_TYPE = "nautilus-spiral";
 const REVIEW_VIEW_TYPE = "nautilus-spiral-review";
 const DEFAULTS = {
   dayStart: 8,          // 螺旋从几点开始
-  dayEnd: 32,           // 螺旋和排程到几点结束，超过 24 表示次日凌晨（32 = 次日早上 8 点；个人作息夜里会一直干活，早上七八点才睡）
-  dayCutoff: 8,         // 日记的日期分界：这个时刻之前还算前一天。存的是小时数，可以带小数（4.5 = 04:30）；设置里按 24 小时制的时刻填
+  dayEnd: 28,           // 螺旋和排程到几点结束，超过 24 表示次日凌晨（28 = 次日凌晨 4 点，与 dayCutoff=4 对齐）
+  dayCutoff: 4,         // 日记的日期分界：这个时刻之前还算前一天。存的是小时数，可以带小数（4.5 = 04:30）；设置里按 24 小时制的时刻填
   defaultDur: 15,       // 没写时长的任务按多少分钟算
   journalAuto: true,    // 日记目录 / 文件名格式自动检测（和 Agent Deck 同一套规则）；设置里手填过就关掉
   folder: T("日记", "Journal"),
@@ -70,6 +70,25 @@ const DEFAULTS = {
   progressStep: 25,        // 快捷推进/回退进度步进（10 或 25）
   respectEventOrder: false,// 按日记中固定事件的先后顺序排程：事件下方的未开始待办不排到该事件结束之前（默认关）
 };
+const SCHEDULE_PRESETS = [
+  { id: "regular", name: T("☀️ 常规", "☀️ Regular"), desc: T("07:00–24:00 · 0点换日", "07:00–24:00 · midnight cutoff"), dayStart: 7, dayEnd: 24, dayCutoff: 0 },
+  { id: "late", name: T("🌙 晚睡", "🌙 Late night"), desc: T("08:00–次日04:00 · 4点换日", "08:00–+1 04:00 · 4 AM cutoff"), dayStart: 8, dayEnd: 28, dayCutoff: 4 },
+  { id: "nightowl", name: T("🦉 夜猫", "🦉 Night owl"), desc: T("08:00–次日08:00 · 8点换日", "08:00–+1 08:00 · 8 AM cutoff"), dayStart: 8, dayEnd: 32, dayCutoff: 8 },
+];
+function scheduleConflictHint(cfg) {
+  const ds = Number(cfg?.dayStart), de = Number(cfg?.dayEnd), cut = Number(cfg?.dayCutoff ?? 0);
+  if (!Number.isFinite(ds) || !Number.isFinite(de) || de <= ds) {
+    return T("结束时间必须大于开始时间，否则螺旋无法排程。", "Day end must be later than day start for the spiral to schedule.");
+  }
+  if (cut > 0 && de < 24 + cut) {
+    const endClk = clock(de * 60), cutClk = fmtHourClock(cut);
+    return T(
+      `当前日界为 ${cutClk}（凌晨时刻会归到次日 24:00+），但一天结束仅到 ${endClk}；${endClk}–${cutClk} 之间写的时间段会超出今天螺旋范围。建议将「一天到几点结束」设为 ${Math.ceil(24 + cut)}，或把「日记日期分界」改回 00:00。`,
+      `Cutoff is ${cutClk} (after-midnight times shift to 24:00+), while day ends at ${endClk}; times between ${endClk} and ${cutClk} fall outside today's spiral. Set "Day ends at" to ${Math.ceil(24 + cut)} or "Daily note cutoff" to 00:00.`
+    );
+  }
+  return "";
+}
 // 螺旋上各类的颜色（设置里能改）：[设置里的名字, 默认值]。默认值和 styles.css 开头的一致；Agent 的颜色跟各家自己的界面走，不放进来
 const COLORS = {
   main: [T("主线", "Mainline"), "#cf4d4a"],
@@ -287,9 +306,11 @@ function appendPriorityBadge(parent, prio) {
   parent.appendChild(createPriorityBadgeEl(parent.ownerDocument || document, prio, false));
 }
 const CN_PERIOD = String.raw`(?:(凌晨|早上|早晨|清晨|上午|中午|下午|傍晚|晚上|夜里)\s*)?`;
+const CN_NEXT = String.raw`(?:(次日|第二天|明日)\s*)?`;
 const TIME = String.raw`(\d{1,2})(?:[:：](\d{2})|点(?:(半)|(\d{1,2})分?)?)`;
-const RANGE_RE = new RegExp(String.raw`${CN_PERIOD}(?<![\d:：])${TIME}\s*(?:-|–|—|~|～|到|至)\s*(?:${CN_PERIOD}${TIME}|${CN_PERIOD}(\d{1,2})(?![\d:：点]))`);
+const RANGE_RE = new RegExp(String.raw`${CN_PERIOD}(?<![\d:：])${TIME}\s*(?:-|–|—|~|～|到|至)\s*${CN_NEXT}(?:${CN_PERIOD}${TIME}|${CN_PERIOD}(\d{1,2})(?![\d:：点]))`);
 const SINGLE_RE = new RegExp(String.raw`${CN_PERIOD}(?<![\d:：])${TIME}(?![\d])`);
+const CN_POINT_NOUN_RE = /^(?:心得|反馈|建议|意见|想法|思考|问题|总结|要求|注意|结论|理由|原因|改进|说明|优化|收获|体会|启发|感悟|经验|教训|要点|重点|难点|痛点|亮点|区别|变化|内容|思路|方法|技巧|原则|标准|目标|事项|补充)/;
 const CN_NUM = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
 
 // 「todos：」母块：一行只写「- todos：」（大小写、全角半角冒号都认，冒号后面可以接说明），它下面直接挂着的那一层子条目没写关键词的也当 TODO：
@@ -342,6 +363,10 @@ function applyCnPeriod(h, p) {
 }
 function parseSingleMatch(m) {
   if (!m || !validToken(m[2], m[3], m[4], m[5])) return null;
+  if (!m[1] && m[3] === undefined && !m[4] && m[5] === undefined) {
+    if (m.index > 0 && m.input[m.index - 1] === "第") return null;
+    if (CN_POINT_NOUN_RE.test(m.input.slice(m.index + m[0].length))) return null;
+  }
   const h = applyCnPeriod(+m[2], m[1]);
   const min = m[3] !== undefined ? +m[3] : m[4] ? 30 : m[5] !== undefined ? +m[5] : 0;
   if (h > 24 || (h === 24 && min > 0)) return null;
@@ -349,21 +374,26 @@ function parseSingleMatch(m) {
 }
 function parseRangeMatch(m) {
   if (!m || !validToken(m[2], m[3], m[4], m[5])) return null;
-  const hasEndTime = m[7] !== undefined;
+  if (!m[1] && m.index > 0 && m.input[m.index - 1] === "第") return null;
+  const hasEndTime = m[8] !== undefined;
   if (hasEndTime) {
-    if (!validToken(m[7], m[8], m[9], m[10])) return null;
-  } else if (!(+m[12] >= 0 && +m[12] <= 24)) {
+    if (!validToken(m[8], m[9], m[10], m[11])) return null;
+  } else if (!(+m[13] >= 0 && +m[13] <= 24)) {
     return null;
   }
-  const p1 = m[1], p2 = hasEndTime ? m[6] : m[11];
-  const rawH1 = +m[2], rawH2 = hasEndTime ? +m[7] : +m[12];
+  const explicitNext = Boolean(m[6]);
+  const p1 = m[1], p2 = hasEndTime ? m[7] : m[12];
+  if (!p1 && !p2 && !explicitNext && m[3] === undefined && !m[4] && m[5] === undefined
+      && (!hasEndTime || (m[9] === undefined && !m[10] && m[11] === undefined))
+      && CN_POINT_NOUN_RE.test(m.input.slice(m.index + m[0].length))) return null;
+  const rawH1 = +m[2], rawH2 = hasEndTime ? +m[8] : +m[13];
   const min1 = m[3] !== undefined ? +m[3] : m[4] ? 30 : m[5] !== undefined ? +m[5] : 0;
-  const min2 = hasEndTime ? (m[8] !== undefined ? +m[8] : m[9] ? 30 : m[10] !== undefined ? +m[10] : 0) : 0;
+  const min2 = hasEndTime ? (m[9] !== undefined ? +m[9] : m[10] ? 30 : m[11] !== undefined ? +m[11] : 0) : 0;
   const h1 = applyCnPeriod(rawH1, p1);
   let h2;
   if (p2) {
     h2 = applyCnPeriod(rawH2, p2);
-  } else if (p1 && rawH2 >= 1 && rawH2 <= 12) {
+  } else if (p1 && !explicitNext && rawH2 >= 1 && rawH2 <= 12) {
     const m1 = rawH1 * 60 + min1, m2 = rawH2 * 60 + min2;
     if (p1 === "下午" || p1 === "傍晚") h2 = (rawH2 < 12 && (rawH1 === 12 || m1 <= m2)) ? rawH2 + 12 : rawH2;
     else if (p1 === "晚上" || p1 === "夜里") h2 = (rawH2 < 12 && m1 <= m2) ? rawH2 + 12 : (rawH2 === 12 && (rawH1 === 12 || (rawH1 >= 6 && rawH1 < 12))) ? 0 : rawH2;
@@ -374,8 +404,8 @@ function parseRangeMatch(m) {
   }
   if (h1 > 24 || (h1 === 24 && min1 > 0) || h2 > 24 || (h2 === 24 && min2 > 0)) return null;
   const start = h1 * 60 + min1, end = h2 * 60 + min2;
-  if (start === end) return null;
-  return { start, end };
+  if (start === end && !explicitNext) return null;
+  return { start, end, explicitNext };
 }
 
 const journalDayCutoff = (cfg) => cfg.dayCutoff ?? Math.max(0, cfg.dayEnd - 24);
@@ -395,9 +425,9 @@ function parseDuration(text) {
     const v = m[2] ? +m[2] : +m[1];                   // 写成 25～30 分钟的按上限算
     return Math.round(/h|小时/.test(m[3]) ? v * 60 : v);
   }
-  // 先认「一个半小时」再认「半小时」，不然一个半小时会被当成半小时
+  // 先认「一个半小时」再认「半小时」，不然一个半小时会被当成半小时；并避免「8个半小时」里的「半小时」被误认
   if ((m = /([一两二三四五六])个?(半)?小时/.exec(text))) return CN_NUM[m[1]] * 60 + (m[2] ? 30 : 0);
-  if (/半个?小时/.test(text)) return 30;
+  if (/(?<![\d一两二三四五六七八九十]个?)半个?小时(?!候)/.test(text)) return 30;
   return null;
 }
 
@@ -429,7 +459,7 @@ const workKey = (label) => label.replace(/\s*←\s*\S+\s*$/, "").trim();
 const stripDuration = (s) => s
   .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:h|小时)\s*\d+\s*(?:m|min|分钟)(?![a-zA-Z])/g, "")
   .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:[~～\-–到至]\s*\d+(?:\.\d+)?\s*)?(?:hrs|hr|h|个小时|小时|mins|min|m|分钟)(?![a-zA-Z])/g, "")
-  .replace(/(?:[一两二三四五六]个?半?|半)个?小时(?!候)/g, "")
+  .replace(/(?:[一两二三四五六]个?半?|(?<![\d一两二三四五六七八九十]个?)半)个?小时(?!候)/g, "")
   .replace(/\s+/g, " ").trim();
 
 // 剥离 Markdown 链接 URL 与裸网址再做时间/时长/进度匹配（保留行内代码与展示文字），防 URL 里的数字被误认
@@ -468,16 +498,38 @@ function parseEnglishRange(text) {
   if (end < start) end += 1440;
   return { start, end, raw: m[0], explicitAp: Boolean(a1 || a2) };
 }
+const ENG_SINGLE_RE = /(?<![\d:：A-Za-z])(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?![A-Za-z])/i;
+function parseEnglishSingle(text) {
+  const clean = stripLinkUrls(text);
+  const m = ENG_SINGLE_RE.exec(clean);
+  if (!m) return null;
+  const h = +m[1], min = m[2] != null ? +m[2] : 0;
+  if (h < 1 || h > 12 || min > 59) return null;
+  const ap = m[3].toLowerCase();
+  const h24 = ap === "pm" ? (h < 12 ? h + 12 : h) : (h === 12 ? 0 : h);
+  return { at: h24 * 60 + min, raw: m[0] };
+}
 
 function cleanLabel(s) {
   let base = String(s || "").replace(/%%\s*(←[^%]*?)\s*%%/g, "$1");
   const er = parseEnglishRange(base);
   if (er) base = base.replace(er.raw, " ");
+  else {
+    const rm = RANGE_RE.exec(base);
+    if (rm && parseRangeMatch(rm)) base = base.replace(rm[0], "");
+    else {
+      const es = parseEnglishSingle(base);
+      if (es) base = base.replace(es.raw, " ");
+      else {
+        const sm = SINGLE_RE.exec(base);
+        if (sm && parseSingleMatch(sm) != null) base = base.replace(sm[0], "");
+      }
+    }
+  }
   return base
-    .replace(RANGE_RE, "").replace(SINGLE_RE, "")
     .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:h|小时)\s*\d+\s*(?:m|min|分钟)(?![a-zA-Z])/g, "")
     .replace(/(?:\bfor\s+|做了|用了|花了)?\d+(?:\.\d+)?\s*(?:[~～\-–到至]\s*\d+(?:\.\d+)?\s*)?(?:hrs|hr|h|个小时|小时|mins|min|m|分钟)(?![a-zA-Z])/g, "")
-    .replace(/(?:[一两二三四五六]个?半?|半)个?小时(?!候)/g, "")
+    .replace(/(?:[一两二三四五六]个?半?|(?<![\d一两二三四五六七八九十]个?)半)个?小时(?!候)/g, "")
     .replace(/\s+([，,。；;])/g, "$1")
     .replace(/[，,]\s*$|^\s*[，,]/g, "")
     .replace(/!?\[\[[^\]|]*\|([^\]]*)\]\]/g, "$1")
@@ -902,7 +954,9 @@ function parseJournal(content, cfg) {
       const ler = erHead && ts.startsWith(erHead.raw) ? erHead : null;
       const lrRaw = !ler && new RegExp("^" + RANGE_RE.source).exec(ts);
       const lr = lrRaw ? parseRangeMatch(lrRaw) : null;
-      const lsRaw = !ler && !lr && new RegExp("^" + SINGLE_RE.source).exec(ts);
+      const esHead = !ler && !lr ? parseEnglishSingle(ts) : null;
+      const les = esHead && ts.startsWith(esHead.raw) ? esHead : null;
+      const lsRaw = !ler && !lr && !les && new RegExp("^" + SINGLE_RE.source).exec(ts);
       const ls = lsRaw ? parseSingleMatch(lsRaw) : null;
       if (state === "done" && ler) {
         const start = normalize(ler.start, cfg);
@@ -929,14 +983,15 @@ function parseJournal(content, cfg) {
         return;
       }
       // DONE 18:02 写稿 2h：这里的 2h 是做了多久（Telegram 的 done 写稿 2h），不是预估
-      if (state === "done" && ls != null) {
-        const at = normalize(ls, cfg);
-        items.push({ ...base, kind: "task", dur: parseDuration(ts.slice(lsRaw[0].length)) ?? cfg.defaultDur, explicitDur: parseDuration(ts.slice(lsRaw[0].length)) != null, doneAt: at });
+      if (state === "done" && (les || ls != null)) {
+        const at = normalize(les ? les.at : ls, cfg);
+        const tail = ts.slice(les ? les.raw.length : lsRaw[0].length);
+        items.push({ ...base, kind: "task", dur: parseDuration(tail) ?? cfg.defaultDur, explicitDur: parseDuration(tail) != null, doneAt: at });
         return;
       }
       // SUSPENDED 17:12 / PAUSED 17:12 / WAITING 17:12 / PAUSED 🤖 19:17-19:23：后面的时刻是当初开始做的记录，不是约好的时间，不当事件
-      if (state === "open" && (doing || suspended || paused) && (ler || lr || ls != null)) {
-        const tailLen = ler ? ler.raw.length : (lr ? lrRaw[0].length : lsRaw[0].length);
+      if (state === "open" && (doing || suspended || paused) && (ler || lr || les || ls != null)) {
+        const tailLen = ler ? ler.raw.length : (lr ? lrRaw[0].length : (les ? les.raw.length : lsRaw[0].length));
         const d = parseDuration(ts.slice(tailLen));
         // 自动记的行「TOREVIEW 🤖 21:59-00:06」：这一段就是这回事真实占用的时间（AI 回传的那个时间），
         // 整段算一块、没写时长时也当时长；几件同时在跑就叠着画
@@ -947,7 +1002,7 @@ function parseJournal(content, cfg) {
           if (b < a) b += 1440;   // 06:42-08:19 这种：分界前的时刻归到了前一天，结束时刻要跟着跨过来
           span = b > a ? [a, b] : null;
         }
-        const startedAt = doing ? normalize(ler ? ler.start : (lr ? lr.start : ls), cfg) : undefined;
+        const startedAt = doing ? normalize(ler ? ler.start : (lr ? lr.start : (les ? les.at : ls)), cfg) : undefined;
         items.push({ ...base, kind: "task", dur: d ?? (span ? span[1] - span[0] : cfg.defaultDur), explicitDur: d != null, ...(startedAt !== undefined ? { startedAt } : {}), ...(span ? { aiSpan: span } : {}) });
         return;
       }
@@ -975,6 +1030,12 @@ function parseJournal(content, cfg) {
       return;
     }
     const dur = parseDuration(ps) ?? cfg.defaultDur;
+    const es = parseEnglishSingle(ps);
+    if (es) {
+      const start = normalize(es.at, cfg);
+      items.push({ ...base, kind: "event", start, end: start + dur, pinned: true });
+      return;
+    }
     const singleRaw = SINGLE_RE.exec(ps);
     const single = singleRaw ? parseSingleMatch(singleRaw) : null;
     if (single != null) {
@@ -2173,6 +2234,12 @@ const clock = (t) => {
   const m = ((Math.round(t) % 1440) + 1440) % 1440;
   return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 };
+const clockDay = (t) => (t >= 1440 ? T(`次日 ${clock(t)}`, `+1 ${clock(t)}`) : clock(t));
+const clockRange = (a, b) => (a >= 1440
+  ? T(`次日 ${clock(a)}–${clock(b)}`, `+1 ${clock(a)}–${clock(b)}`)
+  : b > 1440
+    ? T(`${clock(a)}–次日${clock(b)}`, `${clock(a)}–+1 ${clock(b)}`)
+    : `${clock(a)}–${clock(b)}`);
 // 「日记日期分界」这类按 24 小时制填的时刻 ↔ 小时数（可以带小数）。认「8」「8.5」「08:00」「4:30」「23：30」，不认就返回 null；范围 00:00–23:59
 function parseHourClock(v) {
   const s = String(v ?? "").trim().replace(/：/g, ":");
@@ -3760,10 +3827,10 @@ class StatusModal extends OB.Modal {
       }
 
       // 接下来（固定事件和排进去的待办，按时间）
-      const upcoming = [...d.events.map((e) => ({ at: Math.max(e.start, d.now), kind: "event", item: e, right: `${clock(e.start)}–${clock(e.end)}` })),
+      const upcoming = [...d.events.map((e) => ({ at: Math.max(e.start, d.now), kind: "event", item: e, right: clockRange(e.start, e.end) })),
         ...d.next.map((t) => ({ at: t.segments[t.workedN][0], kind: t.prio ? "prio" : "task", item: t, right: t.remaining < t.dur - 1 ? T(`剩 ${dur(t.remaining)}`, `${dur(t.remaining)} left`) : dur(t.dur) }))].sort((a, b) => a.at - b.at).slice(0, 6);
       if (upcoming.length) sec(T("接下来", "Up next"));
-      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? T("进行中", "Now") : clock(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item, u.item.priority);
+      for (const u of upcoming) row(`is-${u.kind}`, u.kind === "event" && u.item.start <= d.now ? T("进行中", "Now") : clockDay(u.kind === "event" ? u.item.start : u.at), (u.item.paused ? "⏸ " : "") + short(u.item.label), u.right, u.item, u.item.priority);
       if (d.over.length) row("is-over", "—", T(`排不下 ${d.over.length} 件：${d.over.slice(0, 3).map((t) => short(t.label)).join("、")}${d.over.length > 3 ? "…" : ""}`, `${d.over.length} won't fit: ${d.over.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.over.length > 3 ? "…" : ""}`), "", d.over[0]);
       if (d.suspended.length) row("is-paused", "💤", T(`搁置 ${d.suspended.length} 件：${d.suspended.slice(0, 3).map((t) => short(t.label)).join("、")}${d.suspended.length > 3 ? "…" : ""}`, `${d.suspended.length} parked: ${d.suspended.slice(0, 3).map((t) => short(t.label)).join(", ")}${d.suspended.length > 3 ? "…" : ""}`), "", d.suspended[0]);
       if (!d.doing.length && !upcoming.length && !d.over.length) rise(contentEl.createDiv({ cls: "naut-st-empty", text: T("今天没有排着的事了", "Nothing else scheduled today") }));
@@ -4015,7 +4082,7 @@ function formatSpiralLabel(entry, maxCols = 18, compact = false) {
   let meta = "";
   if (!compact) {
     if (hasSpan) {
-      meta = `${isAi ? "🤖 " : ""}${clock(entry.start)}–${clock(entry.end)}${durText ? ` · ${durText}` : ""}${pctText ? ` · ${pctText}` : ""}`;
+      meta = `${isAi ? "🤖 " : ""}${clockRange(entry.start, entry.end)}${durText ? ` · ${durText}` : ""}${pctText ? ` · ${pctText}` : ""}`;
     } else if (isAi || durText || pctText) {
       meta = [isAi ? "🤖" : "", durText, pctText].filter(Boolean).join(" · ");
     }
@@ -4314,7 +4381,7 @@ class SpiralView extends ItemView {
     {
       const b = (cfg.dayBounds || {})[date.format(cfg.format)] || {};
       const set = b.start != null || b.end != null;
-      const btn = head.createEl("button", { cls: "naut-bounds-btn" + (set ? " is-set" : ""), text: `☀️${b.start != null ? clock(b.start) : "--:--"}–🌙${b.end != null ? clock(b.end) : "--:--"}`,
+      const btn = head.createEl("button", { cls: "naut-bounds-btn" + (set ? " is-set" : ""), text: `☀️${b.start != null ? clockDay(b.start) : "--:--"}–🌙${b.end != null ? clockDay(b.end) : "--:--"}`,
         attr: { "aria-label": set ? T("这天实际的起床 / 收工，点一下改", "Actual start / end of this day; click to change") : T("还没设起床 / 收工（现在是默认），点一下填", "No start / end set for this day (using the defaults); click to fill in") } });
       btn.onclick = () => new BoundsModal(this.app, this.plugin, date).open();
     }
@@ -4754,14 +4821,14 @@ class SpiralView extends ItemView {
         const d = arc(a, b);
         if (!d) continue;
         const el = svgEl("path", { d, class: "naut-gap", stroke: `url(#${hatchId})` }, gapsG);
-        if (!playing) hov(el, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T("没有记录", "Not recorded"));
+        if (!playing) hov(el, `${clockRange(a, b)} · ${dur(b - a)}`, T("没有记录", "Not recorded"));
       }
       if (dayRel >= 0) for (const [a, b] of curPlan.free) {
         const d = b - a >= 1 ? arc(a, b) : null;
         if (!d) continue;
         const cur = dayRel === 0 && a <= simNow && simNow < b;
         const el = svgEl("path", { d, class: "naut-slot" + (cur ? " is-now" : "") }, gapsG);
-        if (!playing) hov(el, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, cur ? T("当前可用", "Free now") : T("可用空档", "Free slot"));
+        if (!playing) hov(el, `${clockRange(a, b)} · ${dur(b - a)}`, cur ? T("当前可用", "Free now") : T("可用空档", "Free slot"));
       }
     };
     paintGapsAndSlots(plan, now, gaps);
@@ -4911,7 +4978,7 @@ class SpiralView extends ItemView {
       }
       const rel = aiOf(item).filter((x) => x.related);
       // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
-      hov(p, `${clock(a)}–${clock(b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join(T("、", ", "))}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
+      hov(p, `${clockRange(a, b)} · ${dur(b - a)}`, workKey(item.label), [item.cal ? `📅 ${item.cal.calendar}` : "", rel.length ? `🤖 ${rel.map(aiName).slice(0, 2).join(T("、", ", "))}` : item.clock && item.clock.who ? `🤖 ${item.clock.who}` : ""].filter(Boolean).join(" · "));
       p.addEventListener("click", (e) => {
         if (e.shiftKey && item.kind === "task" && item.state === "open" && !item.container && !isAutoTask(item, autoKeys) && item.line != null) {
           e.preventDefault();
@@ -4925,7 +4992,7 @@ class SpiralView extends ItemView {
       const parentHint = item.inheritedFrom != null && item.inheritedLabel
         ? T(` · 随母块「${trunc(item.inheritedLabel, 14)}」`, ` · parent "${trunc(item.inheritedLabel, 14)}"`)
         : "";
-      const header = `${trunc(segLabel, 24)} · ${clock(a)}–${clock(b)}${parentHint}`;
+      const header = `${trunc(segLabel, 24)} · ${clockRange(a, b)}${parentHint}`;
       if (item.kind === "task" && item.state === "open" && !item.container && item.line != null) {
         const prioLine = item.inheritedFrom != null ? item.inheritedFrom : item.line;
         const curPrio = item.inheritedFrom != null ? taskPriority(journalLines[prioLine]) : (item.priority || taskPriority(journalLines[prioLine]));
@@ -5065,11 +5132,11 @@ class SpiralView extends ItemView {
           }
           link(lb.item, g);
           const relLbl = aiOf(lb.item).filter((x) => x.related);
-          const spanTip = `${clock(lb.item.start ?? labelCands.find((c) => c.item === lb.item)?.start ?? 0)}–${clock(lb.item.end ?? labelCands.find((c) => c.item === lb.item)?.end ?? 0)}`;
+          const spanTip = clockRange(lb.item.start ?? labelCands.find((c) => c.item === lb.item)?.start ?? 0, lb.item.end ?? labelCands.find((c) => c.item === lb.item)?.end ?? 0);
           const itemSpan = labelCands.find((c) => c.item === lb.item);
           hov(
             g,
-            itemSpan ? `${clock(itemSpan.start)}–${clock(itemSpan.end)} · ${dur(itemSpan.totalDur)}` : spanTip,
+            itemSpan ? `${clockRange(itemSpan.start, itemSpan.end)} · ${dur(itemSpan.totalDur)}` : spanTip,
             workKey(lb.item.label),
             [lb.item.cal ? `📅 ${lb.item.cal.calendar}` : "", relLbl.length ? `🤖 ${relLbl.map(aiName).slice(0, 2).join(T("、", ", "))}` : lb.item.clock && lb.item.clock.who ? `🤖 ${lb.item.clock.who}` : ""].filter(Boolean).join(" · ")
           );
@@ -5086,7 +5153,7 @@ class SpiralView extends ItemView {
           const lblParentHint = lb.item.inheritedFrom != null && lb.item.inheritedLabel
             ? T(` · 随母块「${trunc(lb.item.inheritedLabel, 14)}」`, ` · parent "${trunc(lb.item.inheritedLabel, 14)}"`)
             : "";
-          const lblHeader = `${trunc(lblLabel, 24)}${itemSpan ? ` · ${clock(itemSpan.start)}–${clock(itemSpan.end)}` : ""}${lblParentHint}`;
+          const lblHeader = `${trunc(lblLabel, 24)}${itemSpan ? ` · ${clockRange(itemSpan.start, itemSpan.end)}` : ""}${lblParentHint}`;
           if (lb.item.kind === "task" && lb.item.state === "open" && !lb.item.container && lb.item.line != null) {
             const prioLine = lb.item.inheritedFrom != null ? lb.item.inheritedFrom : lb.item.line;
             const curPrio = lb.item.inheritedFrom != null ? taskPriority(journalLines[prioLine]) : (lb.item.priority || taskPriority(journalLines[prioLine]));
@@ -5105,7 +5172,7 @@ class SpiralView extends ItemView {
       const [x, y] = pt(l.start);
       const cir = late(svgEl("circle", { cx: x, cy: y, r: 2.6, class: "naut-log" }, svg), l.start);
       timedDots.push([cir, l.start]);
-      hov(cir, clock(l.start), l.label);
+      hov(cir, clockDay(l.start), l.label);
     }
     // 🍅 番茄钟外沿轨道（offset = +11.5）：已完成留淡色细弧，进行中拆为「已兑现实线 + 未实现预订虚线 + 终点圆点」
     const POMO_OFF = 11.5;
@@ -5209,7 +5276,7 @@ class SpiralView extends ItemView {
       const [x, y] = pt(t0);
       const h = svgEl("circle", { cx: x, cy: y, r: 4.5, class: `naut-handle naut-handle-${kind}` }, svg);
       const name = kind === "start" ? T("开始", "start") : T("结束", "end");
-      svgEl("title", {}, h).textContent = T(`这天实际${name} ${clock(t0)}${bounds[kind] == null ? "（默认）" : ""}\n拖动调整，双击恢复默认`, `Actual ${name} of this day ${clock(t0)}${bounds[kind] == null ? " (default)" : ""}\nDrag to adjust, double-click to restore the default`);
+      svgEl("title", {}, h).textContent = T(`这天实际${name} ${clockDay(t0)}${bounds[kind] == null ? "（默认）" : ""}\n拖动调整，双击恢复默认`, `Actual ${name} of this day ${clockDay(t0)}${bounds[kind] == null ? " (default)" : ""}\nDrag to adjust, double-click to restore the default`);
       const label = svgEl("text", { x, y, class: "naut-handle-label" }, svg);
       const nearest = (ev) => {
         const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(svg.getScreenCTM().inverse());
@@ -5344,20 +5411,20 @@ class SpiralView extends ItemView {
             continue;
           }
           const q = it.kind === "task" && it.state === "open" ? it : null, live = q && it.doing && dayRel === 0;
-          const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clock(it.doneAt) : "") : it.kind === "event" ? clock(it.start)
-            : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clock(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
+          const time = t.state === "done" ? "✓" + (it.doneAt != null ? " " + clockDay(it.doneAt) : "") : it.kind === "event" ? clockDay(it.start)
+            : live ? T("进行中", "Doing") : q && q.suspended ? "💤" : q && q.container ? T("分步", "In steps") : q && q.segments && q.segments.length > q.workedN ? clockDay(q.segments[q.workedN][0]) : dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit");
           rows.push({ item: it, inMain: true, canMenu: !playing && it.kind === "task" && it.state === "open" && !it.container && it.line != null, cls: "is-main" + (t.state === "done" ? " is-done" : "") + (live ? " is-doing" : "") + (time === T("排不下", "Won't fit") || time === T("没做完", "Unfinished") ? " is-over" : ""),
             time, dur: t.state === "done" ? dur(it.dur) : q ? durText(q) : dur(it.end - it.start), tip: q ? tipOf(q) : "" });
         }
         section(T(`🎯 主线 ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`, `🎯 Mainline ${M.done}/${M.total} · ${Math.round(M.done / M.total * 100)}%`), rows);
       }
       const events = items.filter((i) => i.kind === "event").sort((a, b) => a.start - b.start);
-      section(T("固定事件", "Fixed events"), events.map((e) => ({ item: e, canEventMenu: !playing, cls: e.state === "done" ? "is-done" : "is-event", time: `${clock(e.start)}–${clock(e.end)}`, dur: dur(e.end - e.start) })));
+      section(T("固定事件", "Fixed events"), events.map((e) => ({ item: e, canEventMenu: !playing, cls: e.state === "done" ? "is-done" : "is-event", time: clockRange(e.start, e.end), dur: dur(e.end - e.start) })));
       // 按排到的时间先后列（小任务补位到前面的空档，会排在列表里靠后的大任务前面）
       const placed = curPlan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]);
       const upNextRows = placed.map((t) => ({
         item: t, cls: (t.mainA ? "is-main" : t.prio ? "is-prio" : "is-task") + (t.doing && dayRel === 0 ? " is-doing" : ""),
-        time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clock(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
+        time: t.doing && dayRel === 0 ? T("进行中", "Doing") : clockDay(t.segments[t.workedN][0]) + (t.overflow ? T(" 起", " on") : ""),
         dur: durText(t), tip: tipOf(t), upNext: !playing,
       }));
       // 刚在「接下来」里点成 DONE / SUSPENDED 的项暂时留在原地，方便再点一下继续循环回原状态
@@ -5376,7 +5443,7 @@ class SpiralView extends ItemView {
             row: {
               item: it,
               cls: curKw === "DONE" ? "is-done" : "is-susp",
-              time: curKw === "DONE" ? (it.doneAt != null ? `✓ ${clock(it.doneAt)}` : "✓") : "💤",
+              time: curKw === "DONE" ? (it.doneAt != null ? `✓ ${clockDay(it.doneAt)}` : "✓") : "💤",
               dur: dur(it.dur),
               upNext: true,
             },
@@ -5390,11 +5457,11 @@ class SpiralView extends ItemView {
       const over = curPlan.queue.filter((t) => t.overflow);
       section(dayRel < 0 ? T("没做完", "Unfinished") : T("排不下", "Won't fit"), over.map((t) => ({ item: t, canMenu: !playing && dayRel >= 0, cls: "is-over", time: "—", dur: !isAutoTask(t, autoKeys) && t.segments.length > t.workedN ? T(`缺 ${dur(t.overflow)}`, `${dur(t.overflow)} short`) : durText(t), tip: tipOf(t) })));
       section(T("💤 搁置", "💤 Parked"), curPlan.suspended.map((t) => ({ item: t, canMenu: !playing, cls: "is-susp", time: "💤", dur: durText(t), tip: tipOf(t) })));
-      section(T("做过 · 已挪走", "Worked on · moved away"), orphans.filter((o) => o.segs.length).map((o) => ({ item: o, cls: "is-done", time: `${clock(o.segs[0][0])}–${clock(o.segs.at(-1)[1])}`, dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
+      section(T("做过 · 已挪走", "Worked on · moved away"), orphans.filter((o) => o.segs.length).map((o) => ({ item: o, cls: "is-done", time: clockRange(o.segs[0][0], o.segs.at(-1)[1]), dur: dur(o.segs.reduce((n, [a, b]) => n + b - a, 0)) })));
       const doneTasks = items.filter((i) => i.kind === "task" && i.state === "done").sort((a, b) => (a.doneAt ?? 1e9) - (b.doneAt ?? 1e9));
       section(T(`已完成 ${doneTasks.length}`, `Done ${doneTasks.length}`), doneTasks.map((t) => ({
         item: t, cls: isReview(t) ? "is-done is-review" : "is-done",
-        time: t.actual ? `${clock(t.actual[0])}–${clock(t.actual[1])}` : t.doneAt != null ? clock(t.doneAt) : "—",
+        time: t.actual ? clockRange(t.actual[0], t.actual[1]) : t.doneAt != null ? clockDay(t.doneAt) : "—",
         dur: !t.actual && !isReview(t) && t.spentToday > 0 ? dur(t.spentToday) : dur(t.dur),
       })));
     };
@@ -6310,6 +6377,7 @@ module.exports = class NautilusSpiral extends Plugin {
   async onload() {
     const loaded = await this.loadData();
     this.settings = Object.assign({}, DEFAULTS, loaded);
+    if (loaded && !("dayCutoff" in loaded) && loaded.dayEnd > 24) this.settings.dayCutoff = Math.max(0, loaded.dayEnd - 24);
     // 老配置里没有 journalAuto：没动过目录/格式（还是「日记」/ Journal + YYYY_MM_DD）的当成没设过，交给自动检测；自己改过的保持手动
     if (loaded && !("journalAuto" in loaded)) {
       const f = trimSlash(this.settings.folder);
@@ -6523,7 +6591,7 @@ module.exports = class NautilusSpiral extends Plugin {
     const events = items.filter((i) => i.kind === "event" && i.state !== "done" && !i.pinned && i.end > now).sort((a, c) => a.start - c.start).slice(0, 4);
     if (events.length) {
       lines.push("", T("📅 <b>固定安排</b>", "📅 <b>Fixed events</b>"));
-      for (const e of events) lines.push(`${e.start <= now ? "🔴" : "🔔"} <code>${clock(e.start)}–${clock(e.end)}</code> ${L(e)}`);
+      for (const e of events) lines.push(`${e.start <= now ? "🔴" : "🔔"} <code>${clockRange(e.start, e.end)}</code> ${L(e)}`);
     }
     const over = plan.queue.filter((t) => t.overflow);
     if (over.length) {
@@ -8942,33 +9010,65 @@ class SpiralSettings extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const s = this.plugin.settings;
-    const num = (name, desc, key, min, max) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
-      .setValue(String(s[key]))
-      .onChange(async (v) => {
+    let warnEl = null;
+    const updateWarn = () => {
+      if (!warnEl) return;
+      const msg = scheduleConflictHint(s);
+      warnEl.setText(msg);
+      warnEl.style.display = msg ? "" : "none";
+    };
+    const presetRow = new Setting(containerEl).setName(T("作息预设", "Schedule preset"))
+      .setDesc(T("一键套用常规 / 晚睡 / 夜猫作息，下方仍可单独微调；已有老配置不会被覆盖", "One-click preset for Regular / Late night / Night owl; you can fine-tune below anytime"));
+    for (const p of SCHEDULE_PRESETS) {
+      const active = s.dayStart === p.dayStart && s.dayEnd === p.dayEnd && (s.dayCutoff ?? 4) === p.dayCutoff;
+      presetRow.addButton((b) => {
+        b.setButtonText(p.name).setTooltip(p.desc);
+        if (active) b.setCta();
+        b.onClick(async () => {
+          s.dayStart = p.dayStart;
+          s.dayEnd = p.dayEnd;
+          s.dayCutoff = p.dayCutoff;
+          await this.plugin.saveData(s);
+          this.plugin.app.workspace.trigger("nautilus-spiral:day-cutoff-changed");
+          this.plugin.refresh();
+          this.display();
+        });
+      });
+    }
+    const num = (name, desc, key, min, max, check) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => {
+      t.setValue(String(s[key])).onChange(async (v) => {
         const n = Number(v);
-        if (!Number.isFinite(n) || n < min || n > max) return;
+        const ok = Number.isFinite(n) && n >= min && n <= max && (!check || check(n));
+        t.inputEl.toggleClass("naut-bad-input", !ok);
+        if (!ok) return;
         s[key] = n;
         await this.plugin.saveData(s);
+        updateWarn();
         this.plugin.refresh();
-      }));
-    num(T("一天从几点开始", "Day starts at"), T("螺旋的起点（0–23）", "Where the spiral begins (0–23)"), "dayStart", 0, 23);
-    num(T("一天到几点结束", "Day ends at"), T("螺旋和排程到几点为止，超过 24 表示次日凌晨，比如 32 = 次日早上 8 点", "Where the spiral and the schedule stop. Over 24 means after midnight, e.g. 32 = 8 AM the next day"), "dayEnd", 12, 36);
+      });
+      t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(String(s[key])); });
+    });
+    num(T("一天从几点开始", "Day starts at"), T("螺旋的起点（0–23，需小于结束时间）", "Where the spiral begins (0–23, must be earlier than Day ends at)"), "dayStart", 0, 23, (n) => n < (Number(s.dayEnd) || 28));
+    num(T("一天到几点结束", "Day ends at"), T("螺旋和排程到几点为止，超过 24 表示次日凌晨，比如 28 = 次日凌晨 4 点、32 = 次日早上 8 点", "Where the spiral and schedule stop. Over 24 means after midnight, e.g. 28 = 4 AM next day, 32 = 8 AM next day"), "dayEnd", 12, 36, (n) => n > (Number(s.dayStart) || 0));
     // 日期分界按 24 小时制的时刻填。别的插件（日记整理、块去向、任务提醒…）的「今天」都读这一项
-    new Setting(containerEl).setName(T("日记日期分界", "Daily note cutoff")).setDesc(T("这个时刻之前还算前一天的日记。按 24 小时制写：08:00、4:30、23:30 都行，只写一个数也行（8 = 08:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项", "Before this time it still counts as the previous day's note. Use 24-hour time: 08:00, 4:30 and 23:30 all work, or just a number (8 = 08:00). The companion plugins (journal cleanup, block routing, task reminders) follow this setting when working out which note is today's"))
+    new Setting(containerEl).setName(T("日记日期分界", "Daily note cutoff")).setDesc(T("这个时刻之前还算前一天的日记。按 24 小时制写：04:00、08:00、23:30 都行，只写一个数也行（4 = 04:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项", "Before this time it still counts as the previous day's note. Use 24-hour time: 04:00, 08:00 and 23:30 all work, or just a number (4 = 04:00). The companion plugins (journal cleanup, block routing, task reminders) follow this setting when working out which note is today's"))
       .addText((t) => {
-        t.setPlaceholder("08:00").setValue(fmtHourClock(s.dayCutoff ?? 8)).onChange(async (v) => {
+        t.setPlaceholder("04:00").setValue(fmtHourClock(s.dayCutoff ?? 4)).onChange(async (v) => {
           const h = parseHourClock(v);
           t.inputEl.toggleClass("naut-bad-input", h == null);
           if (h == null) return;
           if (s.dayCutoff === h) return;
           s.dayCutoff = h;
           await this.plugin.saveData(s);
+          updateWarn();
           this.plugin.app.workspace.trigger("nautilus-spiral:day-cutoff-changed");
           this.plugin.refresh();
         });
-        // 离开输入框时写成统一的样子（8 → 08:00）；填得不对就退回现在的值
-        t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(fmtHourClock(s.dayCutoff ?? 8)); });
+        // 离开输入框时写成统一的样子（4 → 04:00）；填得不对就退回现在的值
+        t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(fmtHourClock(s.dayCutoff ?? 4)); });
       });
+    warnEl = containerEl.createDiv({ cls: "naut-proj-note naut-setting-warn" });
+    updateWarn();
     num(T("默认任务时长（分钟）", "Default task length (minutes)"), T("没写时长的任务按这个算", "Used for tasks without a duration"), "defaultDur", 1, 240);
     const text = (name, desc, key) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
       .setValue(s[key])
@@ -9782,4 +9882,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, clock, dur, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
