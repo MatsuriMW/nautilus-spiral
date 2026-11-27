@@ -11,6 +11,7 @@ const OB = {
   PluginSettingTab: class {},
   Modal: class {},
   FuzzySuggestModal: class {},
+  TFile: class {},
   getLanguage: () => 'zh',
   moment: (key, format) => ({
     isValid: () => format === 'YYYY-MM-DD' && /^\d{4}-\d{2}-\d{2}$/.test(key),
@@ -439,7 +440,46 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   assert.equal(evRev.rows[0].plannedMinutes, 60);
   assert.equal(evRev.rows[0].actualMinutes, 40);
   assert.equal(evRev.rows[0].varianceMinutes, -20);
-  console.log('PASS Agent Deck × 螺旋日程（ad-clock / 多 ⏱ / 🤖 上卷 / 直绑 DOING / 事件对比）验证通过');
+
+  // autoCreateJournal: false 防抢跑建文件 + journalInitialContent 模板优先读取
+  const created = [];
+  const pNoCreate = Object.create(Plugin.prototype);
+  pNoCreate.settings = { ...DEFAULTS, folder: '笔记/Log', format: 'YYYYMMDD', autoCreateJournal: false };
+  pNoCreate.today = () => ({ format: (fmt) => (fmt === 'YYYY/MM/DD' ? '2026/11/27' : fmt === 'YYYYMMDD' ? '20261127' : '2026-11-27') });
+  pNoCreate.views = () => [{}];
+  pNoCreate.app = {
+    vault: {
+      getAbstractFileByPath: () => null,
+      createFolder: async () => {},
+      create: async (pPath, content) => { created.push({ pPath, content }); return { path: pPath }; },
+    },
+    workspace: { iterateRootLeaves() {}, getMostRecentLeaf() { return null; }, getLeaf() { return { view: {}, openFile: async () => {} }; }, setActiveLeaf() {} },
+  };
+  await pNoCreate.ensureToday();
+  await pNoCreate.openToday(true);
+  assert.equal(created.length, 0, 'autoCreateJournal: false 时 ensureToday 与 openToday(true) 均不新建日记');
+
+  const coreTpl = { path: 'Templates/CoreDaily.md', extension: 'md' };
+  const pnTpl = { path: 'Templates/PNDaily.md', extension: 'md' };
+  let coreEnabled = true;
+  pNoCreate.app.internalPlugins = {
+    getPluginById: (id) => {
+      if (id === 'daily-notes') return { enabled: coreEnabled, instance: { options: { template: coreTpl.path } } };
+      if (id === 'templates') return { enabled: true, instance: { options: { dateFormat: 'YYYY-MM-DD', timeFormat: 'HH:mm' } } };
+      return null;
+    },
+  };
+  pNoCreate.app.plugins = { plugins: { 'periodic-notes': { settings: { daily: { enabled: true, template: pnTpl.path } } } } };
+  pNoCreate.app.vault.getAbstractFileByPath = (pPath) => (pPath === coreTpl.path ? coreTpl : pPath === pnTpl.path ? pnTpl : null);
+  pNoCreate.app.vault.read = async (f) => (f === coreTpl ? 'core:{{title}}:{{date:YYYY/MM/DD}}' : 'pn:{{title}}:{{date}}');
+  const dMock = pNoCreate.today();
+  assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'core:20261127 - 日笔记:2026/11/27');
+  coreEnabled = false;
+  assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'pn:20261127 - 日笔记:2026-11-27');
+  pNoCreate.app.plugins.plugins['periodic-notes'].settings.daily.enabled = false;
+  assert.ok((await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md')).includes('journal-date: 2026-11-27'));
+
+  console.log('PASS Agent Deck × 螺旋日程（ad-clock / 多 ⏱ / 🤖 上卷 / 直绑 DOING / 事件对比 / 防抢建与模板）验证通过');
 })().catch((err) => {
   console.error(err);
   process.exitCode = 1;

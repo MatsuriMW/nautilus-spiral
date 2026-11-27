@@ -44,6 +44,7 @@ const DEFAULTS = {
   gameProcs: "Hearthstone, steamapps/common",   // 进程路径里含这些词 = 在玩（steamapps/common 下的按游戏文件夹名记）
   gameFrontApps: "Steam",                       // 这些 App 只有在最前面时才算（Steam 客户端后台常驻，不能一开着就算）
   openTodayOnStartup: true,    // 启动 Obsidian 时打开今天的日记（按 dayCutoff 算「今天」）
+  autoCreateJournal: true,     // 今天日记不存在时自动新建；关掉后只读取已有日记
   revealOnStartup: true,       // 启动时把左侧栏切到螺旋日程
   minChunk: 25,         // 最短一段（分钟）：切开的任务每段至少这么长；不够切成两段的整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满
   calendar: false,      // 读 macOS「日历」里的事件当固定事件（只读）
@@ -6264,7 +6265,7 @@ class SpiralReviewView extends ItemView {
     if (!(file instanceof TFile)) {
       const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      file = await this.app.vault.create(path, this.plugin.journalSeed(d));
+      file = await this.app.vault.create(path, await this.plugin.journalInitialContent(d, path));
     }
     return file;
   }
@@ -8424,16 +8425,63 @@ module.exports = class NautilusSpiral extends Plugin {
     return T(`---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`, `---\njournal: Daily\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`);
   }
 
-  // 今天的日记被删了或者还没建：面板刷着的时候顺手补一篇回来（不在后台无声建文件）
+  // 新建今天的日记时的初始内容：优先读取核心「日记」或 Periodic Notes 的模板（展开基础 {{title}}/{{date}}/{{time}}），无模板时回退 journalSeed(d)
+  async journalInitialContent(d, path = "") {
+    const app = this.app;
+    let tplPath = "";
+    try {
+      const dn = app?.internalPlugins?.getPluginById?.("daily-notes");
+      if (dn?.enabled) tplPath = String(dn.instance?.options?.template || "").trim();
+    } catch (e) { /* 没装也没有 */ }
+    if (!tplPath) {
+      try {
+        const pn = app?.plugins?.plugins?.["periodic-notes"]?.settings?.daily;
+        if (pn?.enabled) tplPath = String(pn.template || "").trim();
+      } catch (e) { /* 没装也没有 */ }
+    }
+    if (tplPath) {
+      const tplFile = app?.vault?.getAbstractFileByPath?.(tplPath)
+        || app?.vault?.getAbstractFileByPath?.(`${tplPath}.md`)
+        || app?.metadataCache?.getFirstLinkpathDest?.(tplPath, "");
+      if (tplFile && typeof tplFile.extension === "string") {
+        try {
+          const raw = await app.vault.read(tplFile);
+          let tplOpts = {};
+          try { tplOpts = app.internalPlugins?.getPluginById?.("templates")?.instance?.options || {}; } catch (e) { /* ignore */ }
+          const dateFmt = String(tplOpts.dateFormat || "YYYY-MM-DD").trim() || "YYYY-MM-DD";
+          const timeFmt = String(tplOpts.timeFormat || "HH:mm").trim() || "HH:mm";
+          const cleanPath = String(path || this.journalPath(d) || "");
+          const title = cleanPath.slice(cleanPath.lastIndexOf("/") + 1).replace(/\.md$/i, "");
+          const now = new Date();
+          const p2 = (n) => String(n).padStart(2, "0");
+          const tMap = { HH: p2(now.getHours()), H: now.getHours(), mm: p2(now.getMinutes()), m: now.getMinutes(), ss: p2(now.getSeconds()), s: now.getSeconds() };
+          return String(raw).replace(/\{\{\s*(date|time|title)\s*(?::([^{}]*))?\s*\}\}/g, (_, name, fmt) => {
+            if (name === "title") return title;
+            const format = String(fmt || "").trim() || (name === "date" ? dateFmt : timeFmt);
+            if (name === "date") {
+              if (d && typeof d.format === "function") return d.format(format);
+              return fmtDate(now, format);
+            }
+            return format.replace(/\[[^\]]*\]|HH|H|mm|m|ss|s/g, (tk) => (tk[0] === "[" ? tk.slice(1, -1) : tMap[tk]));
+          });
+        } catch (e) { /* 模板读取失败时回退默认种子 */ }
+      }
+    }
+    return this.journalSeed(d);
+  }
+
+  // 今天的日记被删了或者还没建：面板刷着的时候顺手补一篇回来（不在后台无声建文件；关闭自动新建时跳过）
   async ensureToday() {
+    if (this.settings.autoCreateJournal === false) return;
     if (this._ensuringToday || !this.views().length) return;
-    const path = this.journalPath(this.today());
+    const d = this.today();
+    const path = this.journalPath(d);
     if (this.app.vault.getAbstractFileByPath(path)) return;
     this._ensuringToday = true;
     try {
       const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      await this.app.vault.create(path, this.journalSeed(this.today()));
+      await this.app.vault.create(path, await this.journalInitialContent(d, path));
     } catch (e) { console.error("[螺旋日程] 新建今天的日记失败", e); } finally { this._ensuringToday = false; }
   }
 
@@ -8468,9 +8516,13 @@ module.exports = class NautilusSpiral extends Plugin {
     const path = this.journalPath(d);
     let file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
+      if (this.settings.autoCreateJournal === false) {
+        if (!reuse) new OB.Notice(T("今天的日记还没创建（已关闭自动新建日记）", "Today's daily note does not exist yet (auto-create is off)"));
+        return;
+      }
       const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      file = await this.app.vault.create(path, this.journalSeed(d));
+      file = await this.app.vault.create(path, await this.journalInitialContent(d, path));
     }
     let open = null;
     if (reuse) this.app.workspace.iterateRootLeaves((l) => { if (!open && l.view?.file?.path === path) open = l; });
@@ -9394,7 +9446,9 @@ class SpiralSettings extends PluginSettingTab {
       .setValue(s[key])
       .onChange(async (v) => { s[key] = v.trim(); s.journalAuto = false; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
     jt(T("日记文件夹", "Daily note folder"), T("填了就不再自动认；空着 = 库根目录", "Filled in = stop auto-detecting; empty = vault root"), "folder");
-    jt(T("日记文件名格式", "Daily note file name format"), T("moment.js 格式，例如 YYYY-MM-DD。填了就不再自动认", "moment.js format, e.g. YYYY-MM-DD. Filling it in turns auto-detect off"), "format");
+    jt(T("日记文件名格式", "Daily note file name format"), T("moment.js 格式，例如 YYYY-MM-DD；固定文字用方括号，如 YYYYMMDD[ - 日笔记]。填了就不再自动认", "moment.js format, e.g. YYYY-MM-DD; wrap literal text in brackets, e.g. YYYYMMDD[ - Daily]. Filling it in turns auto-detect off"), "format");
+    new Setting(containerEl).setName(T("自动新建今天的日记", "Auto-create today's daily note")).setDesc(T("今天日记不存在时按核心「日记」或 Periodic Notes 模板自动新建（无模板时用默认属性头）；关掉后只读取已有日记，避免抢在自定义模板或 Templater 之前建空文件", "Create today's note from Daily notes or Periodic Notes template if missing (falls back to default frontmatter); turn off to only read existing notes without racing ahead of your manual template or Templater"))
+      .addToggle((t) => t.setValue(s.autoCreateJournal !== false).onChange(async (v) => { s.autoCreateJournal = v; await this.plugin.saveData(s); }));
     text(T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
     new Setting(containerEl).setName(T("DOING 并行排", "Run DOING tasks in parallel")).setDesc(T("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接", "Several DOING tasks all start now and overlap, taking only as long as the longest one; turn off to place them back to back"))
       .addToggle((t) => t.setValue(s.parallelDoing !== false).onChange(async (v) => { s.parallelDoing = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
