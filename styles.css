@@ -36,8 +36,6 @@
 .naut-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
 .naut-head button { padding: 2px 8px; font-size: var(--font-ui-small); }
 .naut-date { flex: 1; text-align: center; font-weight: 600; }
-.naut-head .naut-bounds-btn { color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.naut-head .naut-bounds-btn.is-set { color: var(--text-normal); }
 /* 回放一整天 & 顶栏轻量操作（平时淡隐、悬停浮现、开启态保持常亮） */
 .naut-head .naut-playback { display: inline-flex; align-items: center; padding: 2px 6px; color: var(--text-muted); opacity: 0.42; transition: opacity .18s ease-out, color .16s ease-out, transform .14s var(--naut-ease); }
 .naut-head:hover .naut-playback, .naut-head .naut-playback:focus-visible { opacity: 0.85; }
@@ -49,7 +47,15 @@
 .naut-bounds-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .naut-bounds-name { width: 5em; }
 .naut-bounds-row input { width: 7em; font-variant-numeric: tabular-nums; }
-.naut-bounds-err { color: var(--text-error); font-size: var(--font-ui-small); min-height: 1.2em; margin: 4px 0; }
+.naut-bounds-row input.naut-preset-name-inp { flex: 1; min-width: 10em; font-variant-numeric: normal; }
+.naut-bounds-err { color: var(--text-error); font-size: var(--font-ui-small); min-height: 1.2em; margin: 4px 0; line-height: 1.4; }
+.naut-bounds-err.is-warn { color: var(--color-orange, #bf7a45); }
+.naut-preset-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.naut-preset-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--background-modifier-border); }
+.naut-preset-info { display: flex; flex-direction: column; min-width: 0; }
+.naut-preset-title { font-weight: 600; font-size: var(--font-ui-small); color: var(--text-normal); }
+.naut-preset-meta { font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.naut-preset-actions { display: flex; gap: 6px; flex: none; }
 .naut-empty { color: var(--text-muted); text-align: center; margin-top: 40px; }
 
 /* 容量条 */

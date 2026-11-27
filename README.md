@@ -84,7 +84,7 @@ Use regular bullet items and the spiral updates live:
 - **Fixed events**: Include a time range (e.g. `14:00-15:00`) to pin it to the spiral.
 - **To-dos & estimates**: Use `TODO` / `DOING` / `DONE` (or checkboxes `[ ]` / `[/]` / `[x]`) with an estimate (`15m`, `1.5h`); tasks without one use the default duration.
 - **Mainline**: Tag 1–3 key items with `[#A]` (or shorthand `todo a`), or right-click any item in "Up next" to set its priority.
-- **Adjust today's hours**: Drag the hollow start/end handles on the spiral—or click `☀️--:--–🌙--:--` at the top—to match when you actually started or plan to wrap up.
+- **Adjust today's hours**: Drag the hollow start/end handles on the spiral—or click the sun/moon schedule icon at the top to set today's start/end, switch presets, or customize your own. Presets act only as defaults; earlier or later entries automatically expand the spiral.
 
 > No global hotkeys are bound by default; assign any command you want in Obsidian Settings → Hotkeys. See the [User guide](./docs/guide.md) for more details.
 

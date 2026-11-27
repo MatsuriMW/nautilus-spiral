@@ -618,6 +618,64 @@ const { DEFAULTS } = C;
     for (const pr of C.SCHEDULE_PRESETS) {
       assert.equal(C.scheduleConflictHint(pr), '', `preset ${pr.id} has no conflict`);
     }
+
+    // Customizable schedule presets & flexible hour parsing
+    assert.equal(C.parseScheduleHour('7'), 7);
+    assert.equal(C.parseScheduleHour('07:30'), 7.5);
+    assert.equal(C.parseScheduleHour('24:00'), 24);
+    assert.equal(C.parseScheduleHour('次日04:00'), 28);
+    assert.equal(C.parseScheduleHour('+1 02:30'), 26.5);
+    assert.equal(C.parseScheduleHour('28'), 28);
+    assert.equal(C.parseScheduleHour('24', { min: 0, max: 23.99 }), null);
+    assert.equal(C.parseScheduleHour('10:75'), null);
+    assert.equal(C.fmtScheduleHour(24), '24:00');
+    assert.equal(C.fmtScheduleHour(28), '次日04:00');
+    assert.equal(C.fmtScheduleHour(7.5), '07:30');
+    assert.equal(C.formatScheduleDesc({ dayStart: 7.5, dayEnd: 28, dayCutoff: 4 }), '07:30–次日04:00 · 04:00换日');
+
+    const cleanedPresets = C.sanitizeCustomPresets([
+      { id: 'c1', name: '早鸟', dayStart: 6.5, dayEnd: 23, dayCutoff: 0 },
+      { id: 'regular', name: '重名ID', dayStart: 9, dayEnd: 25, dayCutoff: 1 },
+      { id: 'bad1', name: '', dayStart: 7, dayEnd: 24, dayCutoff: 0 },
+      { id: 'bad2', name: '倒挂', dayStart: 10, dayEnd: 9, dayCutoff: 0 },
+      { id: 'bad3', name: '越界分界', dayStart: 8, dayEnd: 24, dayCutoff: 24 },
+    ]);
+    assert.equal(cleanedPresets.length, 2);
+    assert.equal(cleanedPresets[0].custom, true);
+    assert.notEqual(cleanedPresets[1].id, 'regular');
+    const customCfg = { ...DEFAULTS, dayStart: 6.5, dayEnd: 23, dayCutoff: 0, customSchedulePresets: cleanedPresets };
+    assert.equal(C.allSchedulePresets(customCfg).length, 5);
+    assert.equal(C.matchSchedulePreset(customCfg)?.name, '早鸟');
+    assert.equal(C.matchSchedulePreset({ ...DEFAULTS, dayStart: 7, dayEnd: 24, dayCutoff: 0 })?.id, 'regular');
+    assert.equal(C.matchSchedulePreset({ ...DEFAULTS, dayStart: 7.5, dayEnd: 24, dayCutoff: 0 }), null);
+
+    // Unclamped dayBounds input & auto-expanding spiral bounds
+    const regCfg = { ...DEFAULTS, dayStart: 7, dayEnd: 24, dayCutoff: 0 };
+    assert.deepEqual({ ...C.resolveBoundInput('start', '06:15', 420, regCfg) }, { t: 375 });
+    assert.deepEqual({ ...C.resolveBoundInput('end', '01:30', 420, regCfg) }, { t: 1530 });
+    assert.deepEqual({ ...C.resolveBoundInput('end', '09:50', 600, regCfg) }, { t: 590 });
+    assert.deepEqual({ ...C.resolveBoundInput('end', '次日02:30', 420, regCfg) }, { t: 1590 });
+    assert.deepEqual({ ...C.resolveBoundInput('end', '24:00', 420, regCfg) }, { t: 1440 });
+    assert.deepEqual({ ...C.resolveBoundInput('start', '', 420, regCfg) }, { t: null });
+    assert.ok(C.resolveBoundInput('start', 'abc', 420, regCfg).bad);
+
+    const bNormal = C.computeSpiralBounds(DEFAULTS, {}, [[540, 600]]);
+    assert.deepEqual([bNormal.S, bNormal.E, bNormal.expanded], [480, 1680, false]);
+    const bEarly = C.computeSpiralBounds(DEFAULTS, {}, [[390, 420], [-10, 50], [900, 9999]]);
+    assert.deepEqual([bEarly.S, bEarly.E, bEarly.S1, bEarly.expanded], [360, 1680, 480, true]);
+    const bLate = C.computeSpiralBounds(DEFAULTS, {}, [[1606, 2022]]);
+    assert.deepEqual([bLate.S, bLate.E, bLate.expanded], [480, 2040, true]);
+    const bExplicit = C.computeSpiralBounds(DEFAULTS, { start: 330, end: 1890 }, []);
+    assert.deepEqual([bExplicit.S, bExplicit.E, bExplicit.S1, bExplicit.E1, bExplicit.expanded], [300, 1920, 330, 1890, true]);
+
+    // schedule() does not truncate worked or startedAt segments earlier than dayStart
+    const earlyTasks = [
+      { kind: 'task', state: 'open', dur: 120, worked: [[360, 420]], spentToday: 60, spentBefore: 0, label: '早起写稿' },
+      { kind: 'task', state: 'open', doing: true, dur: 120, startedAt: 390, label: '早起进行中' },
+    ];
+    C.schedule(earlyTasks, { ...DEFAULTS, dayStart: 8, dayEnd: 24, dayCutoff: 0 }, 540, 0, {});
+    assert.deepEqual([...earlyTasks[0].segments[0]], [360, 420]);
+    assert.deepEqual([...earlyTasks[1].segments[0]], [390, 540]);
   }
 
   console.log('PASS enhanced: progress advance, event order barrier, outer labels, mirror sync, polish 1-9 & cache sigs');

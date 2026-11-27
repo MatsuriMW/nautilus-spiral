@@ -69,12 +69,81 @@ const DEFAULTS = {
   spiralLabelMaxCols: 18,  // 外圈标签最大显示宽（14–28，1 个中文 = 2 列）
   progressStep: 25,        // 快捷推进/回退进度步进（10 或 25）
   respectEventOrder: false,// 按日记中固定事件的先后顺序排程：事件下方的未开始待办不排到该事件结束之前（默认关）
+  customSchedulePresets: [], // 用户自定义作息预设：[{ id, name, dayStart, dayEnd, dayCutoff }]
 };
 const SCHEDULE_PRESETS = [
-  { id: "regular", name: T("☀️ 常规", "☀️ Regular"), desc: T("07:00–24:00 · 0点换日", "07:00–24:00 · midnight cutoff"), dayStart: 7, dayEnd: 24, dayCutoff: 0 },
-  { id: "late", name: T("🌙 晚睡", "🌙 Late night"), desc: T("08:00–次日04:00 · 4点换日", "08:00–+1 04:00 · 4 AM cutoff"), dayStart: 8, dayEnd: 28, dayCutoff: 4 },
-  { id: "nightowl", name: T("🦉 夜猫", "🦉 Night owl"), desc: T("08:00–次日08:00 · 8点换日", "08:00–+1 08:00 · 8 AM cutoff"), dayStart: 8, dayEnd: 32, dayCutoff: 8 },
+  { id: "regular", name: T("☀️ 常规", "☀️ Regular"), desc: T("07:00–24:00 · 00:00换日", "07:00–24:00 · 00:00 cutoff"), dayStart: 7, dayEnd: 24, dayCutoff: 0 },
+  { id: "late", name: T("🌙 晚睡", "🌙 Late night"), desc: T("08:00–次日04:00 · 04:00换日", "08:00–+1 04:00 · 04:00 cutoff"), dayStart: 8, dayEnd: 28, dayCutoff: 4 },
+  { id: "nightowl", name: T("🦉 夜猫", "🦉 Night owl"), desc: T("08:00–次日08:00 · 08:00换日", "08:00–+1 08:00 · 08:00 cutoff"), dayStart: 8, dayEnd: 32, dayCutoff: 8 },
 ];
+// 作息起止小时 ↔ 文本：支持「7」「7.5」「07:30」「24:00」「28」「28:30」「次日04:00」「+1 04:00」
+function parseScheduleHour(v, { min = 0, max = 36 } = {}) {
+  let s = String(v ?? "").trim().replace(/：/g, ":");
+  if (!s) return null;
+  let explicitNext = false;
+  const nm = /^(?:次日|第二天|明日|\+1)\s*(.+)$/.exec(s);
+  if (nm) { explicitNext = true; s = nm[1].trim(); }
+  let m, h = null;
+  if ((m = /^(\d{1,2}):(\d{1,2})$/.exec(s))) {
+    if (+m[2] < 60) h = +m[1] + +m[2] / 60;
+  } else if (/^\d{1,2}(?:\.\d+)?$/.test(s)) {
+    h = +s;
+  }
+  if (h == null || !Number.isFinite(h)) return null;
+  if (explicitNext && h < 24 && max > 24) h += 24;
+  h = Math.round(h * 60) / 60;
+  return h >= min && h <= max ? h : null;
+}
+function fmtScheduleHour(h) {
+  const m = Math.round((+h || 0) * 60);
+  if (m === 1440) return "24:00";
+  return m > 1440 ? T(`次日${clock(m)}`, `+1 ${clock(m)}`) : clock(m);
+}
+function formatScheduleDesc(p) {
+  return `${fmtScheduleHour(p.dayStart)}–${fmtScheduleHour(p.dayEnd)} · ${T(`${fmtHourClock(p.dayCutoff ?? 0)}换日`, `${fmtHourClock(p.dayCutoff ?? 0)} cutoff`)}`;
+}
+function sanitizeCustomPresets(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set(SCHEDULE_PRESETS.map((p) => p.id));
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i];
+    if (!raw || typeof raw !== "object") continue;
+    const name = String(raw.name || "").trim();
+    const dayStart = Number(raw.dayStart), dayEnd = Number(raw.dayEnd), dayCutoff = Number(raw.dayCutoff ?? 0);
+    if (!name || !Number.isFinite(dayStart) || !Number.isFinite(dayEnd) || !Number.isFinite(dayCutoff)) continue;
+    if (dayStart < 0 || dayStart >= 24 || dayEnd <= dayStart || dayEnd > 36 || dayCutoff < 0 || dayCutoff >= 24) continue;
+    let id = String(raw.id || `custom-${i + 1}`).trim() || `custom-${i + 1}`;
+    while (seen.has(id)) id = `${id}-${out.length + 1}`;
+    seen.add(id);
+    out.push({ id, name, dayStart, dayEnd, dayCutoff, custom: true, desc: formatScheduleDesc({ dayStart, dayEnd, dayCutoff }) });
+  }
+  return out;
+}
+const allSchedulePresets = (cfg) => [...SCHEDULE_PRESETS, ...sanitizeCustomPresets(cfg?.customSchedulePresets)];
+function matchSchedulePreset(cfg) {
+  const ds = Number(cfg?.dayStart), de = Number(cfg?.dayEnd), cut = Number(cfg?.dayCutoff ?? 4);
+  const eq = (a, b) => Math.abs(a - b) < 1e-6;
+  return allSchedulePresets(cfg).find((p) => eq(p.dayStart, ds) && eq(p.dayEnd, de) && eq(p.dayCutoff, cut)) || null;
+}
+// 螺旋范围默认跟作息预设走；若这天实际设了更早起床 / 更晚收工，或记了更早/更晚的事，自动向外扩一圈，不被预设卡死
+function computeSpiralBounds(cfg, bounds = {}, spans = []) {
+  const S0 = Math.max(0, Math.round((Number(cfg?.dayStart) || 0) * 60));
+  const E0 = Math.min(36 * 60, Math.max(S0 + 60, Math.round((Number(cfg?.dayEnd) || 28) * 60)));
+  const S1 = bounds && Number.isFinite(bounds.start) ? bounds.start : S0;
+  const E1 = bounds && Number.isFinite(bounds.end) ? bounds.end : E0;
+  let S = S0, E = E0;
+  const expand = (a, b) => {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b < a || a < 0 || b > 36 * 60) return;
+    if (a < S) S = Math.floor(a / 60) * 60;
+    if (b > E) E = Math.ceil(b / 60) * 60;
+  };
+  expand(S1, E1);
+  for (const sp of spans || []) if (Array.isArray(sp) && sp.length >= 2) expand(sp[0], sp[1]);
+  S = Math.max(0, Math.min(S, S1));
+  E = Math.min(36 * 60, Math.max(S + 60, E, E1));
+  return { S, E, S1, E1, S0, E0, expanded: S < S0 || E > E0 };
+}
 function scheduleConflictHint(cfg) {
   const ds = Number(cfg?.dayStart), de = Number(cfg?.dayEnd), cut = Number(cfg?.dayCutoff ?? 0);
   if (!Number.isFinite(ds) || !Number.isFinite(de) || de <= ds) {
@@ -83,8 +152,8 @@ function scheduleConflictHint(cfg) {
   if (cut > 0 && de < 24 + cut) {
     const endClk = clock(de * 60), cutClk = fmtHourClock(cut);
     return T(
-      `当前日界为 ${cutClk}（凌晨时刻会归到次日 24:00+），但一天结束仅到 ${endClk}；${endClk}–${cutClk} 之间写的时间段会超出今天螺旋范围。建议将「一天到几点结束」设为 ${Math.ceil(24 + cut)}，或把「日记日期分界」改回 00:00。`,
-      `Cutoff is ${cutClk} (after-midnight times shift to 24:00+), while day ends at ${endClk}; times between ${endClk} and ${cutClk} fall outside today's spiral. Set "Day ends at" to ${Math.ceil(24 + cut)} or "Daily note cutoff" to 00:00.`
+      `当前日界为 ${cutClk}（凌晨时刻会归到次日 24:00+），但默认结束仅到 ${endClk}；${endClk}–${cutClk} 的默认排程容量需手动扩写，或把「一天到几点结束」设为 ${Math.ceil(24 + cut)} / 日界改回 00:00（已记录的事项在螺旋上仍会自动扩框显示）。`,
+      `Cutoff is ${cutClk} (after-midnight times shift to 24:00+), while default day end is ${endClk}; default capacity excludes ${endClk}–${cutClk} unless expanded, so consider setting "Day ends at" to ${Math.ceil(24 + cut)} or cutoff to 00:00 (recorded items still expand the spiral automatically).`
     );
   }
   return "";
@@ -875,6 +944,7 @@ function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount, wideLabe
     cfg.spiralLabelMaxCols || 18,
     cfg.progressStep || 25,
     !!wideLabels,
+    cfg.customSchedulePresets || null,
     cfg.aiPrimary || "",
     cfg.aiAgents || null,
     aiDay ? [aiDay.wall, aiDay.out, aiDay.fresh, aiDay.cached, aiDay.calls, aiDay.sessions] : null,
@@ -1509,16 +1579,16 @@ function schedule(items, cfg, now, dayRel, bounds = {}) {
     t.segments = [];
     let need = t.dur;
     if (t.worked) {
-      // 做过的几段先画出来（中断再续就是好几段），剩下的接着往后排：
+      // 做过的几段先画出来（中断再续就是好几段，比预设更早开始的也照样保留），剩下的接着往后排：
       // 写了进度按进度算（3h 40% = 还剩 1h48m），没写就用 预估 − 已经做掉的（含前几天），至少留 5 分钟
-      for (const [a, b] of t.worked) if (b > S) t.segments.push([Math.max(a, S), b]);
+      for (const [a, b] of t.worked) if (b > a) t.segments.push([a, b]);
       const spent = t.spentToday + t.spentBefore;
       if (t.progress != null) need = t.dur * (1 - t.progress);
       else if (spent > 0) need = Math.max(5, t.dur - spent);
-    } else if (t.startedAt != null && dayRel === 0 && t.startedAt < from) {
+    } else if (t.startedAt != null && dayRel === 0 && t.startedAt < now) {
       // 没调 applyWork 的（任务提醒插件）：写了开始时间的 DOING，已经做掉的那段画出来
-      t.segments.push([Math.max(t.startedAt, S), from]);
-      need = Math.max(5, t.dur - (from - t.startedAt));
+      t.segments.push([t.startedAt, now]);
+      need = Math.max(5, t.dur - (now - t.startedAt));
     }
     t.workedN = t.segments.length;   // 前面这几段是做过的，后面是排的
     t.remaining = need;
@@ -3868,12 +3938,31 @@ class StatusModal extends OB.Modal {
 // 手填这天实际的开始（起床）/ 结束（收工）时间，和拖螺旋上的绿 / 红把手是一回事。留空 = 用设置里的默认
 // 写法：10:30、10：30、1030、10点半、10点20、10；凌晨收工写 2:30 也行，算到当天夜里
 function parseClockInput(s) {
-  s = s.trim().replace(/\s+/g, "");
+  let raw = String(s || "").trim().replace(/：/g, ":");
+  if (!raw) return null;
+  let explicitNext = false;
+  const nm = /^(?:次日|第二天|明日|\+1)\s*(.+)$/.exec(raw);
+  if (nm) { explicitNext = true; raw = nm[1].trim(); }
+  raw = raw.replace(/\s+/g, "");
   let m;
-  if (!(m = new RegExp(`^${TIME}$`).exec(s)) && !(m = /^(\d{1,2})(?:[.](\d{2}))?$/.exec(s)) && !(m = /^(\d{1,2})(\d{2})$/.exec(s))) return null;
+  if (!(m = new RegExp(`^${TIME}$`).exec(raw)) && !(m = /^(\d{1,2})(?:[.](\d{2}))?$/.exec(raw)) && !(m = /^(\d{1,2})(\d{2})$/.exec(raw))) return null;
+  const h = +m[1];
   const min = m[2] !== undefined ? +m[2] : m[4] !== undefined ? +m[4] : 0;
-  if (+m[1] > 31 || min >= 60) return null;
-  return tokenMinutes(m[1], m[2], m[3], m[4]);
+  if (h > 36 || min >= 60 || (h === 36 && min > 0)) return null;
+  let mins = tokenMinutes(m[1], m[2], m[3], m[4]);
+  if (explicitNext && mins < 1440) mins += 1440;
+  return mins <= 36 * 60 ? mins : null;
+}
+function resolveBoundInput(kind, rawValue, s1, cfg) {
+  const s = String(rawValue ?? "").trim();
+  if (!s) return { t: null };
+  const p = parseClockInput(s);
+  if (p == null) return { bad: T(`看不懂「${s}」，写成 10:30、10点半 或 次日02:30`, `Can't read "${s}"; write it as 10:30, 1030, or +1 02:30`) };
+  if (kind === "start") return { t: p };
+  let t = p < 1440 ? normalize(p, cfg) : p;
+  if (p < 1440 && t <= s1 && p < 8 * 60) t = p + 1440;
+  if (t > 36 * 60) return { bad: T(`收工「${s}」最晚支持到次日 12:00（36:00）`, `End "${s}" cannot exceed +1 12:00 (36:00)`) };
+  return { t };
 }
 
 class BoundsModal extends OB.Modal {
@@ -3888,11 +3977,12 @@ class BoundsModal extends OB.Modal {
     contentEl.addClass("naut-bounds-modal");
     contentEl.createEl("h3", { text: T(`${this.date.format("M月D日 ddd")} · 起床和收工`, `${this.date.format("ddd, MMM D")} · Start and end of day`) });
     const inputs = {};
+    const fmtVal = (t) => (t === 1440 ? "24:00" : clockDay(t));
     const row = (kind, name, def) => {
       const r = contentEl.createDiv({ cls: "naut-bounds-row" });
       r.createSpan({ cls: "naut-bounds-name", text: name });
-      const inp = r.createEl("input", { type: "text", placeholder: kind === "end" ? T("还没收工就空着", "Leave empty until you stop for the day") : T(`默认 ${clock(def)}`, `Default ${clock(def)}`) });
-      inp.value = b[kind] != null ? clock(b[kind]) : "";
+      const inp = r.createEl("input", { type: "text", placeholder: kind === "end" ? T("还没收工就空着", "Leave empty until you stop for the day") : T(`默认 ${fmtVal(def)}`, `Default ${fmtVal(def)}`) });
+      inp.value = b[kind] != null ? fmtVal(b[kind]) : "";
       inputs[kind] = inp;
       if (isToday) r.createEl("button", { text: T("现在", "Now") }).onclick = () => { inp.value = moment().format("HH:mm"); inp.focus(); };
       r.createEl("button", { text: T("默认", "Default") }).onclick = () => { inp.value = ""; inp.focus(); };
@@ -3900,23 +3990,17 @@ class BoundsModal extends OB.Modal {
     };
     row("start", T("☀️ 起床", "☀️ Start"), S);
     row("end", T("🌙 收工", "🌙 End"), E);
-    contentEl.createDiv({ cls: "naut-proj-note", text: T("两项都可以空着：只填起床也行，收工等真收工了再填（或者 Telegram 发「睡了」）。空着就按原来的默认算。写法：10:30、1030、10点半；凌晨收工写 2:30，算到当天夜里。", "Both can be left empty: fill in the start now and the end once you actually stop. Empty means the default. Write 10:30 or 1030; if you stop after midnight, write 2:30 and it counts toward that same night.") });
+    contentEl.createDiv({ cls: "naut-proj-note", text: T("作息预设只是默认值，不会卡死今天的起止：今天起得更早或睡得更晚可以直接填，螺旋会自动扩开。两项都可留空（按当前作息默认）；写法：10:30、1030、10点半、次日02:30。", "Schedule presets are only defaults and won't restrict your actual day: enter an earlier wake or later end and the spiral expands automatically. Leave either empty for the default. Formats: 10:30, 1030, +1 02:30.") });
     const err = contentEl.createDiv({ cls: "naut-bounds-err" });
     const bar = contentEl.createDiv({ cls: "naut-ai-sess-btns" });
-    const read = (kind) => {
-      const v = inputs[kind].value;
-      if (!v.trim()) return { t: null };
-      const p = parseClockInput(v);
-      if (p == null) return { bad: T(`看不懂「${v.trim()}」，写成 10:30 或 10点半`, `Can't read "${v.trim()}"; write it as 10:30 or 1030`) };
-      // 起床照写的算，比螺旋起点还早就按起点记（和 Telegram「起了」一样）；收工凌晨的算到当天夜里（写 26:30 也行）
-      const t = kind === "end" && p < 1440 ? normalize(p, cfg) : p;
-      return { t: Math.max(S, Math.min(E, t)), clamped: t < S || t > E };
-    };
     const save = async () => {
-      const st = read("start"), en = read("end");
-      if (st.bad || en.bad) { err.setText(st.bad || en.bad); return; }
-      const s1 = st.t ?? S, e1 = en.t ?? E;
-      if (e1 - s1 < 30) { err.setText(T(`收工 ${clock(e1)} 得比起床 ${clock(s1)} 晚至少半小时`, `End ${clock(e1)} must be at least half an hour after start ${clock(s1)}`)); return; }
+      const st = resolveBoundInput("start", inputs.start.value, S, cfg);
+      if (st.bad) { err.setText(st.bad); return; }
+      const s1 = st.t ?? S;
+      const en = resolveBoundInput("end", inputs.end.value, s1, cfg);
+      if (en.bad) { err.setText(en.bad); return; }
+      const e1 = en.t ?? E;
+      if (e1 - s1 < 30) { err.setText(T(`收工 ${clockDay(e1)} 得比起床 ${clockDay(s1)} 晚至少半小时`, `End ${clockDay(e1)} must be at least half an hour after start ${clockDay(s1)}`)); return; }
       const all = (cfg.dayBounds ||= {});
       const nb = {};
       if (st.t != null) nb.start = st.t;
@@ -3924,8 +4008,7 @@ class BoundsModal extends OB.Modal {
       if (Object.keys(nb).length) all[dayKey] = nb; else delete all[dayKey];
       await this.plugin.saveData(cfg);
       this.plugin.refresh();
-      const note = [st, en].some((x) => x.clamped) ? T(`（超出螺旋 ${clock(S)}–${clock(E)} 的部分按边上算）`, ` (anything outside the spiral's ${clock(S)}–${clock(E)} is clamped to its edge)`) : "";
-      new OB.Notice(`${this.date.format("M/D")} ☀️ ${clock(s1)} → 🌙 ${clock(e1)}${note}`);
+      new OB.Notice(`${this.date.format("M/D")} ☀️ ${clockDay(s1)} → 🌙 ${clockDay(e1)}`);
       this.close();
     };
     bar.createEl("button", { cls: "mod-cta", text: T("保存", "Save") }).onclick = save;
@@ -3933,6 +4016,116 @@ class BoundsModal extends OB.Modal {
     setTimeout(() => inputs.start.focus(), 0);
   }
   onClose() { this.contentEl.empty(); }
+}
+
+class SchedulePresetModal extends OB.Modal {
+  constructor(app, plugin, onDone = null) { super(app); this.plugin = plugin; this.onDone = onDone; this.changed = false; }
+  onOpen() { this.render(); }
+  render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const cfg = this.plugin.settings;
+    contentEl.addClass("naut-bounds-modal");
+    contentEl.addClass("naut-preset-modal");
+    contentEl.createEl("h3", { text: T("⚙️ 自定义作息与预设", "⚙️ Custom schedule & presets") });
+    contentEl.createDiv({ cls: "naut-proj-note", text: T("作息只是每天的默认起点 / 终点与换日参考；实际某天起早、熬夜或记了区间外的事情时，螺旋和列表会自动展开，不会卡死你。", "A schedule sets defaults and the day-cutoff only; earlier starts, late nights, or items outside these hours automatically expand the spiral instead of boxing you in.") });
+    const makeRow = (label, val, placeholder, cls = "") => {
+      const r = contentEl.createDiv({ cls: "naut-bounds-row" });
+      r.createSpan({ cls: "naut-bounds-name", text: label });
+      const inp = r.createEl("input", { type: "text", cls, attr: { placeholder } });
+      inp.value = val;
+      return inp;
+    };
+    const matched = matchSchedulePreset(cfg);
+    const nameInp = makeRow(T("预设名称", "Name"), matched?.custom ? matched.name : "", T("保存预设时填，如：早鸟 / 工作日", "Required when saving, e.g. Early bird / Workday"), "naut-preset-name-inp");
+    const startInp = makeRow(T("☀️ 开始", "☀️ Start"), fmtScheduleHour(cfg.dayStart), "07:00 / 7.5");
+    const endInp = makeRow(T("🌙 结束", "🌙 End"), fmtScheduleHour(cfg.dayEnd), T("24:00 / 次日04:00 / 28", "24:00 / +1 04:00 / 28"));
+    const cutInp = makeRow(T("📆 换日", "📆 Cutoff"), fmtHourClock(cfg.dayCutoff ?? 4), "00:00 / 04:00");
+    const hint = contentEl.createDiv({ cls: "naut-bounds-err" });
+
+    const parseFields = () => {
+      const ds = parseScheduleHour(startInp.value, { min: 0, max: 23.99 });
+      if (ds == null) return { err: T("开始时间需在 00:00–23:59 之间（如 7、07:30）", "Start must be between 00:00 and 23:59 (e.g. 7 or 07:30)") };
+      const de = parseScheduleHour(endInp.value, { min: 1, max: 36 });
+      if (de == null || de <= ds) return { err: T("结束时间需大于开始时间，支持 24:00–次日12:00（如 24、28、次日04:00）", "End must be after start, up to +1 12:00 (e.g. 24, 28, +1 04:00)") };
+      const cut = parseHourClock(cutInp.value);
+      if (cut == null) return { err: T("换日分界需为 00:00–23:59（如 0、04:00、08:00）", "Day cutoff must be 00:00–23:59 (e.g. 0, 04:00, 08:00)") };
+      return { dayStart: ds, dayEnd: de, dayCutoff: cut };
+    };
+    const updateHint = () => {
+      const p = parseFields();
+      if (p.err) { hint.removeClass("is-warn"); hint.setText(p.err); return; }
+      const warn = scheduleConflictHint(p);
+      hint.toggleClass("is-warn", !!warn);
+      hint.setText(warn);
+    };
+    for (const inp of [startInp, endInp, cutInp]) inp.addEventListener("input", updateHint);
+    updateHint();
+
+    const applyOnly = async () => {
+      const p = parseFields();
+      if (p.err) { hint.removeClass("is-warn"); hint.setText(p.err); return; }
+      this.changed = true;
+      await this.plugin.applySchedule(p, T(`已应用 ${formatScheduleDesc(p)}`, `Applied ${formatScheduleDesc(p)}`));
+      this.close();
+    };
+    const savePresetAndApply = async () => {
+      const p = parseFields();
+      if (p.err) { hint.removeClass("is-warn"); hint.setText(p.err); return; }
+      const name = nameInp.value.trim();
+      if (!name) {
+        hint.removeClass("is-warn");
+        hint.setText(T("存为预设时请先写个名称（不存可直接点「应用当前」）", "Enter a preset name to save it (or click \"Apply now\" without saving)"));
+        nameInp.focus();
+        return;
+      }
+      const list = sanitizeCustomPresets(cfg.customSchedulePresets).map(({ id, name: n, dayStart, dayEnd, dayCutoff }) => ({ id, name: n, dayStart, dayEnd, dayCutoff }));
+      const idx = list.findIndex((x) => x.name === name);
+      if (idx >= 0) list[idx] = { ...list[idx], ...p };
+      else list.push({ id: `custom-${Date.now().toString(36)}`, name, ...p });
+      cfg.customSchedulePresets = list;
+      this.changed = true;
+      await this.plugin.applySchedule(p, T(`已保存并应用「${name}」`, `Saved & applied "${name}"`));
+      this.close();
+    };
+    for (const inp of [nameInp, startInp, endInp, cutInp]) {
+      inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.isComposing) { ev.preventDefault(); applyOnly(); } });
+    }
+
+    const bar = contentEl.createDiv({ cls: "naut-ai-sess-btns" });
+    bar.createEl("button", { cls: "mod-cta", text: T("应用当前", "Apply now") }).onclick = applyOnly;
+    bar.createEl("button", { text: T("存为预设并应用", "Save as preset & apply") }).onclick = savePresetAndApply;
+    bar.createEl("button", { text: T("取消", "Cancel") }).onclick = () => this.close();
+
+    const customs = sanitizeCustomPresets(cfg.customSchedulePresets);
+    if (customs.length) {
+      contentEl.createDiv({ cls: "naut-sec", text: T("已保存的自定义预设", "Saved custom presets") });
+      const listEl = contentEl.createDiv({ cls: "naut-preset-list" });
+      for (const p of customs) {
+        const row = listEl.createDiv({ cls: "naut-preset-item" });
+        const info = row.createDiv({ cls: "naut-preset-info" });
+        info.createSpan({ cls: "naut-preset-title", text: p.name });
+        info.createSpan({ cls: "naut-preset-meta", text: p.desc });
+        const acts = row.createDiv({ cls: "naut-preset-actions" });
+        acts.createEl("button", { text: T("应用", "Use") }).onclick = async () => {
+          this.changed = true;
+          await this.plugin.applySchedule(p, p.name);
+          this.close();
+        };
+        acts.createEl("button", { text: T("删除", "Delete") }).onclick = async () => {
+          cfg.customSchedulePresets = sanitizeCustomPresets(cfg.customSchedulePresets)
+            .filter((x) => x.id !== p.id)
+            .map(({ id, name, dayStart, dayEnd, dayCutoff }) => ({ id, name, dayStart, dayEnd, dayCutoff }));
+          this.changed = true;
+          await this.plugin.saveData(cfg);
+          this.plugin.refresh();
+          this.render();
+        };
+      }
+    }
+    setTimeout(() => startInp.focus(), 0);
+  }
+  onClose() { this.contentEl.empty(); if (this.changed && this.onDone) this.onDone(); }
 }
 
 // 主线任务开始前先定目标：做到什么程度算完。done(text)：定下来的目标；没写就关掉的是 ""
@@ -4377,13 +4570,23 @@ class SpiralView extends ItemView {
     next.onclick = () => this.go(this.offset + 1);
     today.onclick = () => this.go(0);
     today.disabled = this.offset === 0;
-    // 这天实际的起床 / 收工：点开手填（和拖螺旋上的把手一样）
+    // 作息与这天实际的起床 / 收工：紧凑图标按钮，点击打开作息预设切换与今日起止调整菜单
     {
       const b = (cfg.dayBounds || {})[date.format(cfg.format)] || {};
       const set = b.start != null || b.end != null;
-      const btn = head.createEl("button", { cls: "naut-bounds-btn" + (set ? " is-set" : ""), text: `☀️${b.start != null ? clockDay(b.start) : "--:--"}–🌙${b.end != null ? clockDay(b.end) : "--:--"}`,
-        attr: { "aria-label": set ? T("这天实际的起床 / 收工，点一下改", "Actual start / end of this day; click to change") : T("还没设起床 / 收工（现在是默认），点一下填", "No start / end set for this day (using the defaults); click to fill in") } });
-      btn.onclick = () => new BoundsModal(this.app, this.plugin, date).open();
+      const curPreset = matchSchedulePreset(cfg);
+      const schedLabel = `${curPreset ? curPreset.name : T("自定义作息", "Custom schedule")}（${formatScheduleDesc(cfg)}）` + (set
+        ? T(` · 今日实际 ${b.start != null ? clockDay(b.start) : "--:--"}–${b.end != null ? clockDay(b.end) : "--:--"}`, ` · today ${b.start != null ? clockDay(b.start) : "--:--"}–${b.end != null ? clockDay(b.end) : "--:--"}`)
+        : T(" · 点此切换预设或设今天起床/收工", " · click to switch preset or set today's start/end"));
+      const schedBtn = head.createEl("button", {
+        cls: "naut-playback naut-head-btn naut-schedule-btn" + (set ? " is-on" : ""),
+        attr: { "aria-label": schedLabel },
+      });
+      if (OB.setIcon) {
+        OB.setIcon(schedBtn, "sun-moon");
+        if (!schedBtn.querySelector("svg")) OB.setIcon(schedBtn, "clock");
+      } else schedBtn.setText("☀");
+      schedBtn.onclick = (e) => this.openScheduleMenu(e, date, dayKey, schedBtn);
     }
 
     if (!(file instanceof TFile)) {
@@ -4429,8 +4632,8 @@ class SpiralView extends ItemView {
     const now = playing ? this._play : realNow;
     const dayRel = playing ? 0 : realRel;
     const bounds = (cfg.dayBounds || {})[dayKey] || {};
-    const S = cfg.dayStart * 60, E = cfg.dayEnd * 60;
-    const S1 = bounds.start ?? S, E1 = bounds.end ?? E;   // 这天实际的开始 / 结束
+    const S0 = cfg.dayStart * 60, E0 = cfg.dayEnd * 60;
+    const S1 = bounds.start ?? S0, E1 = bounds.end ?? E0;   // 这天实际的开始 / 结束
     let items, M, cal, orphans, plan;
     const cachedDay = isPastStatic && !force && computeSig != null ? this.plugin.pastDayCache?.get(dayKey) : null;
     if (cachedDay && cachedDay.sig === computeSig) {
@@ -4464,7 +4667,7 @@ class SpiralView extends ItemView {
             t.segments = [];
             for (const [a, b] of all) { const last = t.segments.at(-1); if (last && a <= last[1]) last[1] = Math.max(last[1], b); else t.segments.push([a, b]); }
             t.dur = Math.round(unionMin(t.segments) + t.spentBefore);
-          } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(S, at - t.dur), at]] : [];
+          } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(0, at - t.dur), at]] : [];
           if (playing) t._fullSegments = (t.segments || []).map(([a, b]) => [a, b]);
         } else if (playing && t.worked) {
           t._fullWorked = t.worked.map(([a, b]) => [a, b]);
@@ -4764,6 +4967,24 @@ class SpiralView extends ItemView {
       hit.addEventListener("mouseleave", () => vis.classList.remove("is-hot"));
       return hit;
     };
+
+    // 螺旋范围按作息预设起算，但遇到这天更早/更晚的起止、事件、任务、番茄钟或协作记录时自动外扩，不被预设卡死
+    const pomoHistItems = ((cfg.pomodoroHistory && cfg.pomodoroHistory[dayKey]) || []).map((h) => ({ h, r: pomoTimeRange(h, cfg) })).filter((x) => !!x.r);
+    const activePomo = dayRel === 0 && !playing && cfg.pomodoro?.active && cfg.pomodoro.active.dayKey === dayKey ? cfg.pomodoro.active : null;
+    const activePomoRange = activePomo ? pomoTimeRange(activePomo, cfg) : null;
+    const daySpans = [
+      ...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
+      ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => playing ? (t._fullSegments || t.segments || []) : (t.segments || [])),
+      ...plan.queue.flatMap((t) => t.segments || []),
+      ...plan.suspended.flatMap((t) => t.worked || []),
+      ...orphans.flatMap((o) => o.segs || []),
+      ...items.filter((i) => i.kind === "log").map((l) => [l.start, l.start]),
+      ...pomoHistItems.map((x) => x.r),
+      ...(activePomoRange ? [activePomoRange] : []),
+      ...(ai ? ai.segs || [] : []),
+      ...games.map(([a, b]) => [a, b]),
+    ];
+    const { S, E } = computeSpiralBounds(cfg, bounds, daySpans);
 
     // 螺旋
     const size = 320, c = size / 2, R0 = 141, R1 = 41;
@@ -5176,10 +5397,7 @@ class SpiralView extends ItemView {
     }
     // 🍅 番茄钟外沿轨道（offset = +11.5）：已完成留淡色细弧，进行中拆为「已兑现实线 + 未实现预订虚线 + 终点圆点」
     const POMO_OFF = 11.5;
-    const pomoHist = (cfg.pomodoroHistory && cfg.pomodoroHistory[dayKey]) || [];
-    for (const h of pomoHist) {
-      const r = pomoTimeRange(h, cfg);
-      if (!r) continue;
+    for (const { h, r } of pomoHistItems) {
       const a = Math.max(S, r[0]), b = Math.min(E, r[1]);
       if (b - a < 0.5) continue;
       const d = arc(a, b, POMO_OFF);
@@ -5188,10 +5406,9 @@ class SpiralView extends ItemView {
       timedPaths.push([vis, a, b]);
       hov(fat(d, vis), `${clock(r[0])}–${clock(r[1])} · ${dur(h.minutes || Math.round(r[1] - r[0]))}`, h.label ? `🍅 ${h.label}` : T("🍅 已完成番茄钟", "🍅 Completed pomodoro"));
     }
-    const activePomo = dayRel === 0 && !playing && cfg.pomodoro?.active && cfg.pomodoro.active.dayKey === dayKey ? cfg.pomodoro.active : null;
-    if (activePomo) {
-      const r = pomoTimeRange(activePomo, cfg);
-      if (r) {
+    if (activePomo && activePomoRange) {
+      const r = activePomoRange;
+      {
         const a0 = Math.max(S, r[0]), b0 = Math.min(E, r[1]);
         const sp = pomoSplit(a0, b0, now);
         const evOverlap = items.filter((i) => i.kind === "event" && i.start < r[1] && i.end > Math.max(now, r[0])).map((i) => i.label);
@@ -5292,7 +5509,7 @@ class SpiralView extends ItemView {
         const [nx, ny] = pt(cur);
         h.setAttribute("cx", nx); h.setAttribute("cy", ny);
         label.setAttribute("x", nx); label.setAttribute("y", ny - 11);
-        label.textContent = clock(cur);
+        label.textContent = clockDay(cur);
       });
       const end = () => {
         if (!this.plugin.dragging) return;
@@ -5876,6 +6093,54 @@ class SpiralView extends ItemView {
       });
     }
     menu.showAtMouseEvent(e);
+  }
+
+  openScheduleMenu(e, date, dayKey, anchorEl = null) {
+    if (e?.preventDefault) e.preventDefault();
+    if (e?.stopPropagation) e.stopPropagation();
+    this._hideDotTip();
+    const cfg = this.plugin.settings;
+    const b = (cfg.dayBounds || {})[dayKey] || {};
+    const set = b.start != null || b.end != null;
+    const menu = new OB.Menu();
+    const todayText = set
+      ? T(`☀️ 这天实际 ${b.start != null ? clockDay(b.start) : "--:--"}–${b.end != null ? clockDay(b.end) : "--:--"}（修改…）`, `☀️ Actual ${b.start != null ? clockDay(b.start) : "--:--"}–${b.end != null ? clockDay(b.end) : "--:--"} (edit…)`)
+      : T("☀️ 设置这天起床 / 收工…", "☀️ Set this day's start / end…");
+    menu.addItem((mi) => {
+      mi.setTitle(todayText);
+      mi.onClick(() => new BoundsModal(this.app, this.plugin, date).open());
+    });
+    if (set) {
+      menu.addItem((mi) => {
+        mi.setTitle(T("↺ 恢复这天为默认作息", "↺ Reset this day to schedule default"));
+        mi.onClick(async () => {
+          if (cfg.dayBounds) delete cfg.dayBounds[dayKey];
+          await this.plugin.saveData(cfg);
+          this.plugin.refresh();
+        });
+      });
+    }
+    menu.addSeparator();
+    const cur = matchSchedulePreset(cfg);
+    for (const p of allSchedulePresets(cfg)) {
+      menu.addItem((mi) => {
+        mi.setTitle(`${p.name}（${p.desc || formatScheduleDesc(p)}）`);
+        if (cur?.id === p.id && typeof mi.setChecked === "function") mi.setChecked(true);
+        mi.onClick(() => this.plugin.applySchedule(p, p.name));
+      });
+    }
+    menu.addItem((mi) => {
+      mi.setTitle(cur
+        ? T("⚙️ 自定义作息 / 管理预设…", "⚙️ Custom schedule / presets…")
+        : T(`⚙️ 自定义（${formatScheduleDesc(cfg)}）…`, `⚙️ Custom (${formatScheduleDesc(cfg)})…`));
+      if (!cur && typeof mi.setChecked === "function") mi.setChecked(true);
+      mi.onClick(() => new SchedulePresetModal(this.app, this.plugin).open());
+    });
+    if (e && (e.clientX || e.clientY)) menu.showAtMouseEvent(e);
+    else if (anchorEl && typeof menu.showAtPosition === "function") {
+      const r = anchorEl.getBoundingClientRect();
+      menu.showAtPosition({ x: r.left, y: r.bottom + 4 });
+    } else menu.showAtMouseEvent(e);
   }
 
   // 🤖 人机协作：按项目分 + 近 7 天
@@ -6705,9 +6970,9 @@ module.exports = class NautilusSpiral extends Plugin {
     const S = cfg.dayStart * 60, E = cfg.dayEnd * 60;
     const d = new Date(ms);
     if (kind === "wake") {
-      // 起床算在日历上的这一天；比螺旋起点（dayStart）还早就按起点记
+      // 起床算在日历上的这一天；不受默认作息 dayStart 限制，螺旋会自动扩开
       const dayKey = fmtKey(d, cfg);
-      const t = Math.max(S, Math.round((d.getHours() * 60 + d.getMinutes()) / 5) * 5);
+      const t = Math.max(0, Math.round((d.getHours() * 60 + d.getMinutes()) / 5) * 5);
       await this.setBounds(dayKey, "start", t);
       // 前一天「睡了」记下的结束时刻（凌晨的会超过 1440）→ 睡了多久
       const pe = ((cfg.dayBounds || {})[fmtKey(new Date(ms - 864e5), cfg)] || {}).end;
@@ -6718,12 +6983,13 @@ module.exports = class NautilusSpiral extends Plugin {
     const { key: dayKey, t: raw } = aiDay(ms, cfg);   // 凌晨睡的算前一天
     const work = (cfg.workLog || {})[dayKey] || {};
     for (const segs of Object.values(work)) for (const seg of segs) if (seg[1] == null) seg[1] = Math.max(seg[0], Math.round(raw));
-    const t = Math.min(E, Math.max(S + 30, Math.round(raw / 5) * 5));
+    const startBound = ((cfg.dayBounds || {})[dayKey] || {}).start ?? S;
+    const t = Math.min(36 * 60, Math.max(startBound + 30, Math.round(raw / 5) * 5));
     await this.setBounds(dayKey, "end", t);
     const file = this.app.vault.getAbstractFileByPath(joinFolder(cfg.folder, `${dayKey}.md`));
     const items = file instanceof TFile ? parseJournal(await this.app.vault.read(file), cfg) : [];
     const b = cfg.dayBounds[dayKey] || {};
-    return [T(`🌙 ${clock(t)} 收工 · 今天 ${clock(b.start ?? S)}–${clock(t)}`, `🌙 Done for the day at ${clock(t)} · today ${clock(b.start ?? S)}–${clock(t)}`), ...(await this.dayTail(dayKey, items))].join("\n");
+    return [T(`🌙 ${clockDay(t)} 收工 · 今天 ${clockDay(b.start ?? S)}–${clockDay(t)}`, `🌙 Done for the day at ${clockDay(t)} · today ${clockDay(b.start ?? S)}–${clockDay(t)}`), ...(await this.dayTail(dayKey, items))].join("\n");
   }
 
   // ---- 快捷操作：命令、快捷面板共用一张表 ----
@@ -7344,6 +7610,20 @@ module.exports = class NautilusSpiral extends Plugin {
     if (!Object.keys(b).length) delete all[dayKey];
     await this.saveData(this.settings);
     this.refresh();
+  }
+
+  async applySchedule(next, label = "") {
+    const s = this.settings;
+    const cutoffChanged = Number(s.dayCutoff ?? 4) !== Number(next.dayCutoff ?? 4);
+    s.dayStart = next.dayStart;
+    s.dayEnd = next.dayEnd;
+    s.dayCutoff = next.dayCutoff;
+    this.pastDayCache?.clear();
+    await this.saveData(s);
+    if (cutoffChanged) this.app.workspace.trigger("nautilus-spiral:day-cutoff-changed");
+    this.refresh();
+    this.refreshCapacity();
+    if (label) new OB.Notice(T(`作息已切换：${label}`, `Schedule switched: ${label}`));
   }
 
   async gameLog() {
@@ -9018,23 +9298,30 @@ class SpiralSettings extends PluginSettingTab {
       warnEl.style.display = msg ? "" : "none";
     };
     const presetRow = new Setting(containerEl).setName(T("作息预设", "Schedule preset"))
-      .setDesc(T("一键套用常规 / 晚睡 / 夜猫作息，下方仍可单独微调；已有老配置不会被覆盖", "One-click preset for Regular / Late night / Night owl; you can fine-tune below anytime"));
-    for (const p of SCHEDULE_PRESETS) {
-      const active = s.dayStart === p.dayStart && s.dayEnd === p.dayEnd && (s.dayCutoff ?? 4) === p.dayCutoff;
+      .setDesc(T("作息预设只是每天的默认起点、终点与换日分界；若当天实际起床/收工、事件、任务、番茄钟或 Agent / 游戏记录超出预设范围，螺旋圆盘会自动向外扩展整点以完整容纳，无需先改预设。点「+ 自定义…」可保存和管理个人预设，已有老配置不会被覆盖", "Presets only set your default start, end, and day cutoff. If a day's actual start/end, events, tasks, Pomodoros, or Agent/gaming logs go beyond the preset range, the spiral automatically expands to full hours to fit them without needing to change your preset first. Click \"+ Custom…\" to save or manage your own presets (existing configs are never overwritten)."));
+    const presetBtns = [];
+    const syncPresetBtns = () => {
+      const cur = matchSchedulePreset(s);
+      for (const { p, btn } of presetBtns) {
+        if (cur?.id === p.id) btn.setCta();
+        else btn.removeCta();
+      }
+    };
+    for (const p of allSchedulePresets(s)) {
       presetRow.addButton((b) => {
-        b.setButtonText(p.name).setTooltip(p.desc);
-        if (active) b.setCta();
+        b.setButtonText(p.name).setTooltip(p.desc || formatScheduleDesc(p));
+        presetBtns.push({ p, btn: b });
         b.onClick(async () => {
-          s.dayStart = p.dayStart;
-          s.dayEnd = p.dayEnd;
-          s.dayCutoff = p.dayCutoff;
-          await this.plugin.saveData(s);
-          this.plugin.app.workspace.trigger("nautilus-spiral:day-cutoff-changed");
-          this.plugin.refresh();
+          await this.plugin.applySchedule(p);
           this.display();
         });
       });
     }
+    presetRow.addButton((b) => {
+      b.setButtonText(T("+ 自定义…", "+ Custom…")).setTooltip(T("自定义作息 / 管理预设", "Custom schedule / manage presets"))
+        .onClick(() => new SchedulePresetModal(this.app, this.plugin, () => this.display()).open());
+    });
+    syncPresetBtns();
     const num = (name, desc, key, min, max, check) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => {
       t.setValue(String(s[key])).onChange(async (v) => {
         const n = Number(v);
@@ -9048,8 +9335,24 @@ class SpiralSettings extends PluginSettingTab {
       });
       t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(String(s[key])); });
     });
-    num(T("一天从几点开始", "Day starts at"), T("螺旋的起点（0–23，需小于结束时间）", "Where the spiral begins (0–23, must be earlier than Day ends at)"), "dayStart", 0, 23, (n) => n < (Number(s.dayEnd) || 28));
-    num(T("一天到几点结束", "Day ends at"), T("螺旋和排程到几点为止，超过 24 表示次日凌晨，比如 28 = 次日凌晨 4 点、32 = 次日早上 8 点", "Where the spiral and schedule stop. Over 24 means after midnight, e.g. 28 = 4 AM next day, 32 = 8 AM next day"), "dayEnd", 12, 36, (n) => n > (Number(s.dayStart) || 0));
+    const fmtBoundHour = (h) => (Math.abs(h - Math.round(h)) < 1e-6 ? String(Math.round(h)) : fmtScheduleHour(h));
+    const schedHour = (name, desc, key, min, max, check) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => {
+      t.setValue(fmtBoundHour(s[key])).onChange(async (v) => {
+        const n = parseScheduleHour(v, { min, max });
+        const ok = n != null && (!check || check(n));
+        t.inputEl.toggleClass("naut-bad-input", !ok);
+        if (!ok) return;
+        s[key] = n;
+        this.plugin.pastDayCache?.clear();
+        await this.plugin.saveData(s);
+        syncPresetBtns();
+        updateWarn();
+        this.plugin.refresh();
+      });
+      t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(fmtBoundHour(s[key])); });
+    });
+    schedHour(T("一天从几点开始", "Day starts at"), T("螺旋的默认起点（0–23，支持 7 / 07:30；需小于结束时间，起得更早时螺旋会自动扩开）", "Default spiral start (0–23, supports 7 or 07:30; must be earlier than Day ends at; earlier days expand automatically)"), "dayStart", 0, 23.99, (n) => n < (Number(s.dayEnd) || 28));
+    schedHour(T("一天到几点结束", "Day ends at"), T("默认到几点为止，支持 24 / 28 / 次日04:00（>24 表示次日凌晨，晚于它时螺旋也会自动扩开）", "Default spiral end; supports 24, 28, or +1 04:00 (over 24 means after midnight; later activity expands automatically)"), "dayEnd", 1, 36, (n) => n > (Number(s.dayStart) || 0));
     // 日期分界按 24 小时制的时刻填。别的插件（日记整理、块去向、任务提醒…）的「今天」都读这一项
     new Setting(containerEl).setName(T("日记日期分界", "Daily note cutoff")).setDesc(T("这个时刻之前还算前一天的日记。按 24 小时制写：04:00、08:00、23:30 都行，只写一个数也行（4 = 04:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项", "Before this time it still counts as the previous day's note. Use 24-hour time: 04:00, 08:00 and 23:30 all work, or just a number (4 = 04:00). The companion plugins (journal cleanup, block routing, task reminders) follow this setting when working out which note is today's"))
       .addText((t) => {
@@ -9059,7 +9362,9 @@ class SpiralSettings extends PluginSettingTab {
           if (h == null) return;
           if (s.dayCutoff === h) return;
           s.dayCutoff = h;
+          this.plugin.pastDayCache?.clear();
           await this.plugin.saveData(s);
+          syncPresetBtns();
           updateWarn();
           this.plugin.app.workspace.trigger("nautilus-spiral:day-cutoff-changed");
           this.plugin.refresh();
@@ -9882,4 +10187,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, parseScheduleHour, fmtScheduleHour, formatScheduleDesc, sanitizeCustomPresets, allSchedulePresets, matchSchedulePreset, computeSpiralBounds, parseClockInput, resolveBoundInput, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt };
