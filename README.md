@@ -37,7 +37,7 @@ The interface switches automatically between English and Chinese based on Obsidi
 
 ## What's New
 
-Recent updates (v2.6.8–v2.6.16) introduce **outer spiral callout labels**, **interactive segment & unrecorded-gap inspection**, a **compact schedule & label toolbar**, and a **6-dimensional Spiral Review dashboard** (Day / Week / Month).
+Recent updates (v2.6.8–v2.6.19) introduce **outer spiral callout labels**, **interactive segment & unrecorded-gap inspection**, a **compact schedule & label toolbar**, **embedded daily spirals** (`nautilus-spiral` code blocks), a **reorganized 4-tab settings panel**, a **bilingual interactive example & guide note**, and a **6-dimensional Spiral Review dashboard** (Day / Week / Month).
 
 - **Outer spiral callout labels**: Two-line detail cards and compact contour-aligned labels automatically stack along the spiral rim—or drop below the dial for lower-arc blocks—to stay collision-free even on dense multi-agent days.
 - **Hover-linked inspection**: Hovering any task arc or hatched unrecorded gap highlights its leader line and reveals the exact time span, duration, and project summary in the top bar.
@@ -116,8 +116,9 @@ https://github.com/user-attachments/assets/253781c1-fbfe-43d4-9c41-cc9446c6a369
 - **Manual**: Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/MatsuriMW/nautilus-spiral/releases/latest) into `.obsidian/plugins/nautilus-spiral/` and enable it in Settings.
 
 ### 2. Ready Out of the Box
-- On first enable, Nautilus Spiral opens in the **left sidebar** and automatically detects your Obsidian Daily Notes folder and date format (you can override them in settings anytime).
-- If today's daily note doesn't exist yet, opening the spiral creates it for you.
+- On first enable (and on major/feature upgrades), Nautilus Spiral opens in the **left sidebar** and automatically creates & opens a bilingual example and guide note (`Nautilus Spiral/螺旋日程示例 - Nautilus Spiral Guide.md`) with copyable templates, Agent Deck pairing tips, and a summary of new features. Reopen it anytime via **Open Nautilus Spiral guide & example note** in the Command Palette.
+- It automatically detects your Obsidian Daily Notes folder and date format (you can override them in settings anytime).
+- If today's daily note doesn't exist yet, opening the spiral prompts or creates it according to your chosen policy.
 
 ### 3. Write in Today's Daily Note
 Use regular bullet items and the spiral updates live:

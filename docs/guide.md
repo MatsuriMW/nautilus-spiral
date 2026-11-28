@@ -19,9 +19,9 @@ How to configure it, how to write your daily note, and what every number means: 
 | Schedule macOS Calendar events | Xcode Command Line Tools (`xcode-select --install`); allow Obsidian to access your calendar the first time | "Read macOS Calendar" | Off |
 | Schedule Google Calendar events | A Google account and an OAuth client you create yourself in Google Cloud; see "📅 Google Calendar" | "Read Google Calendar" | Off |
 | Draw agent work time and tokens on the inner rings | Claude Code, Codex, WorkBuddy or DeepSeek Harness used on this Mac (the plugin reads the session logs they leave locally and a local stats API). Pick a primary under "🤖 Primary agent and tracked agents", then turn on any others you use; leaving an unused one on does no harm | "Show agent collaboration" | On, all five enabled |
-| Send reminders to Discord | Your own command-line script that posts to Discord, at `~/.local/bin/notify-discord`, called as `notify-discord --as <display name> <channel> <message>` | "Discord channel for reminders" | Empty |
+| Send reminders to Discord | A Discord channel Webhook URL created in your server settings | "Advanced reminder options → Discord webhook reminders" | Empty |
 | See the spiral, set your day bounds and tick tasks on your phone | Telegram Companion, see "Works with Telegram Companion" below | Nothing to turn on; just enable both plugins | — |
-| Track gaming time | macOS; enter the process keywords of the games you play in settings | "Track gaming time" | On |
+| Track gaming time | macOS only; enter process keywords for games you play | "Track gaming time" | Off |
 
 Outside macOS you get only the basics — the spiral, scheduling and timing — plus agent collaboration; calendars, dialogs, sounds and gaming time all depend on macOS.
 
@@ -53,7 +53,7 @@ Open the spiral at 10 AM and this is what the plugin reads:
 | 16:00–16:15 | call mom | a to-do with a time is treated as an event, pinned at 16:00 |
 | — | wait for the contract | WAITING: parked, not scheduled, takes no capacity |
 
-Below the capacity bar there are only two lines, with icons down the left: "📋 Planned 3h17m · Spare 8h28m · 64% free" and "🤖 Agents 2h10m · 6.3M tok" (a day counts from 8:00 to 24:00; on days with no agents there is no second line). While schedulable time is draining away, 📋 turns into a blinking 🔥. All the details are in the tooltips: hover the first line for the schedulable and event budgets, your historical calibration, reviews, gaming and whether there is a record; hover the second for the split by agent, work hours and tokens, and each workstream. For what every number means see "The numbers on the capacity bar".
+Below the capacity bar there are only two lines, with icons down the left: "📋 Planned 3h17m · Spare 8h28m · 64% free" and "🤖 Agents 2h10m · 6.3M tok" (a day counts from 8:00 to 24:00; on days with no agents there is no second line). While schedulable time is draining away, 📋 turns into a blinking 🔥. All the details are in the tooltips: hover the first line for the schedulable and event budgets, your historical calibration, and whether there is a record; hover the second for the split by agent, work hours and tokens, and each workstream. For what every number means see "The numbers on the capacity bar".
 
 ### What each line is read as
 
@@ -79,7 +79,7 @@ Keywords and checkboxes:
 | Done | `DONE`, `[x]` |
 | Cancelled (ignored) | `CANCELED`, `CANCELLED`, `FAILED`, `[-]` |
 
-When you list several to-dos at once you don't have to write `TODO` on every line: start with a line `- todos:` (upper or lower case, half- or full-width colon: `todos:` or `todos：`), and the direct children under it with no keyword all count as `TODO`. The keyword is only written into a line when you change its state (`1. write script` → `1. DOING 14:05 write script`); a child with its own keyword follows that, and one level further down is detail, not a task. TODOseq and block routing read the same syntax.
+When you list several to-dos at once you don't have to write `TODO` on every line: start with a line `- todos:` (upper or lower case, half- or full-width colon: `todos:` or `todos：`), and the direct children under it with no keyword all count as `TODO`. The keyword is only written into a line when you change its state (`1. write script` → `1. DOING 14:05 write script`); a child with its own keyword follows that, and one level further down is detail, not a task. This matches standard task-list outline syntax.
 
 ```markdown
 - todos:
@@ -111,7 +111,7 @@ These are manual records and take priority over everything else. Without them th
 
 Fill this in as a 24-hour time: `08:00`, `4:30` or `23:30` all work, and a single number works too (`8` = 08:00). If it can't be read the field turns red and reverts when you leave it.
 
-The companion plugins read this setting when working out which note is "today" too, and follow it when you change it: journal cleanup's "Tidy today's note" and "Archive a line", block routing's "Send to today / tomorrow", task reminders, and Telegram Companion.
+Companion plugins such as Agent Deck and Telegram Companion read this setting when working out which note is "today" too, and follow it when you change it.
 
 ## Scheduling rules
 
@@ -148,12 +148,12 @@ The definitions follow Nautilus Log on Roam. Two lines:
 ## How to read the spiral
 
 - The spiral is a 12-hour dial that winds from the start of the day (outermost) to its end (innermost). The numbers around the outside are clock hours.
-- **Colours**: warm yellow is events, blue is to-dos, red is anything with an important marker, green is done, cyan is flashcard reviews. Pale blue is time already done; solid blue is what is planned next; the piece of what you are doing from now on slowly breathes. The palette is tuned for low-saturation light themes, and you can change it in settings.
+- **Colours**: warm yellow is events, blue is to-dos, red is anything with an important marker, green is done. Pale blue is time already done; solid blue is what is planned next; the piece of what you are doing from now on slowly breathes. The palette is tuned for low-saturation light themes, and you can change it in settings.
 - **Animations pause when you switch apps**: the breathing, the blinking 🔥 and the "now" glow loop forever, so when Obsidian isn't in front they stop on the current frame and resume when you come back. While any loop is running the whole window has to be redrawn every frame, which burns battery when left open in the background.
 - **The dark grey hand** is now; a ring of dots spreads out from the dot on it, and the current time is written in the middle.
 - **Hover any segment** and the fixed line above the spiral immediately shows in bold what that segment is, with its start and end time and duration in front; no need to stop and wait for a tooltip. At the same time that task's other segments and its row in the list light up, and the other segments fade; the reverse works too, hovering a row in the list.
 - **Click any segment** to jump to that line in the note (calendar events open the Calendar app).
-- **Hatching** is past time with no record at all: no event, no finished task, no worked span, no agent session and no gaming. Hovering the first line under the capacity bar gives the same figures in its tooltip, "📝 9h20m gone · 6h05m recorded (65%) · 3h15m unrecorded", and says how much of the recorded time you recorded and how much only the machine did. It is a fact about scheduling, not a verdict that the time was wasted. Today counts up to now; past days count the whole day. "Show unrecorded time" in settings turns it off.
+- **Hatching** is past time with no record at all: no event, no finished task, no worked span, and no agent session. Hovering the first line under the capacity bar gives the same figures in its tooltip, "📝 9h20m gone · 6h05m recorded (65%) · 3h15m unrecorded", and says how much of the recorded time you recorded and how much only the machine did. It is a fact about scheduling, not a verdict that the time was wasted. Today counts up to now; past days count the whole day. "Show unrecorded time" in settings turns it off.
 - **Free time** is invisible until you hover it: the segment lights up and the line above shows "Free slot" with its start and end and its length; the one "now" falls in says "Free now". Past days have no free slots and show none.
 - **Play back the whole day**: click ▷ at the top and "now" sweeps from the start of the day to its end in six seconds, to-dos flow forward with it and the hatching grows; at the end it returns to the real now. It only redraws; the note is not changed. Past days play too.
 - **The two hollow handles** are the day's actual start and end. Drag along the spiral to change them (5-minute steps), double-click to restore the default. If you got up at 10 today, drag the start to 10:00: the earlier stretch is drawn dashed and the capacity is recalculated.
@@ -272,7 +272,7 @@ Both the limit and the hours are settings; 0 turns the matching rule off.
 
 ## 🎯 Mainline
 
-The one to three things that matter most in a day. Write `[#A]` on a task (or fuzzy shortcuts such as `TODO a write résumé`, `todoa`, `[ ] a`, `DOING 14:05 a`, `TODO 🤖 a`, lowercase `[#a]`, or `- a` directly under `todos:`; leaving the line auto-normalizes valid shortcuts to `[#A]` / `[#B]` / `[#C]` while ignoring `todo a book` or plain `- a` outside `todos:`), and `[#A]` / `[#B]` / `[#C]` render as compact red `A` / amber `B` / blue `C` square badges in both the editor (clicking or placing the cursor on the badge reveals raw syntax) and the spiral sidebar list. The whole block an A-level task is in (the top-level item and its children) is one mainline block for the day; `[#A]` children without a keyword under a `todos:` parent and `TODO4AI [#A]` handed to AI count too; at most 3 blocks a day, taken in note order, and the extras don't count (journal cleanup lowers them to `[#B]`).
+The one to three things that matter most in a day. Write `[#A]` on a task (or fuzzy shortcuts such as `TODO a write résumé`, `todoa`, `[ ] a`, `DOING 14:05 a`, `TODO 🤖 a`, lowercase `[#a]`, or `- a` directly under `todos:`; leaving the line auto-normalizes valid shortcuts to `[#A]` / `[#B]` / `[#C]` while ignoring `todo a book` or plain `- a` outside `todos:`), and `[#A]` / `[#B]` / `[#C]` render as compact red `A` / amber `B` / blue `C` square badges in both the editor (clicking or placing the cursor on the badge reveals raw syntax) and the spiral sidebar list. The whole block an A-level task is in (the top-level item and its children) is one mainline block for the day; `[#A]` children without a keyword under a `todos:` parent and `TODO4AI [#A]` handed to AI count too; at most 3 blocks a day, taken in note order, and extras beyond 3 do not count as mainline.
 
 - A "🎯 Mainline" section at the top of the list; when scheduling they go after DOING and before other to-dos; on the spiral they are drawn in green.
 - One line under the capacity bar, `🎯 ●◐○ Mainline 1/3 · Next`: ● done, ◐ doing, ○ not started, ✕ failed (`FAILED`), one per A-level task. The completion rate counts A-level tasks: cancelled ones don't count, failed ones count toward the total but not as done, and never as "Next".
@@ -288,7 +288,7 @@ The one to three things that matter most in a day. Write `[#A]` on a task (or fu
 	- 🎯 Goal: résumé PDF sent to 3 companies; the QR code on the project page scans
 ```
 
-Click "Not yet" or close the dialog and the line goes back to TODO: no goal, no start for mainline tasks. It is checked every minute as well, so mainline tasks already in progress are asked too. Work handed to an agent is not asked. The `🎯 Goal:` line, like `🔗` and `⏱`, is a marker line: neither a task nor an event (a time in it doesn't count either), and no state sound; block routing carries it when it sends the block to an agent, which makes it a ready-made acceptance criterion.
+Click "Not yet" or close the dialog and the line goes back to TODO: no goal, no start for mainline tasks. It is checked every minute as well, so mainline tasks already in progress are asked too. Work handed to an agent is not asked. The `🎯 Goal:` line, like `🔗` and `⏱`, is a marker line: neither a task nor an event (a time in it doesn't count either), and no state sound; it is also carried when delegating the block to an agent as an acceptance criterion.
 
 **Draggable progress bar**: under the first line of each mainline block in the note (the top-level item) there is a thin progress bar, not after the child blocks; one bar per A-level task in the block (no name when there is only one). Drag it to a percentage (5% per cell), and releasing writes the progress into that line: existing `40%`, `1/3`, `三分之一`, `一半` is replaced, otherwise it is appended at the end (before tails like the block ID, `%%` comments and `← date`). A finished one shows "✓ Done". Turn mainline off in settings and the bar isn't drawn either.
 
@@ -357,7 +357,7 @@ The data comes from the same local session logs the agent collaboration section 
 
 - The summary counts only the "Compared" ones: estimated total, actual total, how far off. Both sides are the same set of tasks; running and paused ones don't move the difference.
 - Estimates come from the duration on the line, or the default task length, because that's what scheduling used too.
-- Fixed events don't count (a time span is an agreement, not an estimate), nor do big items with children, nor flashcard reviews.
+- Fixed events don't count (a time span is an agreement, not an estimate), nor do big items with children.
 - Being over is highlighted in orange; being under isn't marked: saved time isn't a credit, and extra time isn't a fault.
 - The Telegram "slept" receipt and the "Status now" panel carry this summary line too.
 
@@ -376,15 +376,13 @@ Only tasks like this count: done, with an estimate written and actual time recor
 
 ## How reminders go out
 
-- **Ones that need no answer** (auto-pause, mainline reminders): if a Discord channel is set they go to Discord, see the next section; otherwise a notification pops on this Mac and a sound plays. The same kind of reminder arriving within a few seconds is folded into one.
-- **Ones that need a button click** (after an auto-pause, "Pause a different one" / "Still working — back to DOING"): a system notification with buttons pops on this Mac; click one and it does that.
+- **Ones that need no answer** (auto-pause, mainline reminders): if a Discord Webhook URL is configured they go to Discord, see the next section; otherwise a notification pops on this Mac and a sound plays. The same kind of reminder arriving within a few seconds is folded into one.
+- **Ones that need a button click** (after an auto-pause, "Pause a different one" / "Still working — back to DOING"): a notification pops locally (click it to jump to that line).
 - **Sound**: put a system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file in "Reminder sound on this Mac"; empty = silent.
-
-"Interactive reminder style" in settings controls the second kind: "Default notification" pops a normal notification on this Mac; "System notification with buttons (experimental)" compiles a tiny notification app on this Mac and puts the buttons on the notification. It needs the system to allow this app to send notifications, and on some macOS versions the system won't trust a locally signed app so nothing is ever delivered, which is why it is off by default.
 
 ## Reminders to Discord
 
-If you use Discord as the one place where machine reminders collect, Nautilus Spiral's reminders can go there too. Put a channel name in "Discord channel for reminders" and the plugin calls the local `notify-discord <channel> <message>` script (the webhook address is the script's own business; the plugin never touches it). Empty = don't send.
+If you use Discord as a central inbox for reminders, paste a channel Webhook URL under **Settings → Calendars & reminders → Advanced reminder options → Discord webhook reminders** (stored in your system keychain, never in `data.json`) and click **Test** to verify. Leave empty for local notifications only.
 
 - **Reminders that need no answer** (auto-paused for going over the limit or being idle too long, mainline reminders) go to Discord. Once sent, they don't pop on this Mac again.
 - **Ones that need a button click** ("Pause a different one", "Still working / back to DOING") still pop on this Mac; Discord only gets a line in the log. A webhook can only send and can't receive what you clicked, so buttons can't go into Discord.
@@ -422,7 +420,7 @@ After you turn on "Read macOS Calendar" in settings, events from the system Cale
 - Cancelled events and invites you declined don't count; the same event in several calendars (two holiday calendars, say) counts once; one already written by hand in the note is not duplicated.
 - "Skip these calendars" excludes calendars you don't want scheduled; "List" in settings shows the names of all calendars on this Mac.
 - It rereads every two minutes; the command "Reload calendars (macOS Calendar / Google Calendar)" rereads right away.
-- The task reminders plugin and Telegram's `?` count calendar events towards capacity too. When a calendar event is about to start, task reminders doesn't send another notification; the Calendar app reminds you itself.
+- Telegram's `?` counts calendar events towards capacity too.
 
 Reading the calendar uses the system's EventKit: the first time, the plugin compiles a small Swift reader on this Mac into `~/Library/Caches/nautilus-spiral/` (it needs the Xcode command line tools; without them run `xcode-select --install`), and then the system asks "Obsidian would like to access your calendar"; choose Allow. You can turn it off at any time in System Settings → Privacy & Security → Calendars.
 
@@ -448,8 +446,7 @@ These modules can all be turned off in settings:
   **The primary agent is tracked in full, the rest only today**: the primary reads all of its session history; the other agents that are on read only session files active today and count only today's activity — today's time, tokens and inner rings as usual, older sessions are not looked at. Whatever was already summed up on earlier days stays. The primary is always on; after switching the primary, the last two weeks of logs are read again.
 
   One ring and one colour per agent: Claude orange, Codex grey-black, WorkBuddy teal, DeepSeek blue, Antigravity a blue-green-gold gradient; the token numbers and the bar chart in the list use the same colours. A turned-off agent is no longer read; its already summed history is kept but hidden, and comes back when you turn it on again. The totals are also saved as `ai-usage.json` in the plugin folder, so history survives Claude Code clearing its old logs.
-- **🃏 Flashcard review**: the Second Brain's daily review records `DONE 14:10-14:12 复习卡片 23 张（…）` in the note ("复习卡片 = review cards", 5 seconds each); that stretch is drawn cyan on the spiral, the row in the list is cyan on the left too, and the day's total is in the tooltip on the first line of the capacity bar.
-- **🎮 Gaming**: every minute it checks whether you're playing (both the process keywords and the "count only when in front" apps are settings), draws a purple line on the innermost ring, and records it in `game-log.json`. Only recorded while Obsidian is open.
+- **🎮 Gaming** (macOS only, off by default): enable in **Agents & activity** and add process keywords to check once a minute and draw a purple line on the innermost ring, saved in `game-log.json`. Only recorded while Obsidian is open.
 
 ## Settings
 
@@ -470,7 +467,7 @@ Toggle outer labels in the spiral toolbar. Label length adjusts to the available
 | Read Google Calendar / Client ID / Client secret | Off / empty / empty | See "📅 Google Calendar"; the secret is in the system keychain |
 | Max DOING at once / Pause DOING after idle | 3 / 3 hours | 0 = off; blocks handed to an agent don't count toward the limit |
 | Mainline / Mainline reminder times | On / `15:00, 22:00` | See "🎯 Mainline" |
-| Export data for widgets / Plan note | Off / `Plan.md` | See "🗓 macOS widgets"; the plan note is created if it doesn't exist |
+| Export data for widgets / Plan note | Off / `Plan.md` | See "🗓 macOS widgets"; requires building the companion app from `widgets/` |
 | Run DOING tasks in parallel | On | Several DOING overlap in the same stretch |
 | Estimate vs actual / Review the last N days | On / 30 | See "📏 Estimate vs actual"; at most 365 days, and anything past 45 days relies on the `⏱` lines in the notes |
 | Day review | On | See "📋 Day review" |
@@ -480,10 +477,9 @@ Toggle outer labels in the spiral toolbar. Label length adjusts to the available
 | UI sounds | On | The click tick, task state changes, playback start and end; see "UI sounds" |
 | Open today's note on startup | On | "Today" follows the cutoff; created if it doesn't exist |
 | Show Nautilus Spiral in the left sidebar on startup | On | |
-| Show agent collaboration / Track gaming time | On | See the previous section |
+| Show agent collaboration / Track gaming time | On / Off (gaming is macOS only) | See the previous section |
 | Primary agent | Claude | The one tracked in full: all history; always on |
 | Tracked agents | Claude, Codex, WorkBuddy, DeepSeek Harness and Antigravity all on | Only the ones that are on are read, drawn into the spiral and counted; non-primary ones only for sessions active today |
-| Interactive reminder style | Default notification | Also an experimental "System notification with buttons"; see "How reminders go out" |
 | Reminder sound on this Mac | Pop | A system sound name or a path to a sound file; empty = silent |
 | Discord channel for reminders | empty | When set, reminders that need no answer go to that channel; see "Reminders to Discord" |
 
@@ -501,7 +497,7 @@ Toggle outer labels in the spiral toolbar. Label length adjusts to the available
 
 **Setup**: first follow Telegram Companion's own getting-started guide (create a bot, enter the token, send it a message so it knows you). After that just enable both plugins; there is nothing to fill in on the Nautilus side: the bot token and your chat id live only in Telegram Companion's settings, and Nautilus Spiral reads them when it wants to send.
 
-Add [task reminders](https://github.com/MatsuriMW/Obsidian-Plugins/tree/main/nautilus-notify) too and the timed schedule picture and to-dos carried over for days (with buttons) are pushed to the same bot.
+Telegram Companion reads Nautilus Spiral's `core` and day cutoff directly to show your schedule and capacity on mobile.
 
 Telegram Companion only runs on the desktop, and Obsidian on your computer has to be open for messages from your phone to be picked up.
 
@@ -517,6 +513,5 @@ No global hotkeys are preset; search "Nautilus Spiral" in Obsidian Settings → 
 | not set | Estimate vs actual: open the spiral, expand and scroll to the review |
 | not set | Open Nautilus Spiral |
 | not set | Set today's start / end of day |
-| not set | Test a system notification with buttons (experimental) |
 
-Two more commands have no hotkey: "Open today's daily note (before the day cutoff it's still yesterday)" and "Reload calendars (macOS Calendar / Google Calendar)".
+Two more commands have no hotkey: "Open today's daily note (before the day cutoff it's still yesterday)", "Open Nautilus Spiral guide & example note" (reopens the auto-created bilingual `Nautilus Spiral/螺旋日程示例 - Nautilus Spiral Guide.md` note), and "Reload calendars (macOS Calendar / Google Calendar)".

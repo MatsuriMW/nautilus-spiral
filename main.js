@@ -36,13 +36,13 @@ const DEFAULTS = {
   mainClosed: "",         // 最近一次「一天结束」结算到了哪一天（这一天的前一天已经写进日记属性）
   mainNudged: {},         // { "2026_10_20": [900] }：今天已经提醒过的时刻
   widgets: false,         // 给 macOS 小组件导出数据：今天的主线、计划甘特图（配套的小组件 App 在仓库的 widgets/ 里，要自己编译安装）
-  widgetPlan: T("上班计划.md", "Plan.md"),  // 甘特图画哪篇计划：列表项里写了 🛫 开始 / ⏳ 计划 / 📅 截止日期的各画一条；没有这一篇就新建一篇
+  widgetPlan: T("计划.md", "Plan.md"),  // 甘特图画哪篇计划：列表项里写了 🛫 开始 / ⏳ 计划 / 📅 截止日期的各画一条；没有这一篇就新建一篇
   uiSound: true,          // 界面上的小音效：开始做、做完、停下、回放起止各一声很轻的合成音（Obsidian 不在最前面时不响）
   workLog: {},          // { "2026_09_30": { "任务文字": [[开始, 结束 | null]] } }：任务每一段「进行中」的时间（null = 还在做），中断再续就是好几段
   dayBounds: {},        // { "2026_09_30": { start: 610, end: 1650 } }：在螺旋上拖出来的这天实际开始 / 结束时间（分钟，凌晨 > 1440）
-  trackGames: true,     // 记录游戏时间（每分钟看一眼有没有在玩）
-  gameProcs: "Hearthstone, steamapps/common",   // 进程路径里含这些词 = 在玩（steamapps/common 下的按游戏文件夹名记）
-  gameFrontApps: "Steam",                       // 这些 App 只有在最前面时才算（Steam 客户端后台常驻，不能一开着就算）
+  trackGames: false,    // 记录游戏时间（默认关闭；仅 macOS 桌面端按需开启）
+  gameProcs: "steamapps/common",                // 进程路径里含这些词 = 在玩（steamapps/common 下的按游戏文件夹名记）
+  gameFrontApps: "",                            // 这些 App 只有在最前面时才算（比如 Steam 客户端，空着不按前台 App 记）
   openTodayOnStartup: true,    // 启动 Obsidian 时打开今天的日记（按 dayCutoff 算「今天」）
   autoCreateJournal: true,     // 今天日记不存在时自动新建；关掉后只读取已有日记（同步 journalPolicy.mode）
   journalPolicy: {
@@ -65,9 +65,6 @@ const DEFAULTS = {
   parallelDoing: true,
   showReview: true,     // 列表底部「📏 预估 vs 实际」，容量条上「按以往约多久」
   reviewDays: 30,       // 复盘看最近几天（计时记录保留 45 天）  // 几件 DOING 并行排：一起从现在开始，重叠在同一段时间里，只占最长那件的时间
-  discordChannel: "",   // 提醒中枢：不用你回答的提醒发到 Discord 的哪个频道（本机 notify-discord 脚本认的频道名）；空着 = 不发，只在本机弹
-  discordCmd: "~/.local/bin/notify-discord",
-  askVia: "dialog",     // 带按钮提醒的方式：dialog = 默认通知；notification = 带按钮的系统通知（试验：要系统允许本机编的小 App 发通知）
   notifySound: "Pop",   // 在本机弹提醒时响哪个声音：系统声音的名字（/System/Library/Sounds 里的，Pop、Glass、Ping…）或一个声音文件的路径；空 = 不响
   colors: {},           // { main: "#rrggbb" }：设置里改过的颜色，没改过的不存，用 COLORS 的默认值
   pomodoro: { preset: "25", customMinutes: 45, active: null },   // 番茄钟：preset = "15"|"25"|"custom"，active = { id, dayKey, start, end, minutes, task }
@@ -80,6 +77,7 @@ const DEFAULTS = {
   progressStep: 25,        // 快捷推进/回退进度步进（10 或 25）
   respectEventOrder: false,// 按日记中固定事件的先后顺序排程：事件下方的未开始待办不排到该事件结束之前（默认关）
   customSchedulePresets: [], // 用户自定义作息预设：[{ id, name, dayStart, dayEnd, dayCutoff }]
+  welcomeGuideVersion: "", // 已自动创建并打开过双语示例指南的插件版本
 };
 const SCHEDULE_PRESETS = [
   { id: "regular", name: T("☀️ 常规", "☀️ Regular"), desc: T("07:00–24:00 · 00:00换日", "07:00–24:00 · 00:00 cutoff"), dayStart: 7, dayEnd: 24, dayCutoff: 0 },
@@ -174,7 +172,6 @@ const COLORS = {
   event: [T("固定事件", "Fixed events"), "#d9a441"],
   task: [T("待办", "To-dos"), "#5c86b4"],
   prio: [T("重要 / 超出", "Important / over"), "#c8635f"],
-  review: [T("复习卡片", "Flashcard review"), "#4ca3b3"],
   game: [T("游戏时间", "Gaming"), "#9c6496"],
 };
 
@@ -1054,7 +1051,7 @@ function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount, wideLabe
   return JSON.stringify([
     computeSig,
     cfg.showAi !== false,
-    cfg.trackGames !== false,
+    Boolean(cfg.trackGames),
     cfg.showUnrecorded !== false,
     !!cfg.dayReviewFolded,
     !!cfg.reviewFolded,
@@ -1956,7 +1953,7 @@ function formatTaskTip(t, autoKeys = null) {
 //   未开始 not-started = 没做完，还没有用时
 //   未预估 no-estimate = 这一行从来没进过计划（自动记的 🤖 行，或者「DONE 18:02 写稿 2h」这种直接记做了多久的），只列实际，不拿默认时长去比
 // 汇总只算「已对比」的那几件，两边是同一批任务；在做的、停着的不影响偏差。预计 = 行上写的时长，没写按默认任务时长（排程也是按它排的）
-// 固定事件不算（时间段是约定，不是预估）；带子任务的大项、复习卡片不算。live = 这一天是不是今天
+// 固定事件不算（时间段是约定，不是预估）；带子任务的大项不算。live = 这一天是不是今天
 const useClockTotal = (t) => !t._hasChildAiWork && !t.aiSpan && t.clock && t.clock.total != null && (!(t.doing && t.state === "open") || !(t._workLogSegs?.length)) && !(t.clock.partial && (t._workLogSegs || []).length) && !/←\s*\S+\s*$/.test(t.label);
 function dayReview(items, cfg, { live = false, auto = new Set() } = {}) {
   const rows = [];
@@ -2377,7 +2374,7 @@ function formatReviewMarkdown(review, cfg = DEFAULTS) {
   const lines = [];
   lines.push(`## 📏 ${modeTitle} · ${review.label || ""}`.trim());
   lines.push("");
-  lines.push(`- **${T("时间账单", "Time budget")}**：${T("主线", "Mainline")} ${dur(tb.mainline || 0)} · ${T("普通任务", "Tasks")} ${dur(tb.tasks || 0)} · ${T("固定事件", "Events")} ${dur(tb.events || 0)} · ${T("AI 协作", "Agents")} ${dur(tb.aiWall || 0)} · ${T("复习", "Review")} ${dur(tb.reviewCards || 0)} · ${T("游戏", "Gaming")} ${dur(tb.games || 0)} · ${T("未记录", "Unrecorded")} ${dur(tb.unrecorded || 0)}`);
+  lines.push(`- **${T("时间账单", "Time budget")}**：${T("主线", "Mainline")} ${dur(tb.mainline || 0)} · ${T("普通任务", "Tasks")} ${dur(tb.tasks || 0)} · ${T("固定事件", "Events")} ${dur(tb.events || 0)} · ${T("AI 协作", "Agents")} ${dur(tb.aiWall || 0)}${tb.reviewCards ? ` · ${T("复习", "Review")} ${dur(tb.reviewCards)}` : ""}${tb.games ? ` · ${T("游戏", "Gaming")} ${dur(tb.games)}` : ""} · ${T("未记录", "Unrecorded")} ${dur(tb.unrecorded || 0)}`);
   lines.push(`- **${T("预估准确度", "Estimate accuracy")}**：${e.n || 0} ${T("件已对比", "compared")}（${T("预估", "Est.")} ${dur(e.sumE || 0)} → ${T("实际", "Actual")} ${dur(e.sumA || 0)}，×${(e.ratio || 1).toFixed(2)}，±20% ${T("命中", "within")} ${e.close || 0} ${T("件", "")}）`);
   lines.push(`- **${T("主线与计划兑现", "Fulfillment")}**：${T("主线", "Mainline")} ${f.mainDone || 0}/${f.mainTotal || 0}（${Math.round((f.mainRate || 0) * 100)}%） · ${T("计划内", "Planned")} ${f.plannedDone || 0}/${f.plannedTotal || 0}（${Math.round((f.plannedRate || 0) * 100)}%） · ${T("临时插单完成", "Unplanned done")} ${f.unplannedDone || 0} · ${T("卡壳顺延 ≥3 天", "Stalled ≥3d")} ${f.stalledCount || 0} ${T("件", "")}`);
   lines.push(`- **${T("人机拆分与杠杆", "Human vs AI")}**：${T("任务人工", "Human")} ${dur(ha.humanMin || 0)} · ${T("任务 AI", "Task AI")} ${dur(ha.aiTaskMin || 0)} · ${T("全局协作/工时", "Global wall/agent")} ${dur(ha.aiWallTotal || 0)} / ${dur(ha.aiAgentTotal || 0)}（×${(ha.leverageRatio || 0).toFixed(1)} ${T("并行", "parallel")} · ${fmtTok(ha.aiTokensTotal || 0)} tok）`);
@@ -2438,9 +2435,9 @@ function parseHourClock(v) {
   return h != null && h >= 0 && h < 24 ? Math.round(h * 60) / 60 : null;
 }
 const fmtHourClock = (h) => clock(Math.round((+h || 0) * 60));
-// 第二大脑每日回顾记进日记的复习：「DONE 14:10-14:12 复习卡片 23 张（…）」。螺旋上画成青色，顶部汇总张数和用时
-const REVIEW_RE = /^复习卡片\s*(\d+)\s*张/;
-const isReview = (t) => t.kind === "task" && t.state === "done" && REVIEW_RE.test(t.label || "");
+const DISCORD_WEBHOOK_RE = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9._-]+(?:\?.*)?$/i;
+const isValidDiscordWebhook = (url) => DISCORD_WEBHOOK_RE.test(String(url || "").trim());
+let isReview = () => false;
 function dur(m) {
   m = Math.round(m);
   if (m < 0) return `-${dur(-m)}`;
@@ -2622,118 +2619,6 @@ function subtree(lines, n) {
 
 const asStr = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
 
-// ---------------- 带按钮的系统通知 ----------------
-// Obsidian 自己发的通知（new Notification）带不了按钮。这里在本机编一个很小的通知 App（和读日历的小助手一样，第一次用时编译，
-// 放在 ~/Library/Caches/nautilus-spiral/），通知上可以带几个按钮，点了哪个它就把那个按钮的字打印出来。
-// 第一次会弹「“螺旋日程”想给你发通知」，要点允许。横幅样式下按钮在通知上悬停、点「选项」里；
-// 到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」，通知就一直留在屏幕上、按钮直接露着。
-// 直接运行里面的可执行文件，系统不认它是个 App，会直接拒绝发通知；得用 open 启动，所以结果不走标准输出，写到一个文件里。
-//   open -n -W 螺旋日程.app --args <结果文件> <标题> <正文> <等多少秒> [按钮1 按钮2 …]
-//   结果文件里是：点的按钮 / __click__（点了通知本身）/ 空（没理）/ __denied__（没给权限）
-const NOTIFY_SWIFT = String.raw`import AppKit
-import UserNotifications
-
-let all = Array(CommandLine.arguments.dropFirst())
-let resultFile = all.first ?? ""
-let args = Array(all.dropFirst())
-let myId = UUID().uuidString
-let outDir = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Caches/nautilus-spiral/notify")
-try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
-
-func finish(_ s: String, _ code: Int32 = 0) -> Never {
-  if !resultFile.isEmpty { try? s.write(toFile: resultFile, atomically: true, encoding: .utf8) }
-  UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [myId])
-  try? FileManager.default.removeItem(atPath: outDir + "/" + myId)
-  exit(code)
-}
-
-final class Delegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-  var timer: Timer?
-  func applicationDidFinishLaunching(_ n: Notification) {
-    // 点了一条早就没人等的通知，系统会把这个 App 重新叫起来：没有参数，直接退
-    guard args.count >= 3 else { exit(0) }
-    let center = UNUserNotificationCenter.current()
-    center.delegate = self
-    let wait = Double(args[2]) ?? 600
-    DispatchQueue.main.asyncAfter(deadline: .now() + wait + 20) { finish("") }
-    center.requestAuthorization(options: [.alert, .sound]) { ok, _ in
-      if !ok { finish("__denied__", 2) }
-      let actions = Array(args.dropFirst(3))
-      let cat = "naut." + actions.joined(separator: "|")
-      center.getNotificationCategories { old in
-        var cats = old.filter { $0.identifier != cat }
-        cats.insert(UNNotificationCategory(identifier: cat,
-          actions: actions.enumerated().map { UNNotificationAction(identifier: "a\($0.offset)", title: $0.element, options: []) },
-          intentIdentifiers: [], options: [.customDismissAction]))
-        center.setNotificationCategories(cats)
-        let c = UNMutableNotificationContent()
-        c.title = args[0]
-        c.body = args[1]
-        c.categoryIdentifier = cat
-        c.userInfo = ["actions": actions]   // 按钮的字跟着通知走，哪个进程收到回答都认得
-        center.add(UNNotificationRequest(identifier: myId, content: c, trigger: nil)) { err in
-          if err != nil { finish("__error__", 3) }
-        }
-      }
-    }
-    // 同时发了好几条时，系统可能把回答交给另一个进程：回答都写到文件里，各自认领自己的
-    timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
-      if let s = try? String(contentsOfFile: outDir + "/" + myId, encoding: .utf8) { finish(s) }
-    }
-  }
-  func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification, withCompletionHandler h: @escaping (UNNotificationPresentationOptions) -> Void) {
-    h([.banner, .list])
-  }
-  func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive r: UNNotificationResponse, withCompletionHandler h: @escaping () -> Void) {
-    let id = r.notification.request.identifier
-    let actions = (r.notification.request.content.userInfo["actions"] as? [String]) ?? []
-    var out = ""
-    if r.actionIdentifier == UNNotificationDefaultActionIdentifier { out = "__click__" }
-    else if r.actionIdentifier.hasPrefix("a"), let i = Int(r.actionIdentifier.dropFirst()), i < actions.count { out = actions[i] }
-    try? out.write(toFile: outDir + "/" + id, atomically: true, encoding: .utf8)
-    h()
-    if id == myId { finish(out) }
-  }
-}
-
-let app = NSApplication.shared
-let delegate = Delegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
-`;
-const NOTIFY_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>md.obsidian.nautilus-spiral.notify</string>
-<key>CFBundleName</key><string>${T("螺旋日程", "Nautilus Spiral")}</string>
-<key>CFBundleDisplayName</key><string>${T("螺旋日程", "Nautilus Spiral")}</string>
-<key>CFBundleExecutable</key><string>spiral-notify</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>LSUIElement</key><true/>
-<key>LSMinimumSystemVersion</key><string>11.0</string>
-</dict></plist>
-`;
-// 通知要认 App 的身份，光一个可执行文件发不了：编好以后包成 .app、本机签个名。返回这个 .app 的路径
-let notifyApp = null;
-function notifyTool() {
-  if (!notifyApp) notifyApp = (async () => {
-    const fs = require("fs"), path = require("path");
-    const bin = await swiftTool("notify", NOTIFY_SWIFT);
-    const app = bin + ".app", exe = path.join(app, "Contents/MacOS/spiral-notify");
-    if (fs.existsSync(exe)) return app;
-    await fs.promises.mkdir(path.dirname(exe), { recursive: true });
-    await fs.promises.copyFile(bin, exe);
-    await fs.promises.chmod(exe, 0o755);
-    await fs.promises.writeFile(path.join(app, "Contents/Info.plist"), NOTIFY_PLIST);
-    const r = await run("/usr/bin/codesign", ["--force", "--sign", "-", app], 60000);
-    if (r.code !== 0) { await fs.promises.rm(app, { recursive: true, force: true }); throw new Error(T("通知小助手签名失败：", "Could not sign the notification helper: ") + r.stderr.slice(0, 300)); }
-    return app;
-  })().catch((e) => { notifyApp = null; throw e; });
-  return notifyApp;
-}
 
 // 两篇文字前后不一样的那一段，换成编辑器的一次改动（光标和滚动位置不乱，⌘Z 一步撤销）。一样就返回 null
 function diffLines(before, after) {
@@ -5033,7 +4918,7 @@ class SpiralView extends ItemView {
     const isPastStatic = realRel < 0 && !playing;
     const aiStore = cfg.showAi !== false ? await this.plugin.aiUsage({ skipScan: isPastStatic || playing }) : null;
     if (seq !== this._renderSeq) return;
-    const gameLog = cfg.trackGames !== false ? await this.plugin.gameLog() : null;
+    const gameLog = cfg.trackGames ? await this.plugin.gameLog() : null;
     if (seq !== this._renderSeq) return;
     const content = file instanceof TFile ? await this.plugin.readLiveContent(file) : null;
     if (seq !== this._renderSeq) return;
@@ -5220,9 +5105,6 @@ class SpiralView extends ItemView {
         notes.push(T(`按以往约 ${dur(plan.demand * rv.ratio)}：近 ${rv.days} 天做完的 ${rv.n} 件里，实际用时是预估的 ${rv.ratio.toFixed(2)} 倍`, `About ${dur(plan.demand * rv.ratio)} going by your history: over the last ${rv.days} days, ${rv.n} finished tasks took ${rv.ratio.toFixed(2)}× their estimates`));
       }
     }
-    // 🃏 复习卡片（第二大脑的每日回顾记进日记的，每张按「复习用时」秒算）
-    const reviews = items.filter(isReview);
-    if (reviews.length) notes.push(T(`🃏 复习 ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} 张 · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))}（螺旋上的青色段）`, `🃏 Review ${reviews.reduce((k, t) => k + +(REVIEW_RE.exec(t.label) || [0, 0])[1], 0)} cards · ${dur(reviews.reduce((k, t) => k + (t.dur || 0), 0))} (the cyan segments on the spiral)`));
     // 🎮 游戏时间（插件每分钟看一眼在不在玩，记在 game-log.json）
     if (games.length) {
       const by = {};
@@ -5245,7 +5127,7 @@ class SpiralView extends ItemView {
       const tip = [
         T(`主线：块里带 [#A]（简写 todo a）的任务，一天最多 ${MAIN_MAX} 块，按日记里的先后取。排程时排在 DOING 后面、别的待办前面`, `Mainline: tasks whose block carries [#A] (short form: todo a), at most ${MAIN_MAX} blocks a day, taken in note order. Scheduled after DOING and before other to-dos`),
         ...M.blocks.map((b) => `${b.done === b.total ? "●" : b.tasks.some((t) => t.state === "doing") ? "◐" : "○"} ${b.label}${b.total > 1 ? T(`（${b.done}/${b.total}）`, ` (${b.done}/${b.total})`) : ""}`),
-        M.over.length ? T(`⚠ 多了 ${M.over.length} 块，不算主线：${M.over.join("、")}（日记整理时降成 [#B]）`, `⚠ ${M.over.length} extra block(s) don't count as mainline: ${M.over.join(", ")} (journal cleanup lowers them to [#B])`) : "",
+        M.over.length ? T(`⚠ 多了 ${M.over.length} 块，不算主线：${M.over.join("、")}`, `⚠ ${M.over.length} extra block(s) don't count as mainline: ${M.over.join(", ")}`) : "",
         hist.length ? T("近 7 天：", "Last 7 days: ") + hist.map((h) => `${h.d.format("dd")} ${h.done}/${h.total}`).join(" · ") : "",
         nx ? T("点一下跳到下一件主线", "Click to jump to the next mainline task") : "",
       ].filter(Boolean).join("\n");
@@ -5609,16 +5491,8 @@ class SpiralView extends ItemView {
       timedPaths.push([vis, a, Math.max(b, a + 3)]);
       hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, `🎮 ${n}`);
     }
-    // 再往里一圈：复习卡片（第二大脑每日回顾记进日记的那几段），和主轨道上的复习段同一个青色
-    const revN = (t) => +(REVIEW_RE.exec(t.label) || [0, 0])[1];
-    const revs = items.filter(isReview);
-    for (const t of revs) for (const [a, b] of t.segments || []) {
-      const d = arc(a, Math.max(b, a + 3), laneOffset - 6);
-      if (!d) continue;
-      const vis = late(svgEl("path", { d, class: "naut-rev", pathLength: 1 }, svg), a);
-      timedPaths.push([vis, a, Math.max(b, a + 3)]);
-      hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`🃏 复习卡片 ${revN(t)} 张`, `🃏 Review ${revN(t)} cards`));
-    }
+    const revs = [];
+    let revN = () => 0;
     const pStep = Number(cfg.progressStep) || 25;
     const segsG = svgEl("g", { class: "naut-segs-g" }, svg);
     const labelsG = showLabels ? svgEl("g", { class: "naut-labels-g" }, svg) : null;
@@ -6840,8 +6714,7 @@ class SpiralReviewView extends ItemView {
       { key: "tasks", label: T("普通任务", "Tasks"), color: "var(--naut-task)" },
       { key: "events", label: T("固定事件", "Events"), color: "var(--naut-event)" },
       { key: "aiWall", label: T("AI 协作", "Agents"), color: "var(--naut-ai-claude)" },
-      { key: "reviewCards", label: T("复习", "Review"), color: "var(--naut-review)" },
-      { key: "games", label: T("游戏", "Gaming"), color: "var(--naut-game)" },
+      ...(cfg.trackGames || tb.games > 0 ? [{ key: "games", label: T("游戏", "Gaming"), color: "var(--naut-game)" }] : []),
       { key: "unrecorded", label: T("未记录", "Unrecorded"), color: "var(--background-modifier-border)" },
     ];
     const cBudget = card(T("⏱ 时间账单分布（小时）", "⏱ Time budget breakdown"));
@@ -7081,6 +6954,270 @@ const lucideWatch = (plugin, win) => {
   plugin.register(() => { obs.disconnect(); delete win.__nautLucide; });
 };
 
+const WELCOME_GUIDE_FLOOR = "2.6.19";
+const WELCOME_GUIDE_PATH = "Nautilus Spiral/螺旋日程示例 - Nautilus Spiral Guide.md";
+
+function parseVersionTuple(version) {
+  const clean = String(version || "").trim().replace(/^v/i, "").split(/[-+]/)[0];
+  if (!clean) return null;
+  const parts = clean.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length < 2 || parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  return [parts[0], parts[1], parts[2] || 0];
+}
+
+function compareVersionTuple(a, b) {
+  const pa = parseVersionTuple(a);
+  const pb = parseVersionTuple(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1;
+    if (pa[i] < pb[i]) return -1;
+  }
+  return 0;
+}
+
+function shouldAutoOpenWelcomeGuide(currentVersion, seenVersion, { floor = WELCOME_GUIDE_FLOOR } = {}) {
+  if (!parseVersionTuple(currentVersion)) return false;
+  if (!seenVersion || !parseVersionTuple(seenVersion)) return true;
+  if (floor && compareVersionTuple(currentVersion, floor) >= 0 && compareVersionTuple(seenVersion, floor) < 0) return true;
+  return false;
+}
+
+function buildWelcomeGuideMarkdown({ zh = ZH, version = WELCOME_GUIDE_FLOOR } = {}) {
+  const zhSection = [
+    "## 中文指南",
+    "",
+    "> [!info] 安全练习说明（不影响你的真实日程、小组件与统计）",
+    `> - 这份笔记放在 \`${WELCOME_GUIDE_PATH}\`，位于日记目录之外，**不会污染真实日记统计、小组件待办列表或复盘数据**。`,
+    "> - 下面所有示例日程都放在**代码块**里，可直接点右上角复制按钮粘贴到「今天的日记」里试跑，左侧螺旋会立刻实时画出排程。",
+    "> - 以后随时可以在命令面板搜索 **「打开螺旋日程示例与使用指南」**（`Open Nautilus Spiral guide & example note`）重新打开本页。",
+    "",
+    "### 1. 最近更新的功能（v2.6.8 – v2.6.19）",
+    "",
+    "- **日记内嵌只读螺旋图**：在任意日记里运行 **「在日记里插入螺旋图」**，或写入空的 `nautilus-spiral` 代码块，即可在阅读视图与实时预览中直接显示当天螺旋；点击色块或按 `Tab` + `Enter` 可直接跳转到对应任务行。",
+    "- **四页重组设置与本页目录**：设置页拆分为 **「作息与日记」「日历与提醒」「显示与计时」「Agent 与活动」** 四页，顶部带固定页签和实时高亮的 **「本页目录」**，低频微调收进可折叠高级分组。",
+    "- **缺日记智能引导与共享模板**：打开插件或复盘时若当天日记不存在，会弹出引导窗选择 **「自动新建」**（支持 Obsidian 日记模板 / 指定库内文件 / 自定义模板含 `{{title}}`、`{{date}}`、`{{time}}`、`{{ai}}` 占位符 / 默认种子）或 **「手动新建」**（静默等待你或 Templater 建好）；若同时启用了 **Agent Deck**，双方自动同步同一套日记策略。",
+    "- **顶栏紧凑作息菜单、自定义预设与自动扩框**：点击顶栏日夜小图标即可调整今日实际起床/收工、一键切换内置作息（`常规 07–24` / `晚睡 08–次日04` / `夜猫 08–次日08`）或自定义并保存个人预设；起得更早、睡得更晚或记录超出预设时，螺旋圆盘会自动向外扩圈容纳；新增 `早上 / 下午 / 次日`、跨午夜与英文 AM/PM 区间解析。",
+    "- **外圈引导标签、悬停联动高亮与视觉开关**：宽屏下自动在螺旋外圈展示双行详情卡片或沿轮廓紧凑排布的标签（底部弧段自动向下引出）；鼠标悬停任意弧段或斜纹未记录区时同步高亮引导线并在顶部显示详情；顶栏右侧提供 **`👁 隐藏已完成`**、**`🏷 外圈标签`** 与 **`▾ 折叠螺旋`** 快捷开关。",
+    "- **六维螺旋复盘面板**：支持 **日 / 周 / 月** 切换与周期翻页，一站查看时间账单（主线 / 任务 / 事件 / AI / 未记录）、近 8 周预估校准趋势、主线兑现与跨天顺延清单、人机并行杠杆、24 小时节律热力带、双侧偏差榜单与可持久化原因归因，并支持一键 **`📝 写入今日日记`**、**`📋 复制 Markdown`** 或 **`🤖 交给主力 Agent 复盘`**。",
+    "- **轻量化番茄钟与色块右键**：容量区下方直接切换 `15m` / `25m` / `自定义` 并启动，可自动绑定当前进行中的人工 `DOING` 任务，或在列表 / **螺旋盘面色块** 右键直接开启（固定事件支持不改日记的 **独立番茄钟**）；外沿以实线展示已兑现、虚线展示预订且不挤占排程，满 1 分钟自动把 `- ⏱ HH:MM–HH:MM · 共 Xm` 写回任务下方。",
+    "- **优先级彩色小方块与简写自动规范**：写 `[#A]` / `[#B]` / `[#C]` 或模糊简写（`todo a`、`todoa`、`[ ] b`、`DOING 14:05 a`、`todos:` 下 `- a`），光标离开该行即自动规范并在编辑器与列表渲染为红 `A` / 琥珀 `B` / 蓝 `C` 小方块（`todo a book` 等英文冠词不会误触发）。",
+    "- **快捷推进进度 & 镜像任务同步**：对未完成人工任务按 `Shift+Click`（`Alt+Shift+Click` 回退）或右键菜单按步进（25% / 10%）推进进度直至 `DONE`；用 `![[源笔记#^块号]]` 嵌入日记的镜像任务会自动展开进排程，修改状态/优先级/进度会直接回写源笔记。",
+    "",
+    "### 2. 基础使用教程（单独使用螺旋日程）",
+    "",
+    "#### 第一步：确认日记目录与作息",
+    "- 螺旋日程首次启用时会在 **左侧栏** 打开，并自动读取 Obsidian 核心「日记」或 Periodic Notes 的目录与日期格式（可在 **设置 → 作息与日记** 中手动覆盖）。",
+    "- 如果你的日常作息不是默认的 `08:00–次日04:00`（`04:00` 换日），点击螺旋顶栏的 **日夜图标** 选择合适作息或保存自定义预设。",
+    "",
+    "#### 第二步：把下面这段练手日程复制到「今天的日记」试试看",
+    "",
+    "```markdown",
+    "- 09:30-10:00 晨会同步",
+    "- 12:30-13:30 午饭与散步",
+    "- DONE 08:15-08:45 晨跑与拉伸",
+    "- **09:05** 决定先收口最核心的交付物",
+    "- DOING 09:10 [#A] 完成方案核心章节 2h 40%",
+    "\t- 🎯 目标：发出可审阅初稿并附上关键数据表",
+    "- TODO [#A] 复核发布清单 45m",
+    "- todos:",
+    "\t1. 回复重要邮件 20m",
+    "\t2. 整理会议纪要",
+    "- PAUSED [#B] 整理下周演示素材 1h",
+    "\t- ⏱ 08:50–09:05 · 共 15m",
+    "- TODO 17:30 给客户发确认信息 15m",
+    "- WAITING 等设计终稿回传 30m",
+    "```",
+    "",
+    "想把当天螺旋直接嵌进日记正文，还可以在日记中追加下面这段空代码块：",
+    "",
+    "````markdown",
+    "```nautilus-spiral",
+    "```",
+    "````",
+    "",
+    "#### 第三步：每天怎么看、怎么点",
+    "| 写法或操作 | 效果说明 |",
+    "|---|---|",
+    "| `- 09:30-10:00 事件` / `- TODO 17:30 事项 15m` | **固定事件 / 钉住的待办**：钉在指定时刻，先占位 |",
+    "| `TODO` / `LATER` / `[ ]` + 时长（`20m`、`1.5h`、`半小时`） | **待办**：从「现在」自动流进事件之间的空档；不写时长按默认 15m |",
+    "| `[#A]`（简写 `todo a`） | **主线任务**：每天最多 3 块，优先排程并在顶部与状态栏追踪 |",
+    "| `DOING` / `[/]` · `PAUSED` · `WAITING` / `SUSPENDED` · `DONE` / `[x]` | 分别表示：进行中（自动计时）、暂停（仍占位）、搁置（不占容量）、完成 |",
+    "| 点击「接下来」左侧圆点 | 一键循环状态：`DONE → SUSPENDED → 原状态`（不跳转日记） |",
+    "| 右键任务行或螺旋色块 | 启动/结束番茄钟、推进进度、切换状态、设置 `A/B/C` 重要程度 |",
+    "| 拖动螺旋两端空心圆点 / 点 `▷` | 微调今日实际起床与收工（5 分钟一格）/ 6 秒回放全天推进过程 |",
+    "| 顶部 `📏` / 列表底部复盘 | 查看「当日预计 vs 实际」与 6 维度日/周/月复盘；可按需开启 macOS / Google 日历只读同步与 macOS 桌面小组件 |",
+    "",
+    "> [!tip] 快捷键提示",
+    "> 插件默认**不占用任何全局快捷键**；可在 Obsidian **「设置 → 快捷键」** 搜索 **「螺旋日程」** 按需绑定（如快捷面板、用番茄钟开始光标所在任务等）。",
+    "",
+    "---",
+    "",
+    "### 3. 与 Agent Deck 联动使用",
+    "",
+    "同时安装 **Nautilus Spiral（螺旋日程）** 与 **Agent Deck** 后，你负责写计划与把关，Agent Deck 负责把 AI 会话写进日记，螺旋日程负责排程、计时与全局复盘——**两款插件各司其职、零冲突协作**：",
+    "",
+    "- **清晰分工、不重复扫盘**：Agent Deck 独占日记中的 AI 写入（支持 21+ 本地助手与自定义 ACP CLI）；螺旋日程直接复用 Agent Deck 提供的全量会话数据源，在内圈按不同颜色绘制各个 Agent 的活跃时段，并在容量区汇总人机协作时长与 Token。",
+    "- **实时状态色与会话直达**：当关联会话处于运行、待检视（`TOREVIEW`）、等你允许（`NEEDOK`）、排队（`QUEUED`）、撞限额（`HITLIMIT`）或报错（`ERRORED`）时，螺旋块和「接下来」同步变色（不会覆盖你手动标的 `PAUSED`/`DONE`）；点击任务旁的 **`🤖` 徽章** 或双击螺旋内圈即可查看轮次摘要并跳回原会话。",
+    "- **同一套日界与模板策略**：Agent Deck 自动跟随螺旋日程的 **「日记日期分界」**（深夜会话准确归入当天）；两款插件共享缺日记引导配置与 `{{ai}}` AI 记录落点。",
+    "- **拖拽挂子块 & 人机用时精确拆分**：在 Agent Deck 中把会话卡片拖到你的手写任务下挂为缩进 `🤖` 子块并记录 `- ⏱` 时段后：螺旋日程既会把子块 AI 用时上卷进人机拆账与预估复盘，又会自动保护 `🤖` 任务不被人工 `DOING` 上限、超时自动暂停或番茄钟误绑定；当你把母任务标为 `DONE` 时，未收口的 `🤖` 子块会一并收口。",
+    "- **镜像任务互通 & 一键让主力 Agent 复盘**：在 Agent Deck 原地看板与日记中使用的 `![[笔记#^块号]]` 镜像任务同样会展开进螺旋排程；在 **六维螺旋复盘** 面板点 **「🤖 交给主力 Agent 复盘」**，可直接把统计摘要写入日记并一键派发给你的主力 Agent 给出改进建议。",
+    "",
+    "#### 可复制的人机协作日记示例",
+    "",
+    "```markdown",
+    "- DOING 10:00 [#A] 推进新功能开发与文档收口 2h",
+    "\t- DOING 🤖 实现螺旋外圈标签避让与测试 @claude",
+    "\t\t- ⏱ 10:05–10:42 · 共 37m · 128k tok",
+    "\t\t- 💬 第1轮：已完成碰撞避让逻辑并通过本地回归测试。",
+    "\t\t- 🔗 [Claude](claude://resume?session=example-session-id)",
+    "\t- DONE 🤖 整理中英文更新说明",
+    "\t\t- ⏱ 10:45–11:02 · 共 17m · 42k tok",
+    "- ![[示例项目笔记#^demo-mirror-task]]",
+    "```",
+    "",
+    "### 4. 常用命令速查（Command Palette）",
+    "",
+    "| 命令名称 | 用途 |",
+    "|---|---|",
+    "| `打开螺旋日程` | 在左侧栏打开并聚焦螺旋日程视图 |",
+    "| `打开螺旋日程示例与使用指南` | 随时重开这份双语示例与使用指南 |",
+    "| `在日记里插入螺旋图` | 在当前日记光标处插入 `nautilus-spiral` 内嵌螺旋代码块 |",
+    "| `预估 vs 实际（复盘）` | 打开螺旋复盘并跳转到统计与校准区 |",
+    "| `现在怎样：在做的、容量、接下来` | 弹窗速览当前进行中任务、剩余容量与接下来排程 |",
+    "| `设置今天的起床 / 收工时间` | 手动输入今日实际起止时刻（如 `10:30`、`次日02:30`） |",
+    "| `开始番茄钟` / `用番茄钟开始光标所在任务` | 预订独立番茄钟，或直接绑定编辑器光标所在的任务行 |",
+    "| `打开今天的日记` | 按日期分界规则打开（或按策略创建）今天的日记 |",
+  ];
+
+  const enSection = [
+    "## English Guide",
+    "",
+    "> [!info] Safe Practice Note (Zero Impact on Real Stats, Widgets, or Reviews)",
+    `> - This note lives at \`${WELCOME_GUIDE_PATH}\` outside your daily notes folder, so it **never pollutes your real schedule, widgets, or reviews**.`,
+    "> - All sample schedules below are placed inside **fenced code blocks**—copy any block into today's daily note to watch the spiral update live.",
+    "> - Reopen this note anytime from the Command Palette via **Open Nautilus Spiral guide & example note** (`打开螺旋日程示例与使用指南`).",
+    "",
+    "### 1. What's New (v2.6.8 – v2.6.19)",
+    "",
+    "- **Embedded daily spirals**: Run **Insert spiral chart into daily note** (or add an empty `nautilus-spiral` code block) inside any daily note to render a read-only interactive spiral in both Live Preview and Reading View; click any arc or press `Tab` + `Enter` to jump to its source line.",
+    "- **Reorganized 4-tab settings & sticky TOC**: Settings are cleanly grouped into **Schedule & daily notes**, **Calendars & reminders**, **Display & timing**, and **Agents & activity**, with a sticky **On this page** table of contents and collapsible advanced sections.",
+    "- **Shared missing-daily-note setup wizard**: Opening the spiral or review when today's note is missing offers a clean choice between **Auto-create** (Obsidian Daily Notes template, chosen vault file, custom template supporting `{{title}}`, `{{date}}`, `{{time}}`, `{{ai}}`, or default seed) and **Create manually**—synced automatically with **Agent Deck** when both plugins are active.",
+    "- **Compact schedule menu, custom presets & auto-expanding dial**: Click the header sun/moon icon to set today's actual start/end, switch built-in presets (**Regular** `07–24`, **Late night** `08–+1 04`, **Night owl** `08–+1 08`), or save your own custom presets; earlier starts or late-night entries expand the spiral automatically. Improved parsing also handles overnight spans, 12-hour AM/PM ranges, and Chinese time phrases.",
+    "- **Outer callout labels, hover-linked inspection & quick toolbar toggles**: Wide panels display two-line detail cards or compact contour-aligned labels around the spiral rim (dropping below the dial for lower arcs). Hovering any task arc or hatched unrecorded stretch highlights its leader line and shows full details at the top; the right header offers quick toggles for **Hide done**, **Outer labels**, and **Collapse spiral**.",
+    "- **6-dimensional Spiral Review dashboard**: Switch between **Day / Week / Month** views for time bills, an 8-week estimation calibration trend, mainline fulfillment & cross-day rollover tracking, human-AI parallel leverage, a 24-hour rhythm heatmap, top under/over-estimates with persistent reason tags, plus one-click **Append to today's note**, **Copy Markdown**, or **Hand over to primary Agent**.",
+    "- **Lightweight Pomodoro & spiral-segment right-click**: Pick `15m` / `25m` / `Custom` under the capacity bar to auto-bind your manual `DOING` task, or right-click any task row or **spiral segment** directly (fixed events support a **Standalone Pomodoro** that won't edit your note). Active Pomodoros render as a solid elapsed arc + dashed reservation on the outer rail without pushing tasks back, and ≥1-minute sessions automatically write `- ⏱ HH:MM–HH:MM · total Xm` under the task.",
+    "- **A/B/C square badges & fuzzy shorthand normalization**: Write `[#A]` / `[#B]` / `[#C]` or fuzzy shorthands (`todo a`, `todoa`, `[ ] b`, `DOING 14:05 a`, or `- a` under `todos:`); leaving the line auto-normalizes valid shortcuts (without touching phrases like `todo a book`) and renders compact red `A` / amber `B` / blue `C` badges.",
+    "- **Quick progress stepping & mirror block sync**: `Shift+Click` (`Alt+Shift+Click` to step back) or right-click an open manual task to advance progress in 25%/10% increments up to `DONE`. Mirror embeds (`![[Source Note#^block-id]]`) expand into today's schedule and write status, priority, and progress changes back to the source note.",
+    "",
+    "### 2. Getting Started (Standalone Usage)",
+    "",
+    "#### Step 1: Check your daily notes folder & schedule preset",
+    "- On first enable, Nautilus Spiral opens in the **left sidebar** and auto-detects your Obsidian **Daily Notes** or **Periodic Notes** folder and date format (override anytime in **Settings → Schedule & daily notes**).",
+    "- Click the **sun/moon icon** in the spiral header to pick or customize your default wake/end hours and daily note cutoff.",
+    "",
+    "#### Step 2: Copy this practice schedule into today's daily note",
+    "",
+    "```markdown",
+    "- 09:30-10:00 Morning standup",
+    "- 12:30-13:30 Lunch & walk",
+    "- DONE 08:15-08:45 Morning run",
+    "- **09:05** Decided to finish the core deliverable first",
+    "- DOING 09:10 [#A] Draft core proposal sections 2h 40%",
+    "\t- 🎯 Goal: Share reviewable first draft with data table attached",
+    "- TODO [#A] Verify release checklist 45m",
+    "- todos:",
+    "\t1. Reply to key emails 20m",
+    "\t2. Tidy meeting notes",
+    "- PAUSED [#B] Collect demo screenshots for next week 1h",
+    "\t- ⏱ 08:50–09:05 · total 15m",
+    "- TODO 17:30 Send confirmation to client 15m",
+    "- WAITING Wait for final design assets 30m",
+    "```",
+    "",
+    "To embed the spiral directly inside today's daily note body, add this empty code fence:",
+    "",
+    "````markdown",
+    "```nautilus-spiral",
+    "```",
+    "````",
+    "",
+    "#### Step 3: Everyday syntax & interactions",
+    "| Syntax or action | What it does |",
+    "|---|---|",
+    "| `- 09:30-10:00 Event` / `- TODO 17:30 Call 15m` | **Fixed event / Pinned to-do**: stays locked to its clock slot |",
+    "| `TODO` / `LATER` / `[ ]` + estimate (`20m`, `1.5h`) | **To-do**: flows from \"now\" into free gaps (defaults to 15m if omitted) |",
+    "| `[#A]` (or shorthand `todo a`) | **Mainline**: up to 3 blocks/day, scheduled first and tracked at the top |",
+    "| `DOING` / `[/]` · `PAUSED` · `WAITING` / `SUSPENDED` · `DONE` / `[x]` | In progress (auto-timed), paused (still scheduled), parked (no capacity), done |",
+    "| Click status dot in **Up next** | Cycles `DONE → SUSPENDED → original state` without leaving the note |",
+    "| Right-click any task row or spiral arc | Start/stop Pomodoro, step progress, change state, or set `A/B/C` priority |",
+    "| Drag hollow start/end handles / click `▷` | Adjust today's start/end in 5-min steps / replay the full day in 6 seconds |",
+    "| Header `📏` / bottom review | Open 6-dim Day/Week/Month review; optionally enable macOS/Google Calendar & macOS widgets |",
+    "",
+    "> [!tip] Hotkeys",
+    "> No global hotkeys are bound by default. Open **Obsidian Settings → Hotkeys** and search **Nautilus Spiral** to bind any command you like.",
+    "",
+    "---",
+    "",
+    "### 3. Working Together with Agent Deck",
+    "",
+    "When you run **Nautilus Spiral** alongside **[Agent Deck](https://github.com/MatsuriMW/obsidian-agent-deck)**, you plan and review while Agent Deck writes AI session logs into your note—cleanly separated with zero duplicate scans:",
+    "",
+    "- **Clear division of labor**: Agent Deck owns AI session tracking and journal write-backs across 21+ local agents and custom ACP CLIs; Nautilus Spiral reuses Agent Deck's store directly, draws color-coded inner rings for each agent, and summarizes collaboration time & tokens under the capacity bar.",
+    "- **Live status sync & session jump-back**: Active agent states (`DOING`, `TOREVIEW`, `NEEDOK`, `QUEUED`, `HITLIMIT`, `ERRORED`) sync onto spiral arcs and \"Up next\" rows without overriding your manual `PAUSED` or `DONE`. Click any task's **`🤖` badge** (or double-click an inner ring) to inspect rounds and jump back into the session.",
+    "- **Shared day cutoff & note creation policy**: Agent Deck follows Nautilus Spiral's **Daily note cutoff** so late-night coding sessions stay on the right business day, and both plugins share one setup wizard and `{{ai}}` anchor policy.",
+    "- **Drag-bound `🤖` child blocks & human/AI split**: Dragging a session card onto a manual task in Agent Deck nests it as an indented `🤖` child with `- ⏱`. Spiral rolls those spans into human-vs-AI analytics while exempting `🤖` lines from human `DOING` limits, idle auto-pause, and Pomodoro auto-binding; marking the parent `DONE` cleanly closes open `🤖` children.",
+    "- **Cross-plugin mirrors & AI review handoff**: `![[Note#^block-id]]` mirror tasks stay in sync across Agent Deck boards and Spiral schedules, and **Hand over to primary Agent** in the Spiral Review dashboard writes your review digest and dispatches it straight to your primary agent.",
+    "",
+    "#### Copyable Human + AI Collaboration Example",
+    "",
+    "```markdown",
+    "- DOING 10:00 [#A] Ship new feature and update docs 2h",
+    "\t- DOING 🤖 Implement outer label collision avoidance & tests @claude",
+    "\t\t- ⏱ 10:05–10:42 · total 37m · 128k tok",
+    "\t\t- 💬 Round 1: Collision avoidance implemented and regression tests pass.",
+    "\t\t- 🔗 [Claude](claude://resume?session=example-session-id)",
+    "\t- DONE 🤖 Draft bilingual release notes",
+    "\t\t- ⏱ 10:45–11:02 · total 17m · 42k tok",
+    "- ![[Example Project Note#^demo-mirror-task]]",
+    "```",
+    "",
+    "### 4. Command Palette Quick Reference",
+    "",
+    "| Command | Action |",
+    "|---|---|",
+    "| `Open Nautilus Spiral` | Open and focus Nautilus Spiral in the left sidebar |",
+    "| `Open Nautilus Spiral guide & example note` | Reopen this bilingual guide & example note anytime |",
+    "| `Insert spiral chart into daily note` | Insert a `nautilus-spiral` embedded chart block at cursor |",
+    "| `Estimate vs actual (review)` | Open Spiral and jump to the review section |",
+    "| `Status now: doing, capacity, up next` | Pop up a quick summary modal of current work and capacity |",
+    "| `Set today's start / end of day` | Enter today's actual wake/end hours (e.g. `10:30`, `+1 02:30`) |",
+    "| `Start Pomodoro` / `Start Pomodoro on task at cursor` | Start a standalone Pomodoro or bind the task line at cursor |",
+    "| `Open today's daily note` | Open (or create per policy) today's daily note using the day cutoff |",
+  ];
+
+  const header = [
+    "---",
+    `nautilus-spiral-guide: "${version}"`,
+    "tags:",
+    "  - nautilus-spiral",
+    "  - guide",
+    "---",
+    "",
+    `# 螺旋日程示例与使用指南 · Nautilus Spiral Guide & Examples (v${version})`,
+    "",
+    zh
+      ? "> 简体中文在前 · [Jump to English Guide](#english-guide)"
+      : "> English first · [跳转到中文指南](#中文指南)",
+    "",
+  ];
+
+  const body = zh
+    ? [...zhSection, "", "---", "", ...enSection]
+    : [...enSection, "", "---", "", ...zhSection];
+  return [...header, ...body, ""].join("\n");
+}
+
 // ---------------- 插件 ----------------
 
 module.exports = class NautilusSpiral extends Plugin {
@@ -7208,8 +7345,15 @@ module.exports = class NautilusSpiral extends Plugin {
       }
       // 启动页：今天的日记 + 左侧栏显示螺旋日程（其它插件恢复布局也在这时候，稍等一下再切，免得被盖掉）
       window.setTimeout(async () => {
+        if (this._unloaded) return;
         try {
-          if (this.settings.openTodayOnStartup) await this.openToday(true);
+          const needGuide = this.shouldAutoOpenWelcomeGuide();
+          const todayFile = this.app.vault.getAbstractFileByPath(this.journalPath(this.today()));
+          const canOpenTodaySilently = todayFile instanceof TFile || this.getJournalPolicy().configured;
+          if (this.settings.openTodayOnStartup && (!needGuide || canOpenTodaySilently)) {
+            await this.openToday(true);
+          }
+          if (needGuide) await this.maybeOpenWelcomeGuide();
           if (firstOpen || this.settings.revealOnStartup) await this.activate(false, true);
         } catch (e) { console.error("[螺旋日程] 启动页失败", e); }
       }, 600);
@@ -7413,7 +7557,7 @@ module.exports = class NautilusSpiral extends Plugin {
     }
     const ai = this.settings.showAi !== false && aiPick((await this.aiUsage()).days[dayKey], this.settings);
     if (ai) out.push(T(`🤖 协作 ${dur(ai.wall)} · Agent 工时 ${dur(ai.agent)} · 产出 ${fmtTok(ai.out)} tok`, `🤖 Agents ${dur(ai.wall)} · agent hours ${dur(ai.agent)} · output ${fmtTok(ai.out)} tok`));
-    const games = this.settings.trackGames !== false && (await this.gameLog()).days[dayKey];
+    const games = Boolean(this.settings.trackGames) && (await this.gameLog()).days[dayKey];
     if (games && games.length) out.push(T(`🎮 游戏 ${dur(unionMin(games))}`, `🎮 Gaming ${dur(unionMin(games))}`));
     return out;
   }
@@ -7453,14 +7597,9 @@ module.exports = class NautilusSpiral extends Plugin {
       { id: "quick-panel", name: T("快捷面板（螺旋日程的所有操作）", "Quick panel (every Nautilus Spiral action)"), run: () => new QuickPanel(this.app, this).open(), hidden: true },
       { id: "status", name: T("现在怎样：在做的、容量、接下来", "Status now: doing, capacity, up next"), run: () => this.showStatus() },
       { id: "doing-ai", name: T("正在做的事的 Agent 会话", "Agent sessions for what you're doing"), run: () => this.showDoingAi() },
-      { id: "notify-test", name: T("测试带按钮的系统通知（试验）", "Test a system notification with buttons (experimental)"), run: async () => {
-        this._noNotify = 0;
-        new OB.Notice(T("发了一条测试通知，在通知上点「收到」（横幅样式下要悬停后点「选项」）", "Sent a test notification. Click \"Got it\" on it (with banner style, hover and click \"Options\" first)"));
-        const r = await this.ask(T("螺旋日程 · 测试通知", "Nautilus Spiral · test notification"), T("看到这条就说明通了。点「收到」试试按钮", "If you can see this, notifications work. Click \"Got it\" to try the button"), [T("收到", "Got it"), T("不用了", "No thanks")], 60);
-        new OB.Notice(r == null ? T("发不出去：系统没允许「螺旋日程」发通知。到「系统设置 → 通知 → 螺旋日程」打开「允许通知」，或者在通知中心里找到它的授权请求点「允许」。在那之前到点提醒照旧弹对话框", "Could not send: macOS hasn't allowed \"Nautilus Spiral\" to send notifications. Turn on Allow Notifications in System Settings → Notifications → Nautilus Spiral, or click Allow on its request in Notification Center. Until then, reminders still pop up as dialogs") : r === "" ? T("通知发出去了，但没点按钮（60 秒到了）", "The notification was sent, but no button was clicked (60 seconds passed)") : r === "__click__" ? T("收到：你点的是通知本身", "Received: you clicked the notification itself") : T(`收到：你点了「${r}」`, `Received: you clicked "${r}"`), 10000);
-      } },
       { id: "review", name: T("预估 vs 实际（复盘）", "Estimate vs actual (review)"), run: () => this.showReview() },
       { id: "open", name: T("打开螺旋日程", "Open Nautilus Spiral"), run: () => this.activate() },
+      { id: "open-guide", name: T("打开螺旋日程示例与使用指南", "Open Nautilus Spiral guide & example note"), run: () => this.openWelcomeGuide() },
       { id: "insert-spiral-embed", name: T("在日记里插入螺旋图", "Insert spiral chart into daily note"), editor: true, run: (editor, view) => {
         if (!this.spiralEmbedDate(view?.file)) {
           new OB.Notice(T("请先打开一篇日记。", "Open a daily note first."));
@@ -7534,7 +7673,7 @@ module.exports = class NautilusSpiral extends Plugin {
     d.open = open.length;
     d.review = cfg.showDayReview !== false ? dayReview(items, cfg, { live: true, auto }).summary : null;
     d.ai = cfg.showAi !== false ? aiPick((await this.aiUsage()).days[dayKey], cfg) : null;
-    const games = cfg.trackGames !== false ? ((await this.gameLog()).days[dayKey] || []) : [];
+    const games = cfg.trackGames ? ((await this.gameLog()).days[dayKey] || []) : [];
     d.games = games.length ? unionMin(games) : 0;
     return d;
   }
@@ -7684,7 +7823,7 @@ module.exports = class NautilusSpiral extends Plugin {
     }
     if (end.isAfter(today, "day")) end = today.clone();
     const aiStore = cfg.showAi !== false ? await this.aiUsage({ skipScan: true }) : null;
-    const gLog = cfg.trackGames !== false ? await this.gameLog() : null;
+    const gLog = cfg.trackGames ? await this.gameLog() : null;
     const nowM = moment();
     const realNow = normalize(nowM.hours() * 60 + nowM.minutes(), cfg);
     const snapshots = [];
@@ -8027,15 +8166,27 @@ module.exports = class NautilusSpiral extends Plugin {
   }
 
   // 系统通知；点一下跳到那一行
-  // 提醒中枢：把一条提醒发到 Discord（走本机的 notify-discord 脚本，Webhook 地址在钥匙串里）。没配频道或者没发出去返回 false
+  // 提醒中枢：通过系统钥匙串里保存的 Discord Webhook URL 发送（所有桌面端通用）
   async toDiscord(text) {
-    const cfg = this.settings;
-    const ch = (cfg.discordChannel || "").trim();
-    if (!ch || !(OB.Platform && OB.Platform.isDesktopApp)) return false;
-    const bin = (cfg.discordCmd || "~/.local/bin/notify-discord").replace(/^~(?=\/)/, require("os").homedir());
-    const r = await run(bin, ["--as", T("螺旋日程", "Nautilus Spiral"), ch, text], 20000);
-    if (r.code !== 0) console.error("[螺旋日程] 发到 Discord 失败", (r.stderr || r.stdout).slice(0, 300));
-    return r.code === 0;
+    const webhook = String(this.secret("discord-webhook") || "").trim();
+    if (isValidDiscordWebhook(webhook)) {
+      try {
+        const r = await OB.requestUrl({
+          url: webhook,
+          method: "POST",
+          contentType: "application/json",
+          body: JSON.stringify({ username: T("螺旋日程", "Nautilus Spiral"), content: String(text || "").slice(0, 1950) }),
+          throw: false,
+        });
+        if (r.status >= 200 && r.status < 300) return true;
+        console.error("[螺旋日程] Discord Webhook 发送失败", r.status);
+        return false;
+      } catch (e) {
+        console.error("[螺旋日程] Discord Webhook 发送失败", e);
+        return false;
+      }
+    }
+    return false;
   }
 
   // 提醒分两种：不用你回答的（暂停了、做完了）进 Discord，进去了就不在本机再弹一遍；
@@ -8058,10 +8209,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const { file, line } = list[0];
       this.toDiscord(`**${title}**\n${body}`).then(async (sent) => {
         if (sent && !keys.length) return;
-        // 带按钮的：试验里的按钮通知开着就用它，否则在本机弹一条普通通知（点一下跳到日记那一行）
-        const r = keys.length && this.settings.askVia === "notification" ? await this.ask(title, body, keys, 600) : null;
-        if (r && actions[r]) return actions[r]();
-        if (r === "__click__" && file) { run("/usr/bin/open", ["-a", "Obsidian"]); this.openLine(file, line ?? 0); }
+        let r = null;
         if (r == null) this.local(title, body, file, line);
       });
     }
@@ -8165,7 +8313,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
   // 每分钟看一眼在不在玩：进程路径含 gameProcs 的词（Steam 游戏按 steamapps/common 下的文件夹名记），或者 gameFrontApps 在最前面
   async pollGames() {
-    if (this.settings.trackGames === false || !(OB.Platform && OB.Platform.isDesktopApp)) return;
+    if (!this.settings.trackGames || !(OB.Platform && OB.Platform.isMacOS && OB.Platform.isDesktopApp)) return;
     try {
       const { execFile } = require("child_process");
       const run = (cmd, args) => new Promise((res) => execFile(cmd, args, { maxBuffer: 16e6 }, (e, out) => res(e ? "" : out)));
@@ -8473,7 +8621,7 @@ module.exports = class NautilusSpiral extends Plugin {
     else if (!M.total && was) { delete log[key]; this.saveSoon(); }
     // 多了：一冒出来就说一声（同一组只说一次）
     const ov = M.over.join("\n");
-    if (ov && ov !== this._mainOver) new OB.Notice(T(`🎯 主线最多 ${MAIN_MAX} 块，现在多了 ${M.over.length} 块：「${M.over.join("」「")}」不算主线。\n日记整理时会把多出来的 [#A] 降成 [#B]`, `🎯 Mainline is at most ${MAIN_MAX} blocks; there are ${M.over.length} extra: "${M.over.join("\", \"")}" don't count as mainline.\nJournal cleanup will lower the extra [#A] to [#B]`), 10000);
+    if (ov && ov !== this._mainOver) new OB.Notice(T(`🎯 主线最多 ${MAIN_MAX} 块，现在多了 ${M.over.length} 块：「${M.over.join("」「")}」不计入主线。`, `🎯 Mainline is at most ${MAIN_MAX} blocks; ${M.over.length} extra block(s) won't count as mainline: "${M.over.join("\", \"")}".`), 10000);
     this._mainOver = ov;
     this.mainNudge(file, M, key);
   }
@@ -8777,28 +8925,6 @@ module.exports = class NautilusSpiral extends Plugin {
   }
   // ---------------- 带按钮的系统通知 ----------------
 
-  // 发一条带按钮的系统通知，等你点。返回点的按钮；"__click__" = 点了通知本身；"" = 没理；
-  // null = 这台机器发不了（不是 macOS / 小助手没编出来 / 没给通知权限），一小时内不再试
-  async ask(title, body, actions = [], wait = 600) {
-    if (!(OB.Platform && OB.Platform.isMacOS) || (this._noNotify && Date.now() - this._noNotify < 3600e3)) return null;
-    try {
-      const fs = require("fs"), path = require("path");
-      const dir = path.join(require("os").homedir(), "Library/Caches/nautilus-spiral/notify");
-      await fs.promises.mkdir(dir, { recursive: true });
-      const file = path.join(dir, `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-      // -n 每条通知一个进程，-W 等它退出（点了按钮 / 到时间），-g 不抢焦点
-      await run("/usr/bin/open", ["-n", "-W", "-g", await notifyTool(), "--args", file, title, body, String(wait), ...actions], (wait + 60) * 1000);
-      let out = "__error__";
-      try { out = await fs.promises.readFile(file, "utf8"); fs.promises.unlink(file).catch(() => {}); } catch (e) { /* 没写出结果 = 没跑起来 */ }
-      if (out === "__click__") return out;
-      if (out.startsWith("__")) { this._noNotify = Date.now(); return null; }
-      return out;
-    } catch (e) {
-      console.error("[螺旋日程] 通知小助手用不了", e);
-      this._noNotify = Date.now();
-      return null;
-    }
-  }
 
   // ---------------- 自动记进日记的行（现在由 Agent Deck 写） ----------------
   // 这一天由自动记日记管着的那些行：用时按会话在动的时段另记，不走「改成 DOING 就开始计时」那一套，也不受 DOING 上限和超时暂停管。
@@ -9014,9 +9140,10 @@ module.exports = class NautilusSpiral extends Plugin {
     return det;
   }
 
-  // 新建一篇日记时的开头：两行属性，其余交给日记模板/别的插件
+  // 新建一篇日记时的开头：默认仅写通用 date 属性，其余交给日记模板
   journalSeed(d) {
-    return T(`---\njournal: 每日\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`, `---\njournal: Daily\njournal-date: ${d.format("YYYY-MM-DD")}\n---\n`);
+    let seed = `---\ndate: ${d.format("YYYY-MM-DD")}\n---\n`;
+    return seed;
   }
 
   getOwnJournalPolicy() {
@@ -9211,6 +9338,67 @@ module.exports = class NautilusSpiral extends Plugin {
     const target = open || (cur && !cur.getViewState().pinned ? cur : this.app.workspace.getLeaf("tab"));
     if (target.view?.file?.path !== path) await target.openFile(file);
     this.app.workspace.setActiveLeaf(target, { focus: true });
+  }
+
+  shouldAutoOpenWelcomeGuide() {
+    return shouldAutoOpenWelcomeGuide(this.manifest?.version || WELCOME_GUIDE_FLOOR, this.settings?.welcomeGuideVersion);
+  }
+
+  async maybeOpenWelcomeGuide() {
+    if (this._unloaded || !this.shouldAutoOpenWelcomeGuide()) return false;
+    return Boolean(await this.openWelcomeGuide({ refresh: true }));
+  }
+
+  async openWelcomeGuide({ refresh = false } = {}) {
+    if (this._unloaded || !this.app?.vault?.getAbstractFileByPath) return null;
+    if (this._openingGuide) return this._openingGuide;
+    this._openingGuide = (async () => {
+      const targetPath = WELCOME_GUIDE_PATH;
+      const dir = targetPath.includes("/") ? targetPath.slice(0, targetPath.lastIndexOf("/")) : "";
+      if (dir && !this.app.vault.getAbstractFileByPath(dir)) {
+        try { await this.app.vault.createFolder(dir); } catch (e) { /* 文件夹可能已并发创建 */ }
+      }
+      const currentVersion = this.manifest?.version || WELCOME_GUIDE_FLOOR;
+      const prevVersion = this.settings?.welcomeGuideVersion || "";
+      const content = buildWelcomeGuideMarkdown({ zh: ZH, version: currentVersion });
+
+      let file = this.app.vault.getAbstractFileByPath(targetPath);
+      if (!(file instanceof TFile)) {
+        file = await this.app.vault.create(targetPath, content);
+      } else if ((refresh || prevVersion !== currentVersion) && typeof this.app.vault.modify === "function") {
+        await this.app.vault.modify(file, content);
+      }
+
+      if (this.settings && this.settings.welcomeGuideVersion !== currentVersion) {
+        this.settings.welcomeGuideVersion = currentVersion;
+        if (typeof this.saveData === "function") await this.saveData(this.settings);
+      }
+
+      let opened = null;
+      this.app.workspace?.iterateAllLeaves?.((leaf) => {
+        if (!opened && leaf?.view?.file?.path === targetPath) opened = leaf;
+      });
+      if (opened) {
+        if (typeof opened.getViewState === "function" && typeof opened.setViewState === "function") {
+          const vs = opened.getViewState();
+          await opened.setViewState({ ...vs, state: { ...(vs?.state || {}), mode: "source", source: false } });
+        }
+        this.app.workspace?.revealLeaf?.(opened);
+        this.app.workspace?.setActiveLeaf?.(opened, { focus: true });
+      } else {
+        const leaf = this.app.workspace?.getLeaf?.("tab") || this.app.workspace?.getLeaf?.(false);
+        if (leaf?.openFile) {
+          await leaf.openFile(file, { active: true, state: { mode: "source", source: false } });
+        }
+        if (leaf) this.app.workspace?.setActiveLeaf?.(leaf, { focus: true });
+      }
+      return targetPath;
+    })();
+    try {
+      return await this._openingGuide;
+    } finally {
+      this._openingGuide = null;
+    }
   }
 
   async onFileChange(f) {
@@ -10195,8 +10383,8 @@ class SpiralSettings extends PluginSettingTab {
     });
     schedHour(T("一天从几点开始", "Day starts at"), T("螺旋的默认起点（0–23，支持 7 / 07:30；需小于结束时间，起得更早时螺旋会自动扩开）", "Default spiral start (0–23, supports 7 or 07:30; must be earlier than Day ends at; earlier days expand automatically)"), "dayStart", 0, 23.99, (n) => n < (Number(s.dayEnd) || 28));
     schedHour(T("一天到几点结束", "Day ends at"), T("默认到几点为止，支持 24 / 28 / 次日04:00（>24 表示次日凌晨，晚于它时螺旋也会自动扩开）", "Default spiral end; supports 24, 28, or +1 04:00 (over 24 means after midnight; later activity expands automatically)"), "dayEnd", 1, 36, (n) => n > (Number(s.dayStart) || 0));
-    // 日期分界按 24 小时制的时刻填。别的插件（日记整理、块去向、任务提醒…）的「今天」都读这一项
-    new Setting(containerEl).setName(T("日记日期分界", "Daily note cutoff")).setDesc(T("这个时刻之前还算前一天的日记。按 24 小时制写：04:00、08:00、23:30 都行，只写一个数也行（4 = 04:00）。日记整理、块去向、任务提醒这些配套插件算「今天是哪一篇日记」时都跟着这一项", "Before this time it still counts as the previous day's note. Use 24-hour time: 04:00, 08:00 and 23:30 all work, or just a number (4 = 04:00). The companion plugins (journal cleanup, block routing, task reminders) follow this setting when working out which note is today's"))
+    // 日期分界按 24 小时制的时刻填。Agent Deck 等配套插件的「今天」都读这一项
+    new Setting(containerEl).setName(T("日记日期分界", "Daily note cutoff")).setDesc(T("这个时刻之前还算前一天的日记。按 24 小时制写：04:00、08:00、23:30 都行，只写一个数也行（4 = 04:00）。Agent Deck 等配套插件算「今天是哪一篇日记」时都跟着这一项", "Before this time it still counts as the previous day's note. Use 24-hour time: 04:00, 08:00 and 23:30 all work, or just a number (4 = 04:00). Companion plugins such as Agent Deck follow this setting when working out which note is today's"))
       .addText((t) => {
         t.setPlaceholder("04:00").setValue(fmtHourClock(s.dayCutoff ?? 4)).onChange(async (v) => {
           const h = parseHourClock(v);
@@ -10388,12 +10576,34 @@ class SpiralSettings extends PluginSettingTab {
       this.textSetting(containerEl, T("本机提醒的提示音", "Reminder sound on this Mac"), T("系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "A system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file; empty = silent"), "notifySound");
     }
     const options = this.advancedSettings(containerEl, T("提醒的高级选项", "Advanced reminder options"));
-    if (macOS) {
-      new Setting(options).setName(T("带按钮提醒的方式", "Interactive reminder style")).setDesc(T("默认通知：普通系统通知（点一下跳到日记那一行）；带按钮的系统通知：不抢焦点（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）", "Default notification: standard system notification (click to jump to the line). System notification with buttons: doesn't take focus (allow \"Nautilus Spiral\" to send notifications; to keep it on screen, set its style to Alerts in System Settings → Notifications → Nautilus Spiral)."))
-        .addDropdown((d) => d.addOption("dialog", T("默认通知", "Default notification")).addOption("notification", T("带按钮的系统通知（试验）", "System notification with buttons (experimental)")).setValue(s.askVia || "dialog")
-          .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
+    const savedWebhook = String(this.plugin.secret("discord-webhook") || "").trim();
+    const webhookSetting = new Setting(options)
+      .setName(T("Discord Webhook 提醒", "Discord webhook reminders"))
+      .setDesc(savedWebhook
+        ? T("已保存至系统钥匙串（不进 data.json）。不用你回答的提醒会发到该频道；需要点按钮的仍在本机弹窗。清空或点「清除」可停用", "Saved in system keychain (not in data.json). Non-interactive reminders post to this webhook; interactive ones still pop up locally. Clear to disable.")
+        : T("可选：填入频道 Webhook 地址，把不用你回答的提醒（自动暂停、主线提醒）发到 Discord；地址存系统钥匙串，不进 data.json。留空 = 仅本机提醒", "Optional: paste a Discord channel webhook URL to receive non-interactive reminders (auto-pause, mainline nudges); stored in your system keychain, never in data.json. Leave empty for local notifications only."))
+      .addText((t) => {
+        t.inputEl.type = "password";
+        t.setPlaceholder(savedWebhook ? "••••••••" : "https://discord.com/api/webhooks/…");
+        t.onChange((v) => {
+          const next = v.trim();
+          if (!next) { t.inputEl.removeClass("naut-bad-input"); return; }
+          const ok = isValidDiscordWebhook(next);
+          t.inputEl.toggleClass("naut-bad-input", !ok);
+          if (ok) this.plugin.secret("discord-webhook", next);
+        });
+      })
+      .addButton((b) => b.setButtonText(T("测试", "Test")).onClick(async () => {
+        if (!isValidDiscordWebhook(this.plugin.secret("discord-webhook"))) {
+          new OB.Notice(T("请先输入有效的 Discord Webhook URL", "Enter a valid Discord Webhook URL first"));
+          return;
+        }
+        const ok = await this.plugin.toDiscord(T("🌀 螺旋日程 · 测试提醒：Discord Webhook 已连通。", "🌀 Nautilus Spiral · test reminder: Discord webhook connected."));
+        new OB.Notice(ok ? T("已发送测试消息到 Discord", "Sent test message to Discord") : T("发送失败，请检查 Webhook URL 或网络", "Send failed; check your webhook URL or network"));
+      }));
+    if (savedWebhook) {
+      webhookSetting.addButton((b) => b.setButtonText(T("清除", "Clear")).onClick(() => { this.plugin.secret("discord-webhook", ""); this.display(); }));
     }
-    this.textSetting(options, T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停等）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, etc.) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
   }
 
   renderDisplay(containerEl) {
@@ -10414,8 +10624,15 @@ class SpiralSettings extends PluginSettingTab {
     containerEl.createEl("h3", { text: T("🎨 颜色", "🎨 Colors") });
     this.textSetting(containerEl, T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
     containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 黑……），不在这里改", "Colors of each kind of item on the spiral, the list and the progress bars. Agent sessions use each tool's own colors (Claude orange, Codex black…) and can't be changed here") });
-    const colorDesc = { main: T("块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", "Tasks whose block carries [#A], and the progress bar under mainline blocks in the editor"), event: T("日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", "Events with a time written in the daily note (calendar events use their calendar's color)"), task: T("其余待办", "All other to-dos"), prio: T("带重要标记的任务，也用在排不下、超时的提示上", "Tasks with an important marker; also used for won't-fit and overtime warnings"), review: T("做完的「复习卡片 N 张」", "Finished \"复习卡片 N 张\" (review N cards) tasks"), game: T("螺旋最里面一圈的游戏时间", "Gaming time on the innermost ring of the spiral") };
+    const colorDesc = {
+      main: T("块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", "Tasks whose block carries [#A], and the progress bar under mainline blocks in the editor"),
+      event: T("日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", "Events with a time written in the daily note (calendar events use their calendar's color)"),
+      task: T("其余待办", "All other to-dos"),
+      prio: T("带重要标记的任务，也用在排不下、超时的提示上", "Tasks with an important marker; also used for won't-fit and overtime warnings"),
+      game: T("螺旋最里面一圈的游戏时间", "Gaming time on the innermost ring of the spiral"),
+    };
     for (const [k, [name, d]] of Object.entries(COLORS)) {
+      if (k === "game" && !(OB.Platform?.isMacOS && s.trackGames)) continue;
       const set = async (v) => {
         s.colors = Object.assign({}, s.colors);
         if (v && v.toLowerCase() !== d) s.colors[k] = v; else delete s.colors[k];
@@ -10427,7 +10644,7 @@ class SpiralSettings extends PluginSettingTab {
     }
 
     containerEl.createEl("h3", { text: T("🎯 主线", "🎯 Mainline") });
-    new Setting(containerEl).setName(T("主线", "Mainline")).setDesc(T("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（日记整理把多出来的降成 [#B]）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上单独上色（默认大红，在上面「🎨 颜色」里改）；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate", "Tasks whose block carries [#A] (short form: todo a) are the day's mainline: at most 3 blocks a day, taken in note order (journal cleanup lowers the extra ones to [#B]). They're listed at the top of the panel, scheduled after DOING and before other to-dos, and get their own color on the spiral (red by default; change it under 🎨 Colors above). When no timer is running, the status bar shows the next mainline task. After the day cutoff, the previous day's completion rate is written into that note's properties mainline / mainline-rate"))
+    new Setting(containerEl).setName(T("主线", "Mainline")).setDesc(T("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（超出部分不计入主线）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上单独上色（默认大红，在上面「🎨 颜色」里改）；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate", "Tasks whose block carries [#A] (short form: todo a) are the day's mainline: at most 3 blocks a day, taken in note order (extras beyond 3 do not count as mainline). They're listed at the top of the panel, scheduled after DOING and before other to-dos, and get their own color on the spiral (red by default; change it under 🎨 Colors above). When no timer is running, the status bar shows the next mainline task. After the day cutoff, the previous day's completion rate is written into that note's properties mainline / mainline-rate"))
       .addToggle((t) => t.setValue(s.showMain !== false).onChange(async (v) => { s.showMain = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); this.plugin.refresh(); this.display(); }));
     if (s.showMain !== false) {
       this.textSetting(containerEl, T("主线提醒时刻", "Mainline reminder times"), T("到这几个时刻主线还没做完、手上也没在做主线，发一条提醒（和别的提醒一样：配了 Discord 发 Discord，没配在本机弹）。24 小时制，逗号分隔，空着 = 不提醒", "At these times, if the mainline isn't finished and you're not working on it, send a reminder (like other reminders: to Discord if configured, otherwise on this Mac). 24-hour time, comma-separated; empty = no reminders"), "mainNudge");
@@ -10462,10 +10679,19 @@ class SpiralSettings extends PluginSettingTab {
 
     if (OB.Platform?.isMacOS && OB.Platform?.isDesktopApp) {
       containerEl.createEl("h3", { text: T("🗓 macOS 小组件", "🗓 macOS widgets") });
-      new Setting(containerEl).setName(T("给小组件导出数据", "Export data for widgets")).setDesc(T("供配套的 macOS 主线和计划小组件读取", "Provides data to the companion macOS mainline and plan widgets"))
+      new Setting(containerEl).setName(T("给小组件导出数据", "Export data for widgets")).setDesc(T("导出 widgets.json 供 macOS 桌面小组件读取（需配合仓库 widgets/ 目录下的 Xcode 工程自编译 NautilusWidgets.app）", "Exports widgets.json for the companion macOS widgets (requires building NautilusWidgets.app from widgets/ in the repository via Xcode + XcodeGen)"))
         .addToggle((t) => t.setValue(!!s.widgets).onChange(async (v) => { s.widgets = v; this.plugin._widgetText = ""; await this.plugin.saveData(s); this.plugin.widgetTick(); this.display(); }));
       if (s.widgets) {
-        this.textSetting(containerEl, T("计划笔记", "Plan note"), T("甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "Which note the Gantt chart draws (vault path). Each list item with 🛫 start, ⏳ scheduled or 📅 due dates becomes a bar (the Tasks plugin's syntax); one with a single date becomes a dot on that day. The nearest heading above, or a top-level list item without dates, is a group; finished ones (DONE, [x], ✅ date) are drawn faded"), "widgetPlan");
+        new Setting(containerEl)
+          .setName(T("计划笔记", "Plan note"))
+          .setDesc(T("甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "Which note the Gantt chart draws (vault path). Each list item with 🛫 start, ⏳ scheduled or 📅 due dates becomes a bar (the Tasks plugin's syntax); one with a single date becomes a dot on that day. The nearest heading above, or a top-level list item without dates, is a group; finished ones (DONE, [x], ✅ date) are drawn faded"))
+          .addText((t) => t
+            .setPlaceholder(T("计划.md", "Plan.md"))
+            .setValue(s.widgetPlan)
+            .onChange(async (v) => { s.widgetPlan = v.trim(); await this.plugin.saveData(s); this.plugin.refresh(); }))
+          .addButton((b) => b
+            .setButtonText(T("选择文件", "Choose file"))
+            .onClick(() => new VaultTemplatePickerModal(this.app, async (f) => { s.widgetPlan = f.path; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }).open()));
       }
     }
   }
@@ -10518,13 +10744,17 @@ class SpiralSettings extends PluginSettingTab {
       }
     }
 
-    containerEl.createEl("h3", { text: T("游戏时间", "Gaming") });
-    new Setting(containerEl).setName(T("记录游戏时间", "Track gaming time")).setDesc(T("每分钟看一眼在不在玩，螺旋最里面一圈画一条细线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录", "Checks once a minute whether you're playing and draws a thin line on the innermost ring of the spiral; saved to game-log.json in the plugin folder. Only recorded while Obsidian is open"))
-      .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
-    if (s.trackGames !== false) {
-      const options = this.advancedSettings(containerEl, T("自定义游戏识别", "Customize game detection"));
-      this.textSetting(options, T("游戏进程关键词", "Game process keywords"), T("进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "Playing counts when a process path contains one of these, comma-separated; steamapps/common is recorded per game folder"), "gameProcs");
-      this.textSetting(options, T("在最前面才算的 App", "Apps that count only in front"), T("这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "These apps stay running in the background and count as gaming only when in front, e.g. the Steam client"), "gameFrontApps");
+    if (OB.Platform?.isMacOS && OB.Platform?.isDesktopApp) {
+      containerEl.createEl("h3", { text: T("游戏时间", "Gaming") });
+      new Setting(containerEl).setName(T("记录游戏时间", "Track gaming time")).setDesc(T("可选（仅 macOS）：每分钟按进程关键词检测是否在玩，并在螺旋最里圈画细线；记在插件目录的 game-log.json", "Optional (macOS only): checks running processes once a minute against your keywords and draws a thin line on the innermost ring; saved to game-log.json in the plugin folder"))
+        .addToggle((t) => t.setValue(Boolean(s.trackGames)).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
+      if (s.trackGames) {
+        const options = this.advancedSettings(containerEl, T("自定义游戏识别", "Customize game detection"));
+        this.textSetting(options, T("游戏进程关键词", "Game process keywords"), T("进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "Playing counts when a process path contains one of these, comma-separated; steamapps/common is recorded per game folder"), "gameProcs")
+          .components?.[0]?.setPlaceholder?.("steamapps/common, Minecraft");
+        this.textSetting(options, T("在最前面才算的 App", "Apps that count only in front"), T("这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "These apps stay running in the background and count as gaming only when in front, e.g. the Steam client"), "gameFrontApps")
+          .components?.[0]?.setPlaceholder?.("Steam");
+      }
     }
   }
 }
@@ -11158,4 +11388,4 @@ function decompress(dat, buf) {
   return decompress;
 })();
 
-module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, parseScheduleHour, fmtScheduleHour, formatScheduleDesc, sanitizeCustomPresets, allSchedulePresets, matchSchedulePreset, computeSpiralBounds, parseClockInput, resolveBoundInput, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt, SPIRAL_DEFAULT_JOURNAL_POLICY, normalizeSpiralJournalPolicy, spiralExtractHeadings, expandSpiralTemplateVars, detectObsidianDailyTemplatePath };
+module.exports.core = { detectJournal, formatRegex, openTasks, todoDone, mainOf, mainTask, markMain, mainNext, mainPips, MAIN_MAX, ganttOf, goalUnder, withProgress, stripProgress, stripProgressClean, stepProgressLine, advanceProgressLine, stripLinkUrls, ENG_RANGE_RE, parseEnglishRange, parseEnglishSingle, MIRROR_EMBED_RE, parseMirrorEmbed, applyMirrorLines, markDone, markUndone, planDone, parseHourClock, fmtHourClock, parseScheduleHour, fmtScheduleHour, formatScheduleDesc, sanitizeCustomPresets, allSchedulePresets, matchSchedulePreset, computeSpiralBounds, parseClockInput, resolveBoundInput, clock, clockDay, clockRange, dur, SCHEDULE_PRESETS, scheduleConflictHint, markOwner, parseJournal, parseDuration, parseProgress, applyWork, workKey, schedule, fill, fillAfter, normalize, toDoing, toDone, toTodo, toPaused, toKeyword, taskPriority, toPriority, prioShort, expandPriorityLine, findPriorityTokens, cycleUpNextStatus, UP_NEXT_MENU_GROUPS, UP_NEXT_PRIORITY_ITEMS, subtree, DEFAULTS, AiUsage, aiOn, aiPick, aiAgentName, aiAgentColor, dayAgentKeys, fmtTok, unionMin, capacity, capSummary, pastGaps, isAutoTask, formatTaskDur, formatTaskTip, dayReview, parseClock, GoogleCalendar, kwSnapshot, kwChanges, kwCue, kwLine, kwLineChange, aiStep, todoOf, tokUsed, linkLine, parseLink, linkUnder, SOUNDS, aiSegmentSessions, aiHoverSession, KW_STATUS, DECK_STATE_STATUS, taskStatus, statusCls, pomoMinutes, pomoTimeRange, pomoSplit, pomoFormatLeft, displayWidth, truncDisplay, msToNextMinute, formatSpiralLabel, layoutSpiralLabels, computeSpiralViewBox, pastDayComputeSig, pastDayRenderSig, SpiralView, SpiralReviewView, REVIEW_REASONS, extractCats, calibratedEstimate, buildPeriodReview, formatReviewMarkdown, formatReviewAiPrompt, SPIRAL_DEFAULT_JOURNAL_POLICY, normalizeSpiralJournalPolicy, spiralExtractHeadings, expandSpiralTemplateVars, detectObsidianDailyTemplatePath, WELCOME_GUIDE_FLOOR, WELCOME_GUIDE_PATH, parseVersionTuple, compareVersionTuple, shouldAutoOpenWelcomeGuide, buildWelcomeGuideMarkdown, isValidDiscordWebhook };

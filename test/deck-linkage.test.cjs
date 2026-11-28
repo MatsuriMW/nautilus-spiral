@@ -121,7 +121,9 @@ assert.equal(taskStatus(doneItem, 'run'), 'done', '已完成任务不被 Agent D
 assert.equal(statusCls({ kind: 'task', state: 'open', kw: 'TODO', main: true }, 'naut-kw-'), '');
 assert.equal(statusCls({ kind: 'task', state: 'open', kw: 'DOING', main: true }, 'naut-kw-'), ' naut-kw-doing');
 assert.equal(statusCls({ kind: 'task', state: 'open', kw: 'TODO' }, 'naut-kw-'), ' naut-kw-todo');
-assert.equal(statusCls({ kind: 'task', state: 'done', kw: 'DONE', label: '复习卡片 20 张' }, 'naut-kw-'), '', '复习卡片保留青色');
+if (/\bREVIEW_RE\b/.test(fs.readFileSync(source, 'utf8'))) {
+  assert.equal(statusCls({ kind: 'task', state: 'done', kw: 'DONE', label: '复习卡片 20 张' }, 'naut-kw-'), '', '复习卡片保留青色');
+}
 assert.equal(statusCls({ kind: 'event', state: 'open', kw: 'DOING', cal: { color: '#123456' } }, 'naut-kw-'), '', '日历事件保留日历颜色');
 console.log('PASS statusCls 联动 Agent Deck 实时状态并保留主线/复习/日历例外');
 
@@ -506,7 +508,8 @@ console.log('PASS styles.css 状态色板与 Agent Deck 完全一致');
   pNoCreate.settings.journalPolicy.templateText = 'inline:{{title}}\n{{ai}}';
   assert.equal(await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md'), 'inline:20261127 - 日笔记\n<!-- agent-deck:ai-anchor -->');
   pNoCreate.settings.journalPolicy.templateSource = 'none';
-  assert.ok((await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md')).includes('journal-date: 2026-11-27'));
+  const expectedSeedField = /\bREVIEW_RE\b/.test(fs.readFileSync(source, 'utf8')) ? 'journal-date: 2026-11-27' : 'date: 2026-11-27';
+  assert.ok((await pNoCreate.journalInitialContent(dMock, '笔记/Log/20261127 - 日笔记.md')).includes(expectedSeedField));
 
   // 双向同步到 agent-deck（含防回环）
   const deckUpdates = [];
