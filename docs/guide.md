@@ -161,6 +161,10 @@ The definitions follow Nautilus Log on Roam. Two lines:
 
 The list under the spiral is grouped: Fixed events, Up next, Won't fit, ⏸ On hold, Worked on · moved away, Done. Click any row to jump to its place in the note.
 
+### See the spiral in a daily note
+
+Run **Insert spiral chart into daily note**, or add an empty fenced code block with `nautilus-spiral` as its language. Reading view and Live Preview show the note's schedule. Click a segment or focus it with Tab and press Enter to jump to the task or event.
+
 ## Start working on a task
 
 There is no separate "Start" button: making a task `DOING` in the note is starting it.
@@ -396,7 +400,7 @@ It uses your own OAuth client; the plugin ships no shared key. Set it up once, a
 2. Under "APIs & Services → Library", search for Google Calendar API and click "Enable".
 3. "APIs & Services → OAuth consent screen": choose "External" as the user type, fill in the app name and your email; add your own Google account under "Test users".
 4. "APIs & Services → Credentials → Create credentials → OAuth client ID": choose **Desktop app** as the application type. You get a client ID and a client secret.
-5. Back in Obsidian: Settings → Nautilus Spiral → Google Calendar, turn on "Read Google Calendar", enter the client ID and secret, and click "Connect". The browser opens Google's sign-in; pick the account, allow "See your calendar", and once the page says "Connected" you can close it.
+5. In Nautilus Spiral settings, open "Calendars & reminders" and find "Google Calendar". Turn on "Read Google Calendar", enter the client ID and secret, and click "Connect". In the browser, pick your account and allow "See your calendar". Close the page when it says "Connected".
 
 After that it behaves like macOS Calendar:
 
@@ -449,11 +453,15 @@ These modules can all be turned off in settings:
 
 ## Settings
 
+Use the tabs at the top to switch between Schedule & daily notes, Calendars & reminders, Display & timing, and Agents & activity. Select an item in On this page to jump to that section. The current section is highlighted as you scroll.
+
+Toggle outer labels in the spiral toolbar. Label length adjusts to the available space. Expand the corresponding group to adjust options such as progress increments, the estimate calibration range, timer alerts, or game detection.
+
 | Setting | Default | Notes |
 |---|---|---|
 | Day starts at | 8 | Where the spiral begins |
-| Day ends at | 32 | Where the spiral and the schedule stop; over 24 means after midnight (32 = 8 AM the next day) |
-| Daily note cutoff | 08:00 | Before this time it still counts as the previous day's note. 24-hour time (`08:00`, `4:30`); a single number works too |
+| Day ends at | 04:00 the next day | Where the spiral and the schedule stop. You can also enter 28 |
+| Daily note cutoff | 04:00 | Earlier times still count toward the previous day's note. Use 24-hour time or enter an hour as a number |
 | Default task length | 15 minutes | Tasks without a duration use this |
 | Find the daily note automatically | On | Follows your Obsidian *Daily notes* (or *Periodic Notes*) folder and format; with neither installed it scans the vault for the commonest date-named pattern that is still being written. Turn it off, or fill in *Daily note folder* / *file name format*, to set it yourself (moment.js syntax) |
 | Important markers | `[[important]], [[重要]], ⭐, ‼️` | Comma-separated |

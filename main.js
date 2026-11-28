@@ -77,7 +77,6 @@ const DEFAULTS = {
   hideDoneOnSpiral: false, // 螺旋上隐藏已完成段落（不改日记、不影响列表与复盘）
   spiralCollapsed: false,  // 折叠螺旋图区域，只保留容量条、番茄钟与任务列表
   showSpiralLabels: "auto",// 螺旋外圈引导线标签："auto"（宽屏 ≥ 520px 自动显示）| "on" | "off"
-  spiralLabelMaxCols: 18,  // 外圈标签最大显示宽（14–28，1 个中文 = 2 列）
   progressStep: 25,        // 快捷推进/回退进度步进（10 或 25）
   respectEventOrder: false,// 按日记中固定事件的先后顺序排程：事件下方的未开始待办不排到该事件结束之前（默认关）
   customSchedulePresets: [], // 用户自定义作息预设：[{ id, name, dayStart, dayEnd, dayCutoff }]
@@ -1041,6 +1040,7 @@ function pastDayComputeSig({ dayKey, content, cfg, cal, mirrorSig = "" }) {
     cfg.dayEnd,
     cfg.dayCutoff,
     cfg.defaultDur,
+    cfg.priorityMarkers,
     cfg.showMain !== false,
     !!cfg.respectEventOrder,
     mirrorSig || "",
@@ -1061,7 +1061,6 @@ function pastDayRenderSig({ computeSig, cfg, aiDay, gameDay, deckCount, wideLabe
     !!cfg.hideDoneOnSpiral,
     !!cfg.spiralCollapsed,
     cfg.showSpiralLabels || "auto",
-    cfg.spiralLabelMaxCols || 18,
     cfg.progressStep || 25,
     !!wideLabels,
     cfg.customSchedulePresets || null,
@@ -4582,6 +4581,7 @@ const displayWidth = (s) => {
   return w;
 };
 function truncDisplay(s, maxCols = 20) {
+  if (maxCols === Infinity) return String(s || "");
   let out = "", w = 0;
   for (const ch of String(s || "")) {
     const cw = (ch.codePointAt(0) || 0) > 255 ? 2 : 1;
@@ -4590,6 +4590,42 @@ function truncDisplay(s, maxCols = 20) {
     w += cw;
   }
   return out;
+}
+const spiralGraphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const fallbackSpiralMeasure = (text, kind) => displayWidth(text) * (kind === "title" ? 5.88 : 4.68);
+function truncateSpiralText(text, width, measure) {
+  if (measure(text) <= width) return text;
+  if (measure("…") > width) return "";
+  const parts = [...spiralGraphemes.segment(text)];
+  let lo = 0, hi = parts.length - 1;
+  while (lo < hi) {
+    const n = Math.ceil((lo + hi) / 2);
+    if (measure(text.slice(0, parts[n].index) + "…") <= width) lo = n;
+    else hi = n - 1;
+  }
+  return text.slice(0, parts[lo].index) + "…";
+}
+
+function measureSpiralLabels(labels) {
+  const probes = svgEl("g", { visibility: "hidden", "aria-hidden": "true" }, labels);
+  const nodes = {
+    title: svgEl("text", { class: "naut-label-text" }, probes),
+    meta: svgEl("text", { class: "naut-label-meta" }, probes),
+    duration: svgEl("text", { class: "naut-label-dur" }, probes),
+  };
+  const widths = new Map();
+  // 标题悬停时变粗，提前给更宽的字留位置。
+  nodes.title.style.fontWeight = "600";
+  return (text, kind) => {
+    if (!text) return 0;
+    const key = kind + "\0" + text;
+    if (widths.has(key)) return widths.get(key);
+    const node = nodes[kind];
+    node.textContent = text;
+    const width = node.getComputedTextLength?.() || fallbackSpiralMeasure(text, kind);
+    widths.set(key, width);
+    return width;
+  };
 }
 function msToNextMinute(nowMs = Date.now()) {
   return Math.max(250, 60000 - (nowMs % 60000) + 50);
@@ -4623,7 +4659,7 @@ function formatSpiralLabel(entry, maxCols = 18, compact = false) {
   return { text, meta, durText: inlineDur, isAi, isMirror };
 }
 function layoutSpiralLabels(entries, opts = {}) {
-  const { cx = 160, cy = 160, padY = 48, fontSize = 10.5, maxCols = 18, maxLabels = 10 } = opts;
+  const { cx = 160, cy = 160, padY = 48, maxLabels = 10, measure = fallbackSpiralMeasure } = opts;
   if (!Array.isArray(entries) || !entries.length) return [];
   const bestByItem = new Map();
   for (const e of entries) {
@@ -4645,7 +4681,6 @@ function layoutSpiralLabels(entries, opts = {}) {
     else counts.right++;
   }
   const bothSides = counts.left > 0 && counts.right > 0;
-  const effCols = bothSides ? Math.min(Number(maxCols) || 18, 12) : (Number(maxCols) || 18);
   const padX = opts.padX ?? (bothSides ? 124 : 148);
   const maxBoxW = bothSides ? 116 : 148;
   const minY = cy - 160 - padY + 4, maxY = cy + 160 + padY - 4;
@@ -4672,13 +4707,15 @@ function layoutSpiralLabels(entries, opts = {}) {
     const side = atVertex ? "vertex" : (onLeft ? "left" : "right");
     const hasRichMeta = (e.start != null && e.end != null) || (e.totalDur > 0) || e.isAi || (e.progress > 0 && e.progress < 1);
     const wantCompact = (counts[side] > 5) || !hasRichMeta;
-    const fmt = formatSpiralLabel(e, effCols, wantCompact);
+    const fmt = formatSpiralLabel(e, Infinity, wantCompact);
     const compact = wantCompact || !fmt.meta;
     const h = compact ? 16 : 27;
     const gapY = compact ? 3 : 5;
-    const line1W = displayWidth(fmt.text + (fmt.durText ? `  ${fmt.durText}` : "")) * (fontSize * 0.56);
-    const line2W = !compact && fmt.meta ? displayWidth(fmt.meta) * (8.6 * 0.52) : 0;
-    const w = Math.min(maxBoxW, Math.max(52, Math.max(line1W, line2W) + 14));
+    const textWidth = maxBoxW - 14;
+    const durWidth = fmt.durText ? measure(`\u00a0\u00a0${fmt.durText}`, "duration") : 0;
+    fmt.text = truncateSpiralText(fmt.text, textWidth - durWidth, (s) => measure(s, "title"));
+    fmt.meta = truncateSpiralText(fmt.meta, textWidth, (s) => measure(s, "meta"));
+    const w = Math.max(52, Math.max(measure(fmt.text, "title") + durWidth, measure(fmt.meta, "meta")) + 14);
     const rIdeal = Math.max(168, (e.segR ?? 141) + 28);
     const xForY = (yPos) => {
       const yc = yPos + h / 2;
@@ -4760,6 +4797,128 @@ function computeSpiralViewBox(placedLabels, opts = {}) {
   const w = Math.max(320, maxX - minX);
   const h = Math.max(320, maxY - minY);
   return { x: minX, y: minY, w, h, viewBox: `${minX} ${minY} ${w} ${h}`, maxWidth: Math.min(640, Math.max(340, Math.ceil(w))) };
+}
+
+function spiralGeometry(S, E) {
+  const size = 320, c = size / 2, R0 = 141, R1 = 41;
+  const ang = (t) => ((t / 60) % 12) / 12 * Math.PI * 2 - Math.PI / 2;
+  const rad = (t) => R0 - (R0 - R1) * (Math.min(Math.max(t, S), E) - S) / (E - S);
+  const pt = (t, dr = 0) => [c + (rad(t) + dr) * Math.cos(ang(t)), c + (rad(t) + dr) * Math.sin(ang(t))];
+  const arc = (a, b, dr = 0) => {
+    a = Math.max(a, S); b = Math.min(b, E);
+    if (b <= a) return null;
+    // 每 2 分钟左右取一个点，匀着分：最后一小截不会特别短，线段两头切出来的口子才是正的
+    const n = Math.max(1, Math.ceil((b - a) / 2));
+    let d = "";
+    for (let i = 0; i <= n; i++) d += (i ? " L " : "M ") + pt(a + (b - a) * i / n, dr).map((v) => v.toFixed(2)).join(" ");
+    return d;
+  };
+  return { size, c, ang, rad, pt, arc };
+}
+
+const SPIRAL_LANES = [0, 4, -4, 7.5, -7.5, 10.5];
+function spiralSegmentPath(a, b, laneOffset, rad, arc) {
+  // 给够长的相邻色块留一道缝。
+  const k = 2 * Math.PI * rad((a + b) / 2) / 720;
+  const gap = (b - a) * k > 6 ? 0.8 / k : 0;
+  return arc(a + gap, b - gap, laneOffset);
+}
+
+function spiralTaskSpans(items, plan, orphans, playing = false) {
+  return [
+    ...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
+    ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => playing ? (t._fullSegments || t.segments || []) : (t.segments || [])),
+    ...plan.queue.flatMap((t) => t.segments || []),
+    ...plan.suspended.flatMap((t) => t.worked || []),
+    ...orphans.flatMap((o) => o.segs || []),
+    ...items.filter((i) => i.kind === "log").map((l) => [l.start, l.start]),
+  ];
+}
+
+function forEachSpiralSegment(items, plan, orphans, { hideDone, playing, now, dayRel }, drawSeg) {
+  const shallowTop = (arr) => [...arr].sort((a, b) => (b.indent || 0) - (a.indent || 0));
+  const altTasks = new Set(plan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).filter((_, idx) => idx % 2 === 1));
+  const altEvents = new Set(items.filter((i) => i.kind === "event" && i.state !== "done" && !i.cal).sort((a, b) => a.start - b.start).filter((_, idx) => idx % 2 === 1));
+  for (const o of orphans) for (const [a, b] of o.segs) drawSeg(a, b, "naut-task naut-worked", o);
+  for (const t of shallowTop(plan.suspended)) for (const [a, b] of t.worked || []) drawSeg(a, b, "naut-task naut-worked", t);
+  if (!hideDone) {
+    for (const t of shallowTop(items.filter((i) => i.kind === "task" && i.state === "done"))) {
+      const segs = playing ? (t._fullSegments || t.segments || []) : (t.segments || []);
+      for (const [a, b] of segs) {
+        const b1 = playing ? Math.min(b, now) : b;
+        if (b1 > a) drawSeg(a, b1, isReview(t) ? "naut-done naut-review" : t.mainA ? "naut-done naut-main-done" : "naut-done", t);
+      }
+    }
+  }
+  // 没做完的：做过的几段画在底层，固定事件居中，正在做与后续排程画在最上层（每层内母块压在子块之上）
+  for (const t of shallowTop(plan.queue)) t.segments.forEach(([a, b], i) => {
+    if (i < t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + " naut-worked", t);
+  });
+  const evs = shallowTop(items.filter((i) => i.kind === "event"));
+  if (!hideDone) for (const e of evs) if (e.state === "done") drawSeg(e.start, e.end, "naut-event naut-done-event", e);
+  for (const e of evs) if (e.state !== "done") {
+    const expCls = dayRel === 0 && e.end <= now ? " naut-expired-event" : "";
+    const altCls = altEvents.has(e) ? " naut-alt" : "";
+    drawSeg(e.start, e.end, (e.prio ? "naut-prio" : "naut-event") + expCls + altCls, e);
+  }
+  for (const t of shallowTop(plan.queue)) t.segments.forEach(([a, b], i) => {
+    if (i >= t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + (t.doing && dayRel === 0 ? " naut-live" : "") + (altTasks.has(t) ? " naut-alt" : ""), t);
+  });
+}
+
+function drawEmbeddedSpiral(host, plugin, file, date, data, { now, dayRel, bounds }) {
+  const cfg = plugin.settings;
+  const { items, plan, orphans } = data;
+  const { S, E, S1, E1 } = computeSpiralBounds(cfg, bounds, spiralTaskSpans(items, plan, orphans));
+  const { c, size, arc, pt, rad } = spiralGeometry(S, E);
+  host.empty();
+  const svg = svgEl("svg", {
+    class: "naut-svg",
+    viewBox: `0 0 ${size} ${size}`,
+    role: "group",
+    "aria-label": T("螺旋日程", "Nautilus Spiral"),
+  }, host);
+  svgEl("path", { d: arc(S1, E1), class: "naut-track" }, svg);
+  if (S1 > S) svgEl("path", { d: arc(S, S1), class: "naut-off" }, svg);
+  if (E1 < E) svgEl("path", { d: arc(E1, E), class: "naut-off" }, svg);
+
+  forEachSpiralSegment(items, plan, orphans, { now, dayRel, hideDone: cfg.hideDoneOnSpiral }, (a, b, cls, item) => {
+    const d = spiralSegmentPath(a, b, SPIRAL_LANES[item.lane] ?? 0, rad, arc);
+    if (!d) return;
+    const label = `${clockRange(a, b)} · ${workKey(item.label)}`;
+    const segment = svgEl("path", { d, class: `naut-seg ${cls}${statusCls(item, "naut-kw-")}` }, svg);
+    svgEl("title", {}, segment).textContent = label;
+    if (item.cal?.color) segment.style.stroke = item.cal.color;
+    if (!item.kind || (item.line == null || item.line < 0) && !item.cal) return;
+    segment.setAttribute("role", "link");
+    segment.setAttribute("tabindex", "0");
+    segment.setAttribute("aria-label", label);
+    const open = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let leaf;
+      plugin.app.workspace.iterateAllLeaves((candidate) => {
+        if (candidate.view?.containerEl?.contains(host)) leaf = candidate;
+      });
+      plugin.openItem(file, item, leaf);
+    };
+    segment.onclick = open;
+    segment.onkeydown = (e) => { if (e.key === "Enter") open(e); };
+  });
+
+  for (let minute = Math.ceil(S / 60) * 60; minute <= E; minute += 60) {
+    const [x, y] = pt(minute, 12);
+    svgEl("text", { x, y, class: "naut-hour" }, svg).textContent = `${Math.floor(minute / 60) % 24}`;
+  }
+  if (dayRel === 0 && now >= S && now <= E) {
+    const [x, y] = pt(now);
+    svgEl("circle", { cx: x, cy: y, r: 3.5, class: "naut-now-dot" }, svg);
+  }
+  svgEl("text", { x: c, y: c - 5, class: "naut-center" }, svg).textContent = dayRel === 0 ? clock(now) : date.format("M/D");
+  if (dayRel >= 0) {
+    const { status } = capacity(items, plan, cfg, now, dayRel, bounds);
+    svgEl("text", { x: c, y: c + 12, class: "naut-center-sub" }, svg).textContent = `${status.label} ${dur(status.value)}`;
+  }
 }
 
 class SpiralView extends ItemView {
@@ -4850,7 +5009,14 @@ class SpiralView extends ItemView {
   _clearPomoTimer() {
     if (this._pomoTimer) { window.clearInterval(this._pomoTimer); this._pomoTimer = null; }
   }
-  async onClose() { this._ro?.disconnect(); this._ro = null; clearTimeout(this._roTimer); this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); this._lastPastRenderKey = null; }
+  async onClose() {
+    this._renderSeq = (this._renderSeq || 0) + 1;
+    this._ro?.disconnect(); this._ro = null;
+    clearTimeout(this._roTimer);
+    clearTimeout(this._hoverClose);
+    this._hoverListeners?.abort(); this._hoverListeners = null;
+    this._clearPomoTimer(); this._hideDotTip(); this.stopPlay(); this._lastPastRenderKey = null;
+  }
 
   date() { return this.plugin.today().add(this.offset, "days"); }
   path() { return this.plugin.journalPath(this.date()); }
@@ -4880,7 +5046,7 @@ class SpiralView extends ItemView {
     const gameDayRaw = (gameLog && gameLog.days[dayKey]) || null;
     const deckBindings = file instanceof TFile ? this.plugin.deckJournalBindings(dayKey, file.path) : null;
     const containerW = root.clientWidth || this.containerEl?.clientWidth || 0;
-    const wideLabels = cfg.showSpiralLabels === "on" || (cfg.showSpiralLabels !== "off" && containerW >= 520);
+    const wideLabels = this.plugin.debugSpiralLabels || cfg.showSpiralLabels === "on" || (cfg.showSpiralLabels !== "off" && containerW >= 520);
     const computeSig = isPastStatic && effContent != null ? pastDayComputeSig({ dayKey, content: effContent, cfg, cal: calSnap, mirrorSig: mirrored?.sig || "" }) : null;
     const pastRenderKey = isPastStatic && computeSig != null
       ? pastDayRenderSig({ computeSig, cfg, aiDay: aiDayRaw, gameDay: gameDayRaw, deckCount: deckBindings ? deckBindings.size : 0, wideLabels })
@@ -4889,6 +5055,7 @@ class SpiralView extends ItemView {
     if (pastRenderKey && !force && !this._enter && this._lastPastRenderKey === pastRenderKey && root.childElementCount > 0) return;
     this._lastPastRenderKey = pastRenderKey;
     clearTimeout(this._hoverClose);
+    this._hoverListeners?.abort(); this._hoverListeners = null;
     this._clearPomoTimer();
     this._hideDotTip();
     root.empty();
@@ -4978,46 +5145,9 @@ class SpiralView extends ItemView {
     if (cachedDay && cachedDay.sig === computeSig) {
       ({ items, M, cal, orphans, plan } = cachedDay);
     } else {
-      items = parseJournal(effContent, cfg);
-      if (mirrorMap.size) {
-        for (const it of items) {
-          const mr = mirrorMap.get(it.line);
-          if (mr) it.mirror = mr;
-        }
-      }
-      M = mainOf(cfg.showMain !== false ? effContent : "");
-      markMain(items, M);   // 主线块里的任务排程时排在 DOING 后面，螺旋上换主线的颜色
-      cal = this.plugin.withCalendar(items, date);   // macOS 日历里的事件并进来当固定事件
-      const done = cfg.doneTimes[dayKey] || {};
-      orphans = applyWork(items, cfg, dayKey, realNow, realRel, bounds);   // 这天做过、但任务行已经挪走的
-
-      for (const t of items) {
-        if (t.kind === "task" && t.state === "done") {
-          // 完成时间的来源，按可信度：DONE 后面手写的时间 > **07:37** 时间戳 > 插件看到它变成 DONE 的时刻
-          const at = t.doneAt ?? t.stamp ?? done[t.label];
-          // 没写时长、但记到了做的时段：时长按实际做的算（含前几天做掉的）
-          const spent = t.spentToday + t.spentBefore;
-          if (!t.explicitDur && !t.actual && spent >= 1) t.dur = Math.round(spent);
-          t.doneAt = at ?? (t.worked.length ? t.worked.at(-1)[1] : null);
-          // 画在哪：记下来的那几段「进行中」+ DONE 14:00-15:30 写的时段（任务归位插件写的只是最后一段，中断之前的几段在记录里）
-          //        都没有就用完成时刻往前推一个时长
-          if (t.actual && t.worked.length) {
-            const all = [...t.worked, t.actual].sort((a, b) => a[0] - b[0]);
-            t.segments = [];
-            for (const [a, b] of all) { const last = t.segments.at(-1); if (last && a <= last[1]) last[1] = Math.max(last[1], b); else t.segments.push([a, b]); }
-            t.dur = Math.round(unionMin(t.segments) + t.spentBefore);
-          } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(0, at - t.dur), at]] : [];
-          if (playing) t._fullSegments = (t.segments || []).map(([a, b]) => [a, b]);
-        } else if (playing && t.worked) {
-          t._fullWorked = t.worked.map(([a, b]) => [a, b]);
-        }
-      }
-      if (playing) {
-        for (const o of orphans) o._fullSegs = o.segs.map(([a, b]) => [a, b]);
-        for (const t of items) if (t._fullWorked) { t.worked = t._fullWorked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
-        for (const o of orphans) if (o._fullSegs) o.segs = o._fullSegs.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a);
-      }
-      plan = schedule(items, cfg, now, dayRel, bounds);
+      ({ items, M, cal, orphans, plan } = this.plugin.prepareSpiralDay(file, date, {
+        content: effContent, mirrorMap, dayKey, realNow, realRel, now, dayRel, bounds, playing,
+      }));
 
       if (isPastStatic && computeSig != null && this.plugin.pastDayCache) {
         this.plugin.pastDayCache.delete(dayKey);
@@ -5284,10 +5414,11 @@ class SpiralView extends ItemView {
     hover.addEventListener("mouseleave", leaveHover);
     hover.addEventListener("focusin", () => clearTimeout(this._hoverClose));
     hover.addEventListener("focusout", (e) => { if (!hover.contains(e.relatedTarget)) leaveHover(); });
-    root.addEventListener("keydown", (e) => { if (e.key === "Escape" && (hover.hasClass("is-pinned") || hover.hasClass("is-expanded"))) clearHover(true); });
+    const hoverListeners = (this._hoverListeners = new AbortController());
+    root.addEventListener("keydown", (e) => { if (e.key === "Escape" && (hover.hasClass("is-pinned") || hover.hasClass("is-expanded"))) clearHover(true); }, { signal: hoverListeners.signal });
     root.addEventListener("click", (e) => {
       if ((hover.hasClass("is-pinned") || hover.hasClass("is-expanded")) && !hover.contains(e.target) && !e.target.closest?.(".naut-hit")) clearHover(true);
-    });
+    }, { signal: hoverListeners.signal });
     const hov = (el, time, text, sub) => {
       el.addEventListener("mouseenter", () => {
         if (hover.hasClass("is-expanded") || hover.hasClass("is-pinned")) return;
@@ -5312,12 +5443,7 @@ class SpiralView extends ItemView {
     const activePomo = dayRel === 0 && !playing && cfg.pomodoro?.active && cfg.pomodoro.active.dayKey === dayKey ? cfg.pomodoro.active : null;
     const activePomoRange = activePomo ? pomoTimeRange(activePomo, cfg) : null;
     const daySpans = [
-      ...items.filter((i) => i.kind === "event").map((e) => [e.start, e.end]),
-      ...items.filter((i) => i.kind === "task" && i.state === "done").flatMap((t) => playing ? (t._fullSegments || t.segments || []) : (t.segments || [])),
-      ...plan.queue.flatMap((t) => t.segments || []),
-      ...plan.suspended.flatMap((t) => t.worked || []),
-      ...orphans.flatMap((o) => o.segs || []),
-      ...items.filter((i) => i.kind === "log").map((l) => [l.start, l.start]),
+      ...spiralTaskSpans(items, plan, orphans, playing),
       ...pomoHistItems.map((x) => x.r),
       ...(activePomoRange ? [activePomoRange] : []),
       ...(ai ? ai.segs || [] : []),
@@ -5326,19 +5452,7 @@ class SpiralView extends ItemView {
     const { S, E } = computeSpiralBounds(cfg, bounds, daySpans);
 
     // 螺旋
-    const size = 320, c = size / 2, R0 = 141, R1 = 41;
-    const ang = (t) => ((t / 60) % 12) / 12 * Math.PI * 2 - Math.PI / 2;
-    const rad = (t) => R0 - (R0 - R1) * (Math.min(Math.max(t, S), E) - S) / (E - S);
-    const pt = (t, dr = 0) => [c + (rad(t) + dr) * Math.cos(ang(t)), c + (rad(t) + dr) * Math.sin(ang(t))];
-    const arc = (a, b, dr = 0) => {
-      a = Math.max(a, S); b = Math.min(b, E);
-      if (b <= a) return null;
-      // 每 2 分钟左右取一个点，匀着分：最后一小截不会特别短，线段两头切出来的口子才是正的
-      const n = Math.max(1, Math.ceil((b - a) / 2));
-      let d = "";
-      for (let i = 0; i <= n; i++) d += (i ? " L " : "M ") + pt(a + (b - a) * i / n, dr).map((v) => v.toFixed(2)).join(" ");
-      return d;
-    };
+    const { size, c, ang, rad, pt, arc } = spiralGeometry(S, E);
     const showLabels = !playing && wideLabels;
     svg = svgEl("svg", {
       viewBox: showLabels ? "-135 -40 590 400" : `0 0 ${size} ${size}`,
@@ -5506,8 +5620,6 @@ class SpiralView extends ItemView {
       hov(fat(d, vis), `${clock(a)}–${clock(b)} · ${dur(b - a)}`, T(`🃏 复习卡片 ${revN(t)} 张`, `🃏 Review ${revN(t)} cards`));
     }
     const pStep = Number(cfg.progressStep) || 25;
-    const LANE = [0, 4, -4, 7.5, -7.5, 10.5];   // 并行的几件 DOING 各画一条线，沿螺旋错开一点
-    const perMin = (t) => 2 * Math.PI * rad(t) / 720;   // 这一圈上一分钟有几个像素
     const segsG = svgEl("g", { class: "naut-segs-g" }, svg);
     const labelsG = showLabels ? svgEl("g", { class: "naut-labels-g" }, svg) : null;
     const labelSegsByItem = new Map();
@@ -5520,9 +5632,8 @@ class SpiralView extends ItemView {
       return st ? `is-kw-${st}` : "is-task";
     };
     const drawSeg = (a, b, cls, item) => {
-      // 够长的段两头各让出 0.8 像素，挨着的两段之间留一条缝；太短的不让，免得缩没了
-      const k = perMin((a + b) / 2), gap = (b - a) * k > 6 ? 0.8 / k : 0;
-      const d = arc(a + gap, b - gap, LANE[item.lane || 0] ?? 0);
+      const laneOffset = SPIRAL_LANES[item.lane] ?? 0;
+      const d = spiralSegmentPath(a, b, laneOffset, rad, arc);
       if (!d) return;
       const p = late(svgEl("path", { d, class: `naut-seg ${cls}${statusCls(item, "naut-kw-", deckStateOf(item))}`, pathLength: 1 }, segsG), a);
       if (item.cal && item.cal.color) p.style.stroke = item.cal.color;   // 日历事件用日历自己的颜色
@@ -5534,7 +5645,7 @@ class SpiralView extends ItemView {
       if (showLabels && (item.kind === "task" || item.kind === "event") && item.label) {
         let recs = labelSegsByItem.get(item);
         if (!recs) labelSegsByItem.set(item, recs = []);
-        recs.push({ a, b, laneOff: LANE[item.lane || 0] ?? 0 });
+        recs.push({ a, b, laneOff: laneOffset });
       }
       const rel = aiOf(item).filter((x) => x.related);
       // 做这段时是哪个会话在干活；会话明细已经没了的（过了十几天），按日记里 ⏱ 那一行写的是谁记的
@@ -5563,38 +5674,10 @@ class SpiralView extends ItemView {
         p.addEventListener("contextmenu", (e) => this.openDoneMenu(e, file, item, { header }));
       }
     };
-    const shallowTop = (arr) => [...arr].sort((a, b) => (b.indent || 0) - (a.indent || 0));
     paintSegs = (curPlan, simNow) => {
       segsG.replaceChildren();
       labelSegsByItem.clear();
-      const hideDone = !!cfg.hideDoneOnSpiral;
-      const altTasks = new Set(curPlan.queue.filter((t) => t.segments.length > t.workedN).sort((a, b) => a.segments[a.workedN][0] - b.segments[b.workedN][0]).filter((_, idx) => idx % 2 === 1));
-      const altEvents = new Set(items.filter((i) => i.kind === "event" && i.state !== "done" && !i.cal).sort((a, b) => a.start - b.start).filter((_, idx) => idx % 2 === 1));
-      for (const o of orphans) for (const [a, b] of o.segs) drawSeg(a, b, "naut-task naut-worked", o);
-      for (const t of shallowTop(curPlan.suspended)) for (const [a, b] of t.worked || []) drawSeg(a, b, "naut-task naut-worked", t);
-      if (!hideDone) {
-        for (const t of shallowTop(items.filter((i) => i.kind === "task" && i.state === "done"))) {
-          const segs = playing ? (t._fullSegments || t.segments || []) : (t.segments || []);
-          for (const [a, b] of segs) {
-            const b1 = playing ? Math.min(b, simNow) : b;
-            if (b1 > a) drawSeg(a, b1, isReview(t) ? "naut-done naut-review" : t.mainA ? "naut-done naut-main-done" : "naut-done", t);
-          }
-        }
-      }
-      // 没做完的：做过的几段画在底层，固定事件居中，正在做与后续排程画在最上层（每层内母块压在子块之上）
-      for (const t of shallowTop(curPlan.queue)) t.segments.forEach(([a, b], i) => {
-        if (i < t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + " naut-worked", t);
-      });
-      const evs = shallowTop(items.filter((i) => i.kind === "event"));
-      if (!hideDone) for (const e of evs) if (e.state === "done") drawSeg(e.start, e.end, "naut-event naut-done-event", e);
-      for (const e of evs) if (e.state !== "done") {
-        const expCls = dayRel === 0 && e.end <= simNow ? " naut-expired-event" : "";
-        const altCls = altEvents.has(e) ? " naut-alt" : "";
-        drawSeg(e.start, e.end, (e.prio ? "naut-prio" : "naut-event") + expCls + altCls, e);
-      }
-      for (const t of shallowTop(curPlan.queue)) t.segments.forEach(([a, b], i) => {
-        if (i >= t.workedN) drawSeg(a, b, (t.main ? "naut-main" : t.prio ? "naut-prio" : "naut-task") + (t.doing && dayRel === 0 ? " naut-live" : "") + (altTasks.has(t) ? " naut-alt" : ""), t);
-      });
+      forEachSpiralSegment(items, curPlan, orphans, { hideDone: cfg.hideDoneOnSpiral, playing, now: simNow, dayRel }, drawSeg);
       if (labelsG) {
         labelsG.replaceChildren();
         const labelCands = [];
@@ -5634,11 +5717,14 @@ class SpiralView extends ItemView {
             prioWeight: item.doing ? 4 : item.main ? 3 : item.kind === "event" ? 2 : item.state === "open" ? 1 : 0,
           });
         }
-        const placed = layoutSpiralLabels(labelCands, { cx: c, cy: c, maxCols: Number(cfg.spiralLabelMaxCols) || 18 });
+        const measure = measureSpiralLabels(labelsG);
+        const placed = layoutSpiralLabels(labelCands, { cx: c, cy: c, measure });
+        labelsG.replaceChildren();
         const vb = computeSpiralViewBox(placed);
         svg.setAttribute("viewBox", vb.viewBox);
         svg.style.maxWidth = `${vb.maxWidth}px`;
         for (const lb of placed) {
+          if (this.plugin.debugSpiralLabels) svgEl("rect", { x: lb.x, y: lb.y, width: lb.w, height: lb.h, class: "naut-label-box" }, labelsG);
           const dirCls = lb.atVertex ? "is-vertex" : lb.onLeft ? "is-left" : "is-right";
           const g = svgEl("g", { class: `naut-label-group ${lb.toneCls}${lb.done ? " is-done" : ""}${lb.compact ? " is-compact" : ""} ${dirCls}` }, labelsG);
           if (lb.color) g.style.setProperty("--naut-lbl-c", lb.color);
@@ -5678,7 +5764,7 @@ class SpiralView extends ItemView {
           }, body);
           txt.textContent = lb.text;
           if (lb.compact && lb.durText) {
-            svgEl("tspan", { class: "naut-label-dur" }, txt).textContent = `  ${lb.durText}`;
+            svgEl("tspan", { class: "naut-label-dur" }, txt).textContent = `\u00a0\u00a0${lb.durText}`;
           }
           if (!lb.compact && lb.meta) {
             const metaEl = svgEl("text", {
@@ -7007,7 +7093,7 @@ module.exports = class NautilusSpiral extends Plugin {
       const f = trimSlash(this.settings.folder);
       this.settings.journalAuto = (f === "日记" || f === "Journal") && this.settings.format === "YYYY_MM_DD";
     }
-    const removedSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert", "focus", "focusMinutes", "focusCategories", "focusMode", "focusAutoComplete", "focusAsk", "focusSession"].filter(key => key in this.settings);
+    const removedSettings = ["autoLog", "agentKw", "autoLogArchiveDone", "resultBack", "lineProgress", "agentAlert", "focus", "focusMinutes", "focusCategories", "focusMode", "focusAutoComplete", "focusAsk", "focusSession", "breakState", "breakWords", "spiralLabelMaxCols"].filter(key => key in this.settings);
     for (const key of removedSettings) delete this.settings[key];
     if (removedSettings.length) await this.saveData(this.settings);
     this.settings.aiAgents = Object.assign({}, DEFAULTS.aiAgents, this.settings.aiAgents);
@@ -7026,11 +7112,13 @@ module.exports = class NautilusSpiral extends Plugin {
       open: (url) => window.open(url),
     });
     this.core = { parseJournal, parseDuration, parseProgress, stripProgress, stripDuration, applyWork, workKey, schedule, fill, normalize };   // 给「任务提醒」插件复用
-    delete this.settings.breakState;
-    delete this.settings.breakWords;
     this.saveSoon = debounce(() => this.saveData(this.settings), 1000, true);
     this.journalDetect();   // 日记目录 / 文件名格式：跟着核心「日记」插件或者库里的实际写法定
-    this.refresh = debounce(() => { if (!this.dragging) this.views().forEach((v) => v.render()); }, 300, true);   // 正在拖把手时不重绘
+    this.refresh = debounce(() => {
+      if (this.dragging || this._unloaded) return;
+      this.views().forEach((v) => v.render());
+      for (const embed of this.spiralEmbeds) embed.render();
+    }, 300, true);
     this.pruneLogs();
     this.aiStorePath = `${this.manifest.dir}/ai-usage.json`;
     this.gameLogPath = `${this.manifest.dir}/game-log.json`;
@@ -7038,6 +7126,7 @@ module.exports = class NautilusSpiral extends Plugin {
 
     this.registerView(VIEW_TYPE, (leaf) => new SpiralView(leaf, this));
     this.registerView(REVIEW_VIEW_TYPE, (leaf) => new SpiralReviewView(leaf, this));
+    this.registerSpiralEmbeds();
     this.addRibbonIcon("orbit", T("螺旋日程", "Nautilus Spiral"), () => this.activate());
     // 命令和快捷面板共用动作表；不预设全局快捷键，需要时可在 Obsidian 设置中绑定
     let nm = (s) => s;   // 命令名
@@ -7372,12 +7461,30 @@ module.exports = class NautilusSpiral extends Plugin {
       } },
       { id: "review", name: T("预估 vs 实际（复盘）", "Estimate vs actual (review)"), run: () => this.showReview() },
       { id: "open", name: T("打开螺旋日程", "Open Nautilus Spiral"), run: () => this.activate() },
+      { id: "insert-spiral-embed", name: T("在日记里插入螺旋图", "Insert spiral chart into daily note"), editor: true, run: (editor, view) => {
+        if (!this.spiralEmbedDate(view?.file)) {
+          new OB.Notice(T("请先打开一篇日记。", "Open a daily note first."));
+          return;
+        }
+        const line = editor.getCursor().line;
+        editor.replaceRange("\n\n```nautilus-spiral\n```\n", { line, ch: editor.getLine(line).length });
+      } },
+      { id: "debug-spiral-labels", name: T("切换外圈标签的碰撞框", "Toggle spiral label bounds"), hidden: true, run: () => {
+        this.debugSpiralLabels = !this.debugSpiralLabels;
+        this.views().forEach((v) => v.render({ force: true }));
+      } },
       { id: "day-bounds", name: T("设置今天的起床 / 收工时间", "Set today's start / end of day"), run: () => new BoundsModal(this.app, this, this.today()).open() },
       { id: "open-today", name: T("打开今天的日记（凌晨按日界算前一天）", "Open today's daily note (before the day cutoff it's still yesterday)"), run: () => this.openToday() },
       { id: "pomodoro-start", name: T("开始番茄钟（预订接下来一段专注时间）", "Start Pomodoro (reserve an upcoming focus block)"), when: () => !this.settings.pomodoro?.active, run: () => this.startPomodoro() },
       { id: "pomodoro-stop", name: T("结束当前番茄钟", "Stop current Pomodoro"), when: () => !!this.settings.pomodoro?.active, run: () => this.stopPomodoro(false, { ask: true }) },
       { id: "pomodoro-cursor", name: T("用番茄钟开始光标所在任务", "Start Pomodoro on task at cursor"), editor: true, run: (editor, view) => this.startPomodoroAtCursor(editor, view) },
-      { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => { this.cal.cache.clear(); this.pastDayCache?.clear(); this.gcal.cals = null; this.views().forEach((v) => v.render({ force: true })); } },
+      { id: "calendar-refresh", name: T("重新读取日历（macOS 日历 / Google 日历）", "Reload calendars (macOS Calendar / Google Calendar)"), run: () => {
+        this.cal.cache.clear();
+        this.pastDayCache?.clear();
+        this.gcal.cals = null;
+        this.views().forEach((v) => v.render({ force: true }));
+        for (const embed of this.spiralEmbeds) embed.render();
+      } },
     ];
   }
 
@@ -7718,6 +7825,63 @@ module.exports = class NautilusSpiral extends Plugin {
     return c;
   }
 
+  parsedSpiralJournal(path, content, cfg = this.settings) {
+    const cache = (this.spiralJournalCache ||= new Map());
+    const sig = JSON.stringify([cfg.dayStart, cfg.dayEnd, cfg.dayCutoff, cfg.defaultDur, cfg.priorityMarkers, cfg.showMain !== false]);
+    const entry = cache.get(path);
+    if (entry?.content === content && entry.sig === sig) return entry;
+    const items = parseJournal(content, cfg);
+    const M = mainOf(cfg.showMain !== false ? content : "");
+    markMain(items, M);
+    const parsed = { content, sig, items, M };
+    cache.delete(path);
+    cache.set(path, parsed);
+    if (cache.size > 8) cache.delete(cache.keys().next().value);
+    return parsed;
+  }
+
+  prepareSpiralDay(file, date, { content, mirrorMap, dayKey, realNow, realRel, now, dayRel, bounds, playing = false }) {
+    const cfg = this.settings;
+    const parsed = this.parsedSpiralJournal(file.path, content, cfg);
+    // 计时与排程只修改本次的条目，解析结果可以给下一次刷新和其它视图复用。
+    const items = parsed.items.map((item) => {
+      const mirror = mirrorMap.get(item.line);
+      return mirror ? { ...item, mirror } : { ...item };
+    });
+    const cal = this.withCalendar(items, date);
+    const done = cfg.doneTimes[dayKey] || {};
+    const orphans = applyWork(items, cfg, dayKey, realNow, realRel, bounds);   // 这天做过、但任务行已经挪走的
+
+    for (const t of items) {
+      if (t.kind === "task" && t.state === "done") {
+        // 完成时间的来源，按可信度：DONE 后面手写的时间 > **07:37** 时间戳 > 插件看到它变成 DONE 的时刻
+        const at = t.doneAt ?? t.stamp ?? done[t.label];
+        // 没写时长、但记到了做的时段：时长按实际做的算（含前几天做掉的）
+        const spent = t.spentToday + t.spentBefore;
+        if (!t.explicitDur && !t.actual && spent >= 1) t.dur = Math.round(spent);
+        t.doneAt = at ?? (t.worked.length ? t.worked.at(-1)[1] : null);
+        // 画在哪：记下来的那几段「进行中」+ DONE 14:00-15:30 写的时段（任务归位插件写的只是最后一段，中断之前的几段在记录里）
+        //        都没有就用完成时刻往前推一个时长
+        if (t.actual && t.worked.length) {
+          const all = [...t.worked, t.actual].sort((a, b) => a[0] - b[0]);
+          t.segments = [];
+          for (const [a, b] of all) { const last = t.segments.at(-1); if (last && a <= last[1]) last[1] = Math.max(last[1], b); else t.segments.push([a, b]); }
+          t.dur = Math.round(unionMin(t.segments) + t.spentBefore);
+        } else t.segments = t.actual ? [t.actual] : t.worked.length ? t.worked : at != null ? [[Math.max(0, at - t.dur), at]] : [];
+        if (playing) t._fullSegments = (t.segments || []).map(([a, b]) => [a, b]);
+      } else if (playing && t.worked) {
+        t._fullWorked = t.worked.map(([a, b]) => [a, b]);
+      }
+    }
+    if (playing) {
+      for (const o of orphans) o._fullSegs = o.segs.map(([a, b]) => [a, b]);
+      for (const t of items) if (t._fullWorked) { t.worked = t._fullWorked.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a); t.spentToday = t.worked.reduce((k, [a, b]) => k + b - a, 0); }
+      for (const o of orphans) if (o._fullSegs) o.segs = o._fullSegs.map(([a, b]) => [a, Math.min(b, now)]).filter(([a, b]) => b > a);
+    }
+    const plan = schedule(items, cfg, now, dayRel, bounds);
+    return { items, M: parsed.M, cal, orphans, plan };
+  }
+
   async resolveJournalMirrors(content, sourcePath = "") {
     const lines = String(content || "").split("\n");
     const resolvedByLine = new Map();
@@ -7772,15 +7936,15 @@ module.exports = class NautilusSpiral extends Plugin {
     return { content: applied.content, mirrorMap: applied.mirrorMap, sig };
   }
 
-  openItem(file, item) {
+  openItem(file, item, leaf) {
     if (item.cal && item.cal.url) window.open(item.cal.url);   // Google 日历的事件：在浏览器里打开它
     else if (item.cal) require("child_process").execFile("/usr/bin/open", ["-b", "com.apple.iCal"], () => {});   // macOS 日历的事件：打开「日历」App
     else if (item?.mirror?.path) {
       const mf = this.app.vault.getAbstractFileByPath(item.mirror.path);
-      if (mf instanceof TFile) return this.openLine(mf, item.mirror.line);
-      return this.openLine(file, item.line);
+      if (mf instanceof TFile) return this.openLine(mf, item.mirror.line, leaf);
+      return this.openLine(file, item.line, leaf);
     }
-    else this.openLine(file, item.line);
+    else return this.openLine(file, item.line, leaf);
   }
 
   // ---- 硬规则：同时最多 3 件 DOING、3 小时没动就暂停 ----
@@ -8751,6 +8915,71 @@ module.exports = class NautilusSpiral extends Plugin {
     return this.app.workspace.getLeavesOfType(VIEW_TYPE).map((l) => l.view).filter((v) => v instanceof SpiralView);
   }
 
+  spiralEmbedDate(file) {
+    if (!(file instanceof TFile) || file.extension !== "md" || !inJournalDir(file.path, this.settings.folder)) return null;
+    const date = moment(this.journalKey(file), this.settings.format, true);
+    return date.isValid() ? date.startOf("day") : null;
+  }
+
+  registerSpiralEmbeds() {
+    const plugin = this;
+    this.spiralEmbeds = new Set();
+    class SpiralEmbed extends OB.MarkdownRenderChild {
+      constructor(container, sourcePath) {
+        super(container);
+        this.sourcePath = sourcePath;
+        this.seq = 0;
+      }
+      onload() {
+        this.containerEl.addClass("naut-embed");
+        plugin.spiralEmbeds.add(this);
+        this.render();
+      }
+      onunload() {
+        this.seq++;
+        plugin.spiralEmbeds.delete(this);
+        this.containerEl.empty();
+      }
+      async render() {
+        const seq = ++this.seq;
+        try {
+          const cfg = plugin.settings;
+          const file = plugin.app.vault.getAbstractFileByPath(this.sourcePath);
+          const date = plugin.spiralEmbedDate(file);
+          if (!date) {
+            this.key = null;
+            this.containerEl.setText(T("请在日记中使用螺旋图。", "Use this spiral chart in a daily note."));
+            return;
+          }
+          const raw = await plugin.readLiveContent(file);
+          const { content, mirrorMap, sig } = await plugin.resolveJournalMirrors(raw, file.path);
+          if (seq !== this.seq || plugin._unloaded) return;
+          const today = plugin.today();
+          const dayRel = Math.sign(date.diff(today, "days"));
+          const clockNow = moment();
+          const now = normalize(clockNow.hours() * 60 + clockNow.minutes(), cfg);
+          const dayKey = date.format(cfg.format);
+          const cal = plugin.calendarFor(date);
+          const key = JSON.stringify([
+            pastDayComputeSig({ dayKey, content, cfg, cal, mirrorSig: sig }),
+            dayRel, dayRel === 0 ? now : null, cfg.parallelDoing, cfg.minChunk, cfg.hideDoneOnSpiral,
+          ]);
+          if (key === this.key) return;
+          const bounds = cfg.dayBounds[dayKey] || {};
+          const data = plugin.prepareSpiralDay(file, date, { content, mirrorMap, dayKey, bounds, now, dayRel, realNow: now, realRel: dayRel });
+          drawEmbeddedSpiral(this.containerEl, plugin, file, date, data, { now, dayRel, bounds });
+          this.key = key;
+        } catch (e) {
+          if (seq !== this.seq || plugin._unloaded) return;
+          this.key = null;
+          this.containerEl.setText(T("读取日记失败。", "Could not read the daily note."));
+          console.error("[Nautilus Spiral] Embed render failed", e);
+        }
+      }
+    }
+    this.registerMarkdownCodeBlockProcessor(VIEW_TYPE, (_source, el, ctx) => ctx.addChild(new SpiralEmbed(el, ctx.sourcePath)));
+  }
+
 
   // 「今天」的日记：凌晨 dayCutoff 点前还算前一天
   journalDayCutoff() { return journalDayCutoff(this.settings); }
@@ -8999,7 +9228,7 @@ module.exports = class NautilusSpiral extends Plugin {
     this.observe(f, content, true);
     this.enforce(f, content, prev).catch((e) => console.error("[螺旋日程] 规则执行失败", e));
     if (this.statusEl && f.path === this.journalPath(this.today())) this.refreshCapacity();
-    if (this.views().some((v) => v.path() === f.path)) this.refresh();
+    if (this.views().some((v) => v.path() === f.path) || [...this.spiralEmbeds].some((embed) => embed.sourcePath === f.path)) this.refresh();
   }
 
   // 对比上一次看到的状态（不写回日记）：
@@ -9757,9 +9986,16 @@ module.exports = class NautilusSpiral extends Plugin {
     }
   }
 
-  async openLine(file, line) {
-    const leaf = this.app.workspace.getLeaf(false);
-    await leaf.openFile(file, { eState: { line } });
+  async openLine(file, line, leaf) {
+    const view = leaf?.view;
+    if (view?.file === file && view?.getMode?.() === "source" && view.editor) {
+      const pos = { line, ch: 0 };
+      view.editor.setCursor(pos);
+      view.editor.scrollIntoView({ from: pos, to: pos }, true);
+      view.editor.focus();
+      return;
+    }
+    await (leaf || this.app.workspace.getLeaf(false)).openFile(file, { eState: { line } });
   }
 
   // 改过的颜色挂成 body 上的 --naut-c-xxx，styles.css 从这儿取；没改过的去掉，退回 CSS 里的默认值
@@ -9772,6 +10008,8 @@ module.exports = class NautilusSpiral extends Plugin {
 
   onunload() {
     this._unloaded = true;
+    this.refresh?.cancel?.();
+    for (const embed of this.spiralEmbeds || []) embed.unload();
     window.clearTimeout(this._reloadT);
     window.clearTimeout(this._widgetBootT);
     window.clearTimeout(this._nqTimer);
@@ -9785,15 +10023,128 @@ module.exports = class NautilusSpiral extends Plugin {
 
 
 class SpiralSettings extends PluginSettingTab {
-  constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+    this.page = 0;
+  }
+
   // 关掉设置时：「不读这些日历」改过就清缓存重读
   hide() {
+    this.removeTocScroll?.();
+    this.removeTocScroll = null;
     if (this.skipWas !== undefined && this.skipWas !== this.plugin.settings.calendarSkip) { this.plugin.cal.cache.clear(); this.plugin.refresh(); }
+    this.skipWas = undefined;
   }
+
   display() {
     const { containerEl } = this;
+    this.removeTocScroll?.();
+    if (this.skipWas === undefined) this.skipWas = this.plugin.settings.calendarSkip;
+    const scrollTop = containerEl.scrollTop;
     containerEl.empty();
+    containerEl.addClass("naut-settings");
+
+    const pages = [
+      [T("作息与日记", "Schedule & daily notes"), this.renderSchedule],
+      [T("日历与提醒", "Calendars & reminders"), this.renderCalendars],
+      [T("显示与计时", "Display & timing"), this.renderDisplay],
+      [T("Agent 与活动", "Agents & activity"), this.renderActivity],
+    ];
+    const header = containerEl.createDiv({ cls: "naut-settings-header" });
+    const tabs = header.createEl("nav", { cls: "naut-settings-tabs", attr: { "aria-label": T("设置页面", "Settings pages") } });
+    pages.forEach(([label], index) => {
+      const button = tabs.createEl("button", { text: label, attr: { type: "button" } });
+      if (index === this.page) button.setAttribute("aria-current", "page");
+      button.onclick = () => {
+        if (this.page === index) return;
+        this.page = index;
+        containerEl.scrollTop = 0;
+        this.display();
+        containerEl.querySelector('.naut-settings-tabs [aria-current="page"]')?.focus({ preventScroll: true });
+      };
+    });
+
+    const label = T("本页目录", "On this page");
+    const toc = header.createEl("nav", { cls: "naut-settings-toc", attr: { "aria-label": label } });
+    toc.createSpan({ text: label });
+    const body = containerEl.createDiv({ cls: "naut-settings-body" });
+    pages[this.page][1].call(this, body);
+    this.renderToc(toc, header, [...body.querySelectorAll(":scope > h3")], scrollTop);
+  }
+
+  renderToc(toc, header, headings, scrollTop) {
+    const { containerEl } = this;
+    let active = -1;
+    let lastJumpTop = null;
+    const setActive = (index) => {
+      if (index === active) return;
+      buttons[active]?.removeAttribute("aria-current");
+      buttons[index].setAttribute("aria-current", "location");
+      active = index;
+    };
+    const buttons = headings.map((heading, index) => {
+      const button = toc.createEl("button", { text: heading.textContent, attr: { type: "button" } });
+      button.onclick = () => {
+        const offset = containerEl.getBoundingClientRect().top + containerEl.clientTop + header.offsetHeight + 10;
+        containerEl.scrollTop = index === 0 ? 0 : containerEl.scrollTop + heading.getBoundingClientRect().top - offset;
+        // 接近页尾时，几个目录项的跳转可能落在同一滚动位置。
+        lastJumpTop = containerEl.scrollTop;
+        setActive(index);
+      };
+      return button;
+    });
+    const onScroll = () => {
+      const top = containerEl.scrollTop;
+      if (lastJumpTop !== null && Math.abs(top - lastJumpTop) < 1) return;
+      lastJumpTop = null;
+      if (top > 1 && top + containerEl.clientHeight >= containerEl.scrollHeight - 1) {
+        setActive(headings.length - 1);
+        return;
+      }
+      const threshold = header.getBoundingClientRect().bottom + 16;
+      let index = 0;
+      while (index + 1 < headings.length && headings[index + 1].getBoundingClientRect().top <= threshold) index++;
+      setActive(index);
+    };
+    containerEl.scrollTop = scrollTop;
+    onScroll();
+    containerEl.addEventListener("scroll", onScroll, { passive: true });
+    this.removeTocScroll = () => containerEl.removeEventListener("scroll", onScroll);
+  }
+
+  advancedSettings(containerEl, label) {
+    const details = containerEl.createEl("details", { cls: "naut-settings-advanced" });
+    details.createEl("summary", { text: label });
+    return details;
+  }
+
+  textSetting(containerEl, name, desc, key) {
     const s = this.plugin.settings;
+    return new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
+      .setValue(s[key])
+      .onChange(async (v) => { s[key] = v.trim(); await this.plugin.saveData(s); this.plugin.refresh(); }));
+  }
+
+  numberSetting(containerEl, name, desc, key, min, max) {
+    const s = this.plugin.settings;
+    return new Setting(containerEl).setName(name).setDesc(desc).addText((t) => {
+      t.setValue(String(s[key])).onChange(async (v) => {
+        const n = Number(v);
+        const ok = Number.isFinite(n) && n >= min && n <= max;
+        t.inputEl.toggleClass("naut-bad-input", !ok);
+        if (!ok) return;
+        s[key] = n;
+        await this.plugin.saveData(s);
+        this.plugin.refresh();
+      });
+      t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(String(s[key])); });
+    });
+  }
+
+  renderSchedule(containerEl) {
+    const s = this.plugin.settings;
+    containerEl.createEl("h3", { text: T("作息", "Schedule") });
     let warnEl = null;
     const updateWarn = () => {
       if (!warnEl) return;
@@ -9826,19 +10177,6 @@ class SpiralSettings extends PluginSettingTab {
         .onClick(() => new SchedulePresetModal(this.app, this.plugin, () => this.display()).open());
     });
     syncPresetBtns();
-    const num = (name, desc, key, min, max, check) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => {
-      t.setValue(String(s[key])).onChange(async (v) => {
-        const n = Number(v);
-        const ok = Number.isFinite(n) && n >= min && n <= max && (!check || check(n));
-        t.inputEl.toggleClass("naut-bad-input", !ok);
-        if (!ok) return;
-        s[key] = n;
-        await this.plugin.saveData(s);
-        updateWarn();
-        this.plugin.refresh();
-      });
-      t.inputEl.addEventListener("blur", () => { t.inputEl.removeClass("naut-bad-input"); t.setValue(String(s[key])); });
-    });
     const fmtBoundHour = (h) => (Math.abs(h - Math.round(h)) < 1e-6 ? String(Math.round(h)) : fmtScheduleHour(h));
     const schedHour = (name, desc, key, min, max, check) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => {
       t.setValue(fmtBoundHour(s[key])).onChange(async (v) => {
@@ -9878,10 +10216,8 @@ class SpiralSettings extends PluginSettingTab {
       });
     warnEl = containerEl.createDiv({ cls: "naut-proj-note naut-setting-warn" });
     updateWarn();
-    num(T("默认任务时长（分钟）", "Default task length (minutes)"), T("没写时长的任务按这个算", "Used for tasks without a duration"), "defaultDur", 1, 240);
-    const text = (name, desc, key) => new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
-      .setValue(s[key])
-      .onChange(async (v) => { s[key] = v.trim(); await this.plugin.saveData(s); this.plugin.refresh(); }));
+
+    containerEl.createEl("h3", { text: T("日记", "Daily notes") });
     // 日记在哪：不手填就自动检测（核心「日记」插件 → Periodic Notes → 翻库猜）
     const det = this.plugin.journalDetect();
     const auto = s.journalAuto !== false;
@@ -9984,49 +10320,41 @@ class SpiralSettings extends PluginSettingTab {
             .onChange(async (v) => { await this.plugin.updateJournalPolicy({ aiAnchorHeading: v.trim(), configured: true }); }));
       }
     }
-    text(T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
+
+    containerEl.createEl("h3", { text: T("任务排程", "Task scheduling") });
+    this.numberSetting(containerEl, T("默认任务时长（分钟）", "Default task length (minutes)"), T("没写时长的任务按这个算", "Used for tasks without a duration"), "defaultDur", 1, 240);
     new Setting(containerEl).setName(T("DOING 并行排", "Run DOING tasks in parallel")).setDesc(T("几件 DOING 一起从现在开始，重叠在同一段时间里，只占最长那件的时间；关掉就首尾相接", "Several DOING tasks all start now and overlap, taking only as long as the longest one; turn off to place them back to back"))
       .addToggle((t) => t.setValue(s.parallelDoing !== false).onChange(async (v) => { s.parallelDoing = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    num(T("最短一段（分钟）", "Shortest chunk (minutes)"), T("任务被事件隔开时每段至少这么长；不够切成两段的任务整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满", "When events split a task, each piece is at least this long. A task too short to split is placed whole; if it doesn't fit, it moves to the next gap and smaller tasks after it move up. 0 = split and fill as before"), "minChunk", 0, 240);
+    this.numberSetting(containerEl, T("最短一段（分钟）", "Shortest chunk (minutes)"), T("任务被事件隔开时每段至少这么长；不够切成两段的任务整块排，放不下就跳到下一个空档，后面的小任务往前补位。0 = 照旧切开填满", "When events split a task, each piece is at least this long. A task too short to split is placed whole; if it doesn't fit, it moves to the next gap and smaller tasks after it move up. 0 = split and fill as before"), "minChunk", 0, 240);
     new Setting(containerEl).setName(T("按日记事件顺序排程", "Respect journal event order")).setDesc(T("开启后，写在日记某条固定事件下方的未开始待办，不会排到该事件结束之前（默认关闭，适合把固定事件与待办分区写的习惯）", "When on, open to-dos written below a fixed journal event won't be scheduled before that event ends (off by default, safe when events and to-dos live in separate sections)"))
       .addToggle((t) => t.setValue(!!s.respectEventOrder).onChange(async (v) => { s.respectEventOrder = v; this.plugin.pastDayCache?.clear(); await this.plugin.saveData(s); this.plugin.refresh(); }));
-    new Setting(containerEl).setName(T("螺旋外圈标签", "Outer spiral labels")).setDesc(T("用引导线在螺旋外圈标注各段名称，宽屏视图下无需悬停即可扫读（自动模式下容器宽度 ≥ 520px 时开启）", "Show callout labels around the spiral with leader lines (Auto enables when panel width >= 520px)"))
-      .addDropdown((d) => d
-        .addOption("auto", T("自动（宽屏开启）", "Auto (wide view)"))
-        .addOption("on", T("始终显示", "Always on"))
-        .addOption("off", T("关闭", "Off"))
-        .setValue(s.showSpiralLabels || "auto")
-        .onChange(async (v) => { s.showSpiralLabels = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    new Setting(containerEl).setName(T("外圈标签最大字符宽", "Outer label max width")).setDesc(T("外圈标签超出后截断（1 个汉字计 2 格），可在 14–28 之间调整", "Truncate outer callout labels beyond this display width (1 CJK char = 2 cols)"))
-      .addDropdown((d) => {
-        for (const n of [14, 16, 18, 20, 22, 24, 26, 28]) d.addOption(String(n), String(n));
-        d.setValue(String(s.spiralLabelMaxCols || 18)).onChange(async (v) => { s.spiralLabelMaxCols = Number(v) || 18; await this.plugin.saveData(s); this.plugin.refresh(); });
-      });
-    new Setting(containerEl).setName(T("快捷进度步进", "Progress quick-step")).setDesc(T("螺旋色块 Shift + 单击或右键「推进 / 回退进度」每次变化的百分比（Alt + Shift + 单击为回退）", "Percentage step for Shift+Click or menu advance/step-back on spiral segments (Alt+Shift+Click steps back)"))
-      .addDropdown((d) => d
-        .addOption("25", T("25%（四档）", "25% (4 steps)"))
-        .addOption("10", T("10%（十档）", "10% (10 steps)"))
-        .setValue(String(s.progressStep || 25))
-        .onChange(async (v) => { s.progressStep = Number(v) || 25; await this.plugin.saveData(s); this.plugin.refresh(); }));
 
-    containerEl.createEl("h3", { text: T("macOS 日历", "macOS Calendar") });
-    new Setting(containerEl).setName(T("读 macOS 日历", "Read macOS Calendar")).setDesc(T("把「日历」App 里的事件当固定事件排进螺旋（只读，不改日历）。第一次打开会在本机编译一个读日历的小助手（要有 Xcode 命令行工具），并弹出日历权限请求，选「允许」", "Place events from the Calendar app on the spiral as fixed events (read-only; your calendars are not changed). The first time, a small calendar helper is compiled on this Mac (needs the Xcode command line tools) and macOS asks for calendar access; choose Allow"))
-      .addToggle((t) => t.setValue(!!s.calendar).onChange(async (v) => { s.calendar = v; this.plugin.cal.cache.clear(); await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
-    if (s.calendar) {
-      text(T("不读这些日历", "Skip these calendars"), T("日历名称，逗号分隔，比如：中国大陆节假日, 生日", "Calendar names, comma-separated, e.g. US Holidays, Birthdays"), "calendarSkip");
-      const names = new Setting(containerEl).setName(T("本机的日历", "Calendars on this Mac")).setDesc(T("点「列出」看看有哪些日历", "Click List to see which calendars there are"));
-      names.addButton((b) => b.setButtonText(T("列出", "List")).onClick(async () => {
-        try {
-          const cals = await this.plugin.cal.call(["--calendars"]);
-          names.setDesc(cals.map((c) => T(`${c.title}（${c.source}）`, `${c.title} (${c.source})`)).join(T("、", ", ")) || T("一个日历也没有", "No calendars at all"));
-        } catch (e) { names.setDesc(String(e.message || e)); }
-      }));
+    containerEl.createEl("h3", { text: T("硬规则（只管今天的日记）", "Hard rules (today's note only)") });
+    this.numberSetting(containerEl, T("同时最多几件 DOING", "Max DOING at once"), T("再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。交给 Agent 在做的不算：Agent Deck 记下的、下面挂着 🔗 的、自动对上了会话的任务，连同它所在的整块。0 = 不限", "When one more starts, the earliest started becomes PAUSED and you get a system notification. Work handed to agents doesn't count: tasks logged by Agent Deck, with a 🔗 under them, or auto-matched to a session, together with their whole block. 0 = no limit"), "doingLimit", 0, 20);
+    this.numberSetting(containerEl, T("DOING 多久没动就暂停（小时）", "Pause DOING after idle (hours)"), T("这一行和它下面的子项都没改过，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "If neither the line nor its children have changed for this long, it becomes PAUSED and you get a system notification. 0 = never"), "staleHours", 0, 48);
+  }
+
+  renderCalendars(containerEl) {
+    const s = this.plugin.settings;
+    const macOS = OB.Platform?.isMacOS && OB.Platform?.isDesktopApp;
+    if (macOS) {
+      containerEl.createEl("h3", { text: T("macOS 日历", "macOS Calendar") });
+      new Setting(containerEl).setName(T("读 macOS 日历", "Read macOS Calendar")).setDesc(T("把「日历」App 里的事件当固定事件排进螺旋（只读，不改日历）。第一次打开会在本机编译一个读日历的小助手（要有 Xcode 命令行工具），并弹出日历权限请求，选「允许」", "Place events from the Calendar app on the spiral as fixed events (read-only; your calendars are not changed). The first time, a small calendar helper is compiled on this Mac (needs the Xcode command line tools) and macOS asks for calendar access; choose Allow"))
+        .addToggle((t) => t.setValue(!!s.calendar).onChange(async (v) => { s.calendar = v; this.plugin.cal.cache.clear(); await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
+      if (s.calendar) {
+        const names = new Setting(containerEl).setName(T("本机的日历", "Calendars on this Mac")).setDesc(T("点「列出」看看有哪些日历", "Click List to see which calendars there are"));
+        names.addButton((b) => b.setButtonText(T("列出", "List")).onClick(async () => {
+          try {
+            const cals = await this.plugin.cal.call(["--calendars"]);
+            names.setDesc(cals.map((c) => T(`${c.title}（${c.source}）`, `${c.title} (${c.source})`)).join(T("、", ", ")) || T("一个日历也没有", "No calendars at all"));
+          } catch (e) { names.setDesc(String(e.message || e)); }
+        }));
+      }
     }
-    this.skipWas = s.calendarSkip;
 
     containerEl.createEl("h3", { text: T("Google 日历", "Google Calendar") });
     containerEl.createEl("p", { cls: "setting-item-description", text: T("把 Google 日历里的事件当固定事件排进螺旋（只读，不改日历），和 macOS 日历可以同时开，同一件事只留一份。要用你自己在 Google Cloud 里建的 OAuth 客户端：新建项目 → 启用 Google Calendar API → 「凭据」里新建 OAuth 客户端 ID，应用类型选「桌面应用」→ 把客户端 ID 和密钥填到下面 → 点「连接」。申请的权限只有读日历；密钥和令牌存在系统钥匙串里，不写进插件的 data.json。", "Place events from Google Calendar on the spiral as fixed events (read-only; your calendars are not changed). It can be on together with macOS Calendar; the same event is kept once. It uses an OAuth client you create yourself in Google Cloud: create a project → enable the Google Calendar API → under Credentials, create an OAuth client ID with application type Desktop app → enter the client ID and secret below → click Connect. The only permission requested is reading calendars; the secret and tokens are kept in the system keychain, not in the plugin's data.json.") });
-    new Setting(containerEl).setName(T("读 Google 日历", "Read Google Calendar")).setDesc(T("只读界面里勾着显示的日历；上面「不读这些日历」对它也管用", "Only calendars shown (checked) in Google Calendar are read; \"Skip these calendars\" above applies too"))
+    new Setting(containerEl).setName(T("读 Google 日历", "Read Google Calendar")).setDesc(T("只读取 Google 日历中勾选显示的日历", "Reads the calendars checked in Google Calendar"))
       .addToggle((t) => t.setValue(!!s.googleCal).onChange(async (v) => { s.googleCal = v; this.plugin.cal.cache.clear(); await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
     if (s.googleCal) {
       const g = this.plugin.gcal;
@@ -10050,13 +10378,41 @@ class SpiralSettings extends PluginSettingTab {
       }
     }
 
+    if ((macOS && s.calendar) || s.googleCal) {
+      containerEl.createEl("h3", { text: T("日历筛选", "Calendar filters") });
+      this.textSetting(containerEl, T("不读这些日历", "Skip these calendars"), T("日历名称，逗号分隔，比如：中国大陆节假日, 生日", "Calendar names, comma-separated, e.g. US Holidays, Birthdays"), "calendarSkip");
+    }
+
     containerEl.createEl("h3", { text: T("🔔 提醒与通知", "🔔 Reminders & notifications") });
-    new Setting(containerEl).setName(T("带按钮提醒的方式", "Interactive reminder style")).setDesc(T("默认通知：普通系统通知（点一下跳到日记那一行）；带按钮的系统通知：不抢焦点（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）", "Default notification: standard system notification (click to jump to the line). System notification with buttons: doesn't take focus (allow \"Nautilus Spiral\" to send notifications; to keep it on screen, set its style to Alerts in System Settings → Notifications → Nautilus Spiral)."))
-      .addDropdown((d) => d.addOption("dialog", T("默认通知", "Default notification")).addOption("notification", T("带按钮的系统通知（试验）", "System notification with buttons (experimental)")).setValue(s.askVia || "dialog")
-        .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
-    text(T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停等）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, etc.) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
-    text(T("本机提醒的提示音", "Reminder sound on this Mac"), T("系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "A system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file; empty = silent"), "notifySound");
+    if (macOS) {
+      this.textSetting(containerEl, T("本机提醒的提示音", "Reminder sound on this Mac"), T("系统声音的名字（Pop、Glass、Ping、Tink、Submarine…）或者一个声音文件的路径；空着不响", "A system sound name (Pop, Glass, Ping, Tink, Submarine…) or the path to a sound file; empty = silent"), "notifySound");
+    }
+    const options = this.advancedSettings(containerEl, T("提醒的高级选项", "Advanced reminder options"));
+    if (macOS) {
+      new Setting(options).setName(T("带按钮提醒的方式", "Interactive reminder style")).setDesc(T("默认通知：普通系统通知（点一下跳到日记那一行）；带按钮的系统通知：不抢焦点（第一次要允许「螺旋日程」发通知；想让它一直留在屏幕上，到「系统设置 → 通知 → 螺旋日程」把样式改成「提醒」）", "Default notification: standard system notification (click to jump to the line). System notification with buttons: doesn't take focus (allow \"Nautilus Spiral\" to send notifications; to keep it on screen, set its style to Alerts in System Settings → Notifications → Nautilus Spiral)."))
+        .addDropdown((d) => d.addOption("dialog", T("默认通知", "Default notification")).addOption("notification", T("带按钮的系统通知（试验）", "System notification with buttons (experimental)")).setValue(s.askVia || "dialog")
+          .onChange(async (v) => { s.askVia = v; await this.plugin.saveData(s); }));
+    }
+    this.textSetting(options, T("提醒发到 Discord 的哪个频道", "Discord channel for reminders"), T("填本机 notify-discord 脚本认的频道名（比如 routine）。不用你回答的提醒（自动暂停等）发到这个频道，发出去了就不在本机再弹一遍；要你点按钮的照旧在本机弹。空着 = 不发", "A channel name your local notify-discord script knows (e.g. routine). Reminders that need no answer (auto-pause, etc.) go to this channel and are not shown again on this Mac; ones with buttons still pop up here. Empty = don't send"), "discordChannel");
+  }
+
+  renderDisplay(containerEl) {
+    const s = this.plugin.settings;
+    containerEl.createEl("h3", { text: T("螺旋显示", "Spiral display") });
+    new Setting(containerEl).setName(T("显示没记录的时间", "Show unrecorded time")).setDesc(T("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」各多少", "Past time with no event, no task record and no agent session is hatched on the spiral, and the tooltip on the first capacity line says how much is recorded / unrecorded"))
+      .addToggle((t) => t.setValue(s.showUnrecorded !== false).onChange(async (v) => { s.showUnrecorded = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
+    {
+      const options = this.advancedSettings(containerEl, T("进度快捷操作", "Progress shortcuts"));
+      new Setting(options).setName(T("快捷进度步进", "Progress quick-step")).setDesc(T("螺旋色块 Shift + 单击或右键「推进 / 回退进度」每次变化的百分比（Alt + Shift + 单击为回退）", "Percentage step for Shift+Click or menu advance/step-back on spiral segments (Alt+Shift+Click steps back)"))
+        .addDropdown((d) => d
+          .addOption("25", T("25%（四档）", "25% (4 steps)"))
+          .addOption("10", T("10%（十档）", "10% (10 steps)"))
+          .setValue(String(s.progressStep || 25))
+          .onChange(async (v) => { s.progressStep = Number(v) || 25; await this.plugin.saveData(s); this.plugin.refresh(); }));
+    }
+
     containerEl.createEl("h3", { text: T("🎨 颜色", "🎨 Colors") });
+    this.textSetting(containerEl, T("重要标记", "Important markers"), T("任务里含有这些文字就标成红色，用逗号分隔", "Tasks containing any of these are shown in red; separate with commas"), "priorityMarkers");
     containerEl.createEl("p", { cls: "setting-item-description", text: T("螺旋、列表和进度条上各类条目的颜色。Agent 会话的颜色跟着各家自己的界面走（Claude 橙、Codex 黑……），不在这里改", "Colors of each kind of item on the spiral, the list and the progress bars. Agent sessions use each tool's own colors (Claude orange, Codex black…) and can't be changed here") });
     const colorDesc = { main: T("块里带 [#A] 的任务，还有编辑器里主线块下面的进度条", "Tasks whose block carries [#A], and the progress bar under mainline blocks in the editor"), event: T("日记里写了时刻的事件（日历里读来的事件用日历自己的颜色）", "Events with a time written in the daily note (calendar events use their calendar's color)"), task: T("其余待办", "All other to-dos"), prio: T("带重要标记的任务，也用在排不下、超时的提示上", "Tasks with an important marker; also used for won't-fit and overtime warnings"), review: T("做完的「复习卡片 N 张」", "Finished \"复习卡片 N 张\" (review N cards) tasks"), game: T("螺旋最里面一圈的游戏时间", "Gaming time on the innermost ring of the spiral") };
     for (const [k, [name, d]] of Object.entries(COLORS)) {
@@ -10069,81 +10425,107 @@ class SpiralSettings extends PluginSettingTab {
         .addColorPicker((c) => c.setValue((s.colors || {})[k] || d).onChange(set))
         .addExtraButton((b) => b.setIcon("rotate-ccw").setTooltip(T("恢复默认", "Restore default")).onClick(async () => { await set(""); this.display(); }));
     }
+
     containerEl.createEl("h3", { text: T("🎯 主线", "🎯 Mainline") });
     new Setting(containerEl).setName(T("主线", "Mainline")).setDesc(T("块里带 [#A]（简写 todo a）的任务是这一天的主线，一天最多 3 块，按日记里的先后取（日记整理把多出来的降成 [#B]）。面板最上面列出来，排程时排在 DOING 后面、别的待办前面，螺旋上单独上色（默认大红，在上面「🎨 颜色」里改）；状态栏没在计时时显示下一件主线；过了日期分界，把前一天的完成率写进那篇日记的属性 mainline / mainline-rate", "Tasks whose block carries [#A] (short form: todo a) are the day's mainline: at most 3 blocks a day, taken in note order (journal cleanup lowers the extra ones to [#B]). They're listed at the top of the panel, scheduled after DOING and before other to-dos, and get their own color on the spiral (red by default; change it under 🎨 Colors above). When no timer is running, the status bar shows the next mainline task. After the day cutoff, the previous day's completion rate is written into that note's properties mainline / mainline-rate"))
-      .addToggle((t) => t.setValue(s.showMain !== false).onChange(async (v) => { s.showMain = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); this.plugin.refresh(); }));
-    text(T("主线提醒时刻", "Mainline reminder times"), T("到这几个时刻主线还没做完、手上也没在做主线，发一条提醒（和别的提醒一样：配了 Discord 发 Discord，没配在本机弹）。24 小时制，逗号分隔，空着 = 不提醒", "At these times, if the mainline isn't finished and you're not working on it, send a reminder (like other reminders: to Discord if configured, otherwise on this Mac). 24-hour time, comma-separated; empty = no reminders"), "mainNudge");
-    containerEl.createEl("h3", { text: T("🗓 macOS 小组件", "🗓 macOS widgets") });
-    containerEl.createEl("p", { cls: "setting-item-description", text: T("两个小组件，放桌面上或者通知中心的侧栏里都行：🎯 今天的主线（小号、中号），📅 计划甘特图（大号、特大号，从这周一起画 5 周）。先编译安装配套的小组件 App（插件仓库 widgets/ 里跑 ./build.sh），再右键桌面 →「编辑小组件」→ 搜「螺旋日程」拖出来（小组件的界面和名字跟着 macOS 的系统语言，英文系统里叫 Nautilus Spiral）。插件每分钟把数据写进 ~/Library/Application Support/Nautilus Spiral/widgets.json，有变化就叫小组件刷新；点小组件上的一行，跳回 Obsidian 的那一行。", "Two widgets, on the desktop or in the Notification Center sidebar: 🎯 Today's mainline (small, medium) and 📅 Plan Gantt (large, extra large; 5 weeks from this Monday). First build and install the companion widget app (run ./build.sh in widgets/ of the plugin repo), then right-click the desktop → Edit Widgets → search \"Nautilus Spiral\" (the widgets follow the macOS language: \"螺旋日程\" on a Chinese system) and drag them out. Every minute the plugin writes the data to ~/Library/Application Support/Nautilus Spiral/widgets.json and asks the widgets to refresh when it changes; click a line on a widget to jump back to that line in Obsidian.") });
-    new Setting(containerEl).setName(T("给小组件导出数据", "Export data for widgets")).setDesc(T("没装小组件 App 时开着也没关系，只是多写一个文件", "Harmless if the widget app isn't installed; it just writes one extra file"))
-      .addToggle((t) => t.setValue(!!s.widgets).onChange(async (v) => { s.widgets = v; this.plugin._widgetText = ""; await this.plugin.saveData(s); this.plugin.widgetTick(); }));
-    text(T("计划笔记", "Plan note"), T("甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "Which note the Gantt chart draws (vault path). Each list item with 🛫 start, ⏳ scheduled or 📅 due dates becomes a bar (the Tasks plugin's syntax); one with a single date becomes a dot on that day. The nearest heading above, or a top-level list item without dates, is a group; finished ones (DONE, [x], ✅ date) are drawn faded"), "widgetPlan");
-    containerEl.createEl("h3", { text: T("硬规则（只管今天的日记）", "Hard rules (today's note only)") });
-    num(T("同时最多几件 DOING", "Max DOING at once"), T("再开始一件时，把最早开始的那件改成 PAUSED，并发系统通知。交给 Agent 在做的不算：Agent Deck 记下的、下面挂着 🔗 的、自动对上了会话的任务，连同它所在的整块。0 = 不限", "When one more starts, the earliest started becomes PAUSED and you get a system notification. Work handed to agents doesn't count: tasks logged by Agent Deck, with a 🔗 under them, or auto-matched to a session, together with their whole block. 0 = no limit"), "doingLimit", 0, 20);
-    num(T("DOING 多久没动就暂停（小时）", "Pause DOING after idle (hours)"), T("这一行和它下面的子项都没改过，超过这么久就改成 PAUSED，并发系统通知。0 = 不管", "If neither the line nor its children have changed for this long, it becomes PAUSED and you get a system notification. 0 = never"), "staleHours", 0, 48);
-    containerEl.createEl("h3", { text: T("其它", "Other") });
+      .addToggle((t) => t.setValue(s.showMain !== false).onChange(async (v) => { s.showMain = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); this.plugin.refresh(); this.display(); }));
+    if (s.showMain !== false) {
+      this.textSetting(containerEl, T("主线提醒时刻", "Mainline reminder times"), T("到这几个时刻主线还没做完、手上也没在做主线，发一条提醒（和别的提醒一样：配了 Discord 发 Discord，没配在本机弹）。24 小时制，逗号分隔，空着 = 不提醒", "At these times, if the mainline isn't finished and you're not working on it, send a reminder (like other reminders: to Discord if configured, otherwise on this Mac). 24-hour time, comma-separated; empty = no reminders"), "mainNudge");
+    }
+
+    containerEl.createEl("h3", { text: T("计时与复盘", "Timing & review") });
     new Setting(containerEl).setName(T("预估 vs 实际", "Estimate vs actual")).setDesc(T("列表底部显示近一段时间预估准不准（按标签 / 链接分），容量条上按这个比例给一个「按以往约多久」", "At the bottom of the list, shows how accurate your recent estimates were (by tag / link); the capacity bar adds an \"about … going by your history\" based on that ratio"))
       .addToggle((t) => t.setValue(s.showReview !== false).onChange(async (v) => { s.showReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    num(T("复盘看最近几天", "Review the last N days"), T("插件自己的计时记录留 45 天；再往前的日子，靠日记里任务下面那一行 ⏱ 算实际用时", "The plugin keeps its own timing records for 45 days; for earlier days, actual time comes from the ⏱ line under each task in the daily note"), "reviewDays", 7, 365);
     new Setting(containerEl).setName(T("当日复盘", "Day review")).setDesc(T("列表里的「📋 今日复盘」：这一天每件任务的预计和实际，逐件对照。只有做完、也记到了实际用时的才算进偏差", "\"📋 Today's review\" in the list: estimate and actual for every task of the day, side by side. Only tasks that are done and have actual time recorded count toward the difference"))
       .addToggle((t) => t.setValue(s.showDayReview !== false).onChange(async (v) => { s.showDayReview = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    new Setting(containerEl).setName(T("显示没记录的时间", "Show unrecorded time")).setDesc(T("已经过去、既没有事件和任务记录、也没有 Agent 会话的时间，在螺旋上画成斜纹，容量条第一行的悬停提示里写「有记录 / 没记录」各多少", "Past time with no event, no task record and no agent session is hatched on the spiral, and the tooltip on the first capacity line says how much is recorded / unrecorded"))
-      .addToggle((t) => t.setValue(s.showUnrecorded !== false).onChange(async (v) => { s.showUnrecorded = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
     new Setting(containerEl).setName(T("实际时段写回日记", "Write actual time into the note")).setDesc(T("你手动做的任务不再是 DOING 时，在它下面写一行「⏱ 14:05–14:40、15:10–15:32 · 共 57m」，和自动记的行同一种写法。实际用时就留在日记正文里，不只存在插件的计时记录里", "When a task you did yourself stops being DOING, write a line under it, \"⏱ 14:05–14:40, 15:10–15:32 · total 57m\", in the same form as the automatic lines. Actual time then lives in the note itself, not only in the plugin's timing records"))
       .addToggle((t) => t.setValue(!!s.clockToNote).onChange(async (v) => { s.clockToNote = v; await this.plugin.saveData(s); }));
+    {
+      const options = this.advancedSettings(containerEl, T("预估校准范围", "Estimate calibration range"));
+      this.numberSetting(options, T("复盘看最近几天", "Review the last N days"), T("插件自己的计时记录留 45 天；再往前的日子，靠日记里任务下面那一行 ⏱ 算实际用时", "The plugin keeps its own timing records for 45 days; for earlier days, actual time comes from the ⏱ line under each task in the daily note"), "reviewDays", 7, 365);
+    }
+
+    containerEl.createEl("h3", { text: T("状态栏、音效与启动", "Status, sound & startup") });
     new Setting(containerEl).setName(T("状态栏", "Status bar")).setDesc(T("右下角常驻一格：在做事时显示最近开始的那件做了多久，没在做时显示今天的容量。单击打开螺旋日程，⌥ 单击到日记里那一行，⇧ 单击在旁边分栏打开今天的日记", "A permanent item at the bottom right: while you're working it shows how long the most recently started task has run; otherwise today's capacity. Click to open Nautilus Spiral, ⌥-click to go to that line in the note, ⇧-click to open today's note in a split"))
-      .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); }));
-    new Setting(containerEl).setName(T("界面音效", "UI sounds")).setDesc(T("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在上面单独设", "A very soft synthesized sound for start, done, stop, and the start and end of playback. Silent when Obsidian isn't in front; the reminder sound is set separately above"))
+      .addToggle((t) => t.setValue(s.statusBar !== false).onChange(async (v) => { s.statusBar = v; await this.plugin.saveData(s); this.plugin.refreshCapacity(); this.display(); }));
+    if (s.statusBar !== false) {
+      const options = this.advancedSettings(containerEl, T("状态栏计时提醒", "Status bar timer alerts"));
+      this.numberSetting(options, T("持续工作高亮（分钟）", "Highlight continuous work after (minutes)"), T("一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "After working on one thing this long without a break, the status bar timer turns red. Just a hint, no interruption. 0 = off"), "pomoMinutes", 0, 600);
+      this.numberSetting(options, T("忘了关计时的提醒（分钟）", "Forgotten timer reminder (minutes)"), T("计时开了这么久，状态栏提醒「检查计时」。不会替你停。0 = 不提醒", "After a timer has run this long, the status bar says \"Check the timer\". It won't stop it for you. 0 = off"), "forgottenMinutes", 0, 1440);
+    }
+    new Setting(containerEl).setName(T("界面音效", "UI sounds")).setDesc(T("开始做、做完、停下、回放起止各一声很轻的合成音。Obsidian 不在最前面时不响；提醒用的提示音在「日历与提醒」页单独设", "A very soft synthesized sound for start, done, stop, and the start and end of playback. Silent when Obsidian isn't in front; the reminder sound is set separately under Calendars & reminders"))
       .addToggle((t) => t.setValue(s.uiSound !== false).onChange(async (v) => { s.uiSound = v; await this.plugin.saveData(s); if (v) this.plugin.sound("done"); }));
-    num(T("番茄钟阈值（分钟）", "Pomodoro threshold (minutes)"), T("一件事连着做了这么久，状态栏的计时变红。只是提示，不会打断。0 = 不提示", "After working on one thing this long without a break, the status bar timer turns red. Just a hint, no interruption. 0 = off"), "pomoMinutes", 0, 600);
-    num(T("忘了关计时的提醒（分钟）", "Forgotten timer reminder (minutes)"), T("计时开了这么久，状态栏提醒「检查计时」。不会替你停。0 = 不提醒", "After a timer has run this long, the status bar says \"Check the timer\". It won't stop it for you. 0 = off"), "forgottenMinutes", 0, 1440);
-    new Setting(containerEl).setName(T("启动时打开今天的日记", "Open today's note on startup")).setDesc(T("按上面的「日记日期分界」算今天：已经开着就切过去，没开就开一个新标签，还没有这篇就新建", "\"Today\" follows the daily note cutoff above: switch to it if it's open, otherwise open it in a new tab, creating it if needed"))
+    new Setting(containerEl).setName(T("启动时打开今天的日记", "Open today's note on startup")).setDesc(T("按「作息与日记」页的「日记日期分界」算今天：已经开着就切过去，没开就开一个新标签，还没有这篇就新建", "\"Today\" follows the daily note cutoff under Schedule & daily notes: switch to it if it's open, otherwise open it in a new tab, creating it if needed"))
       .addToggle((t) => t.setValue(s.openTodayOnStartup !== false).onChange(async (v) => { s.openTodayOnStartup = v; await this.plugin.saveData(s); }));
     new Setting(containerEl).setName(T("启动时左侧栏显示螺旋日程", "Show Nautilus Spiral in the left sidebar on startup")).setDesc(T("展开左侧栏并切到螺旋日程标签（Wiki、文件列表等标签还在，点图标切换）", "Expands the left sidebar and switches to the Nautilus Spiral tab (other tabs like the file list stay; click their icons to switch)"))
       .addToggle((t) => t.setValue(s.revealOnStartup !== false).onChange(async (v) => { s.revealOnStartup = v; await this.plugin.saveData(s); }));
-    new Setting(containerEl).setName(T("显示人机协作", "Show agent collaboration")).setDesc(T("在容量条下面「🤖」那一行显示当天协作时长和 token，螺旋内圈画出各 Agent 干活时段。检测到 Agent Deck 时自动复用其全部 21+ Agent 唯一数据源（螺旋自身不再重复扫盘写 ai-usage.json）", "Shows daily agent collaboration time and tokens under the capacity bar, and draws active segments on the inner rings. When Agent Deck is enabled, reuses its unified 21+ agent store automatically without duplicate scanning."))
-      .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    containerEl.createEl("h3", { text: T("🤖 主力 Agent 和要追踪的 Agent", "🤖 Primary agent and tracked agents") });
-    const usingDeckSource = Boolean(this.plugin.deckAiStore());
-    if (usingDeckSource) {
-      containerEl.createEl("p", { cls: "setting-item-description", text: T("当前由 Agent Deck 提供统一会话与 Token 统计（支持 21+ 客户端，螺旋自身的重复扫盘已自动暂停）；要调整启用哪些 Agent 或扫描规则，请前往「Agent Deck → 记录」设置。下列选项仅在未启用 Agent Deck 时作为独立回退使用。", "Agent Deck currently provides unified session & token tracking (supporting 21+ clients, with Nautilus Spiral's duplicate disk scan paused). Configure tracked agents in Agent Deck Settings; options below are used only as standalone fallback.") });
-    } else {
-      containerEl.createEl("p", { cls: "setting-item-description", text: T("主力 Agent 全量追踪：读它全部的会话历史。其余开着的只追踪今天有动静的会话：今天的时长和 token 照常，以前的会话不翻。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。", "The primary agent is tracked in full: all of its session history is read. The others that are on are tracked only for sessions active today: today's time and tokens as usual, older sessions are not read. Turned-off agents are no longer read; their history already summed up is kept but hidden, and comes back when turned on again.") });
-    }
-    {
-      const reset = () => { this.plugin._ai = null; this.plugin._aiAt = 0; this.plugin.refresh(); };   // 换了要读的范围：把最近的日志重读一遍
-      new Setting(containerEl).setName(T("主力 Agent", "Primary agent")).setDesc(T("平时干活主要用哪一个。它总是开着", "The one you mainly work with. It's always on"))
-        .addDropdown((d) => {
-          for (const [k, n] of Object.entries(AI_AGENTS)) d.addOption(k, n);
-          d.setValue(aiPrimary(s)).onChange(async (v) => { s.aiPrimary = v; await this.plugin.saveData(s); reset(); this.display(); });
-        });
-      const fs = require("fs"), path = require("path"), home = require("os").homedir();
-      const where = {
-        claude: [".claude/projects", T("Claude Code 和 Claude 桌面版里的 Code 会话", "Claude Code, and Code sessions in the Claude desktop app")],
-        codex: [".codex/sessions", T("Codex 桌面版和 codex 命令行，时长和 token 都读", "Codex desktop and the codex CLI; both time and tokens are read")],
-        workbuddy: [".workbuddy/projects", T("WorkBuddy 桌面版", "WorkBuddy desktop")],
-        dsh: [".dsh/sessions", T("DeepSeek Harness 会话日志（~/.dsh/sessions），并支持 dsh-token-usage-stats API 兜底", "DeepSeek Harness session logs (~/.dsh/sessions), with fallback to the dsh-token-usage-stats local API")],
-        antigravity: [".gemini/antigravity/brain", T("Google Antigravity 会话日志", "Google Antigravity session logs")],
-      };
-      for (const k of Object.keys(AI_AGENTS)) {
-        const [dir, what] = where[k];
-        const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
-        const main = k === aiPrimary(s);
-        const desc = k === "dsh" ? T(`${what}（端口自动找；插件要在 DSH 里启用）`, `${what} (port found automatically; the plugin must be enabled in DSH)`) : T(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`, `${what}. Logs in ~/${dir}${found ? "" : " (this folder doesn't exist on this Mac yet)"}`);
-        new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? T("（主力，全量追踪）", " (primary, tracked in full)") : T("（只追踪今天的）", " (today only)")}`).setDesc(desc)
-          .addToggle((t) => t.setValue(aiOn(s).includes(k)).setDisabled(main).onChange(async (v) => {
-            s.aiAgents = { ...Object.fromEntries(Object.keys(AI_AGENTS).map((a) => [a, aiOn(s).includes(a)])), [k]: v };
-            await this.plugin.saveData(s);
-            reset();
-          }));
+
+    if (OB.Platform?.isMacOS && OB.Platform?.isDesktopApp) {
+      containerEl.createEl("h3", { text: T("🗓 macOS 小组件", "🗓 macOS widgets") });
+      new Setting(containerEl).setName(T("给小组件导出数据", "Export data for widgets")).setDesc(T("供配套的 macOS 主线和计划小组件读取", "Provides data to the companion macOS mainline and plan widgets"))
+        .addToggle((t) => t.setValue(!!s.widgets).onChange(async (v) => { s.widgets = v; this.plugin._widgetText = ""; await this.plugin.saveData(s); this.plugin.widgetTick(); this.display(); }));
+      if (s.widgets) {
+        this.textSetting(containerEl, T("计划笔记", "Plan note"), T("甘特图画哪一篇（库里的路径）。列表项里写了 🛫 开始、⏳ 计划、📅 截止日期的各画一条（Tasks 插件的写法），只写一个日期的画成那一天的一个点；上面最近的标题、或者没写日期的顶格列表项是分组；做完的（DONE、[x]、✅ 日期）画淡一点", "Which note the Gantt chart draws (vault path). Each list item with 🛫 start, ⏳ scheduled or 📅 due dates becomes a bar (the Tasks plugin's syntax); one with a single date becomes a dot on that day. The nearest heading above, or a top-level list item without dates, is a group; finished ones (DONE, [x], ✅ date) are drawn faded"), "widgetPlan");
       }
-      new Setting(containerEl).setName(T("DeepSeek Harness API 端口", "DeepSeek Harness API port")).setDesc(T("0 = 自动从 lsof 找 DSH 正在监听的端口；也可以填固定端口。DSH 里要启用 dsh-token-usage-stats 插件", "0 = find the port DSH listens on automatically via lsof; or enter a fixed port. The dsh-token-usage-stats plugin must be enabled in DSH"))
-        .addText((t) => t.setValue(String(s.dshApiPort || 0)).onChange(async (v) => { s.dshApiPort = Math.max(0, parseInt(v, 10) || 0); await this.plugin.saveData(s); reset(); }));
     }
+  }
+
+  renderActivity(containerEl) {
+    const s = this.plugin.settings;
+    containerEl.createEl("h3", { text: T("Agent 会话", "Agent sessions") });
+    new Setting(containerEl).setName(T("显示人机协作", "Show agent collaboration")).setDesc(T("在容量条下面「🤖」那一行显示当天协作时长和 token，螺旋内圈画出各 Agent 干活时段。检测到 Agent Deck 时自动复用其全部 21+ Agent 唯一数据源（螺旋自身不再重复扫盘写 ai-usage.json）", "Shows daily agent collaboration time and tokens under the capacity bar, and draws active segments on the inner rings. When Agent Deck is enabled, reuses its unified 21+ agent store automatically without duplicate scanning."))
+      .addToggle((t) => t.setValue(s.showAi !== false).onChange(async (v) => { s.showAi = v; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
+    if (s.showAi !== false) {
+      const usingDeckSource = Boolean(this.plugin.deckAiStore());
+      if (usingDeckSource) {
+        containerEl.createEl("p", { cls: "setting-item-description", text: T("当前由 Agent Deck 提供统一会话与 Token 统计（支持 21+ 客户端，螺旋自身的重复扫盘已自动暂停）；要调整启用哪些 Agent 或扫描规则，请前往「Agent Deck → 记录」设置。下列选项仅在未启用 Agent Deck 时作为独立回退使用。", "Agent Deck currently provides unified session & token tracking (supporting 21+ clients, with Nautilus Spiral's duplicate disk scan paused). Configure tracked agents in Agent Deck Settings; options below are used only as standalone fallback.") });
+      } else {
+        containerEl.createEl("p", { cls: "setting-item-description", text: T("主力 Agent 全量追踪：读它全部的会话历史。其余开着的只追踪今天有动静的会话：今天的时长和 token 照常，以前的会话不翻。关掉的不再读，已经汇总进来的历史留着但不显示，重新打开就回来。", "The primary agent is tracked in full: all of its session history is read. The others that are on are tracked only for sessions active today: today's time and tokens as usual, older sessions are not read. Turned-off agents are no longer read; their history already summed up is kept but hidden, and comes back when turned on again.") });
+      }
+      {
+        const reset = () => { this.plugin._ai = null; this.plugin._aiAt = 0; this.plugin.refresh(); };   // 换了要读的范围：把最近的日志重读一遍
+        new Setting(containerEl).setName(T("主力 Agent", "Primary agent")).setDesc(T("平时干活主要用哪一个。它总是开着", "The one you mainly work with. It's always on"))
+          .addDropdown((d) => {
+            for (const [k, n] of Object.entries(AI_AGENTS)) d.addOption(k, n);
+            d.setValue(aiPrimary(s)).onChange(async (v) => { s.aiPrimary = v; await this.plugin.saveData(s); reset(); this.display(); });
+          });
+        const fs = require("fs"), path = require("path"), home = require("os").homedir();
+        const where = {
+          claude: [".claude/projects", T("Claude Code 和 Claude 桌面版里的 Code 会话", "Claude Code, and Code sessions in the Claude desktop app")],
+          codex: [".codex/sessions", T("Codex 桌面版和 codex 命令行，时长和 token 都读", "Codex desktop and the codex CLI; both time and tokens are read")],
+          workbuddy: [".workbuddy/projects", T("WorkBuddy 桌面版", "WorkBuddy desktop")],
+          dsh: [".dsh/sessions", T("DeepSeek Harness 会话日志（~/.dsh/sessions），并支持 dsh-token-usage-stats API 兜底", "DeepSeek Harness session logs (~/.dsh/sessions), with fallback to the dsh-token-usage-stats local API")],
+          antigravity: [".gemini/antigravity/brain", T("Google Antigravity 会话日志", "Google Antigravity session logs")],
+        };
+        for (const k of Object.keys(AI_AGENTS)) {
+          const [dir, what] = where[k];
+          const found = fs.existsSync(path.join(k === "codex" ? codexHome() : home, k === "codex" ? "sessions" : dir));
+          const main = k === aiPrimary(s);
+          const desc = k === "dsh" ? T(`${what}（端口自动找；插件要在 DSH 里启用）`, `${what} (port found automatically; the plugin must be enabled in DSH)`) : T(`${what}。日志在 ~/${dir}${found ? "" : "（这台机器上还没有这个目录）"}`, `${what}. Logs in ~/${dir}${found ? "" : " (this folder doesn't exist on this Mac yet)"}`);
+          new Setting(containerEl).setName(`${AI_AGENTS[k]}${main ? T("（主力，全量追踪）", " (primary, tracked in full)") : T("（只追踪今天的）", " (today only)")}`).setDesc(desc)
+            .addToggle((t) => t.setValue(aiOn(s).includes(k)).setDisabled(main).onChange(async (v) => {
+              s.aiAgents = { ...Object.fromEntries(Object.keys(AI_AGENTS).map((a) => [a, aiOn(s).includes(a)])), [k]: v };
+              await this.plugin.saveData(s);
+              reset();
+              if (k === "dsh") this.display();
+            }));
+        }
+        if (aiOn(s).includes("dsh")) {
+          const options = this.advancedSettings(containerEl, T("DeepSeek Harness 接入", "DeepSeek Harness connection"));
+          new Setting(options).setName(T("DeepSeek Harness API 端口", "DeepSeek Harness API port")).setDesc(T("0 = 自动从 lsof 找 DSH 正在监听的端口；也可以填固定端口。DSH 里要启用 dsh-token-usage-stats 插件", "0 = find the port DSH listens on automatically via lsof; or enter a fixed port. The dsh-token-usage-stats plugin must be enabled in DSH"))
+            .addText((t) => t.setValue(String(s.dshApiPort || 0)).onChange(async (v) => { s.dshApiPort = Math.max(0, parseInt(v, 10) || 0); await this.plugin.saveData(s); reset(); }));
+        }
+      }
+    }
+
+    containerEl.createEl("h3", { text: T("游戏时间", "Gaming") });
     new Setting(containerEl).setName(T("记录游戏时间", "Track gaming time")).setDesc(T("每分钟看一眼在不在玩，螺旋最里面一圈画一条细线；记在插件目录的 game-log.json。只在 Obsidian 开着时记录", "Checks once a minute whether you're playing and draws a thin line on the innermost ring of the spiral; saved to game-log.json in the plugin folder. Only recorded while Obsidian is open"))
-      .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); }));
-    text(T("游戏进程关键词", "Game process keywords"), T("进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "Playing counts when a process path contains one of these, comma-separated; steamapps/common is recorded per game folder"), "gameProcs");
-    text(T("在最前面才算的 App", "Apps that count only in front"), T("这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "These apps stay running in the background and count as gaming only when in front, e.g. the Steam client"), "gameFrontApps");
+      .addToggle((t) => t.setValue(s.trackGames !== false).onChange(async (v) => { s.trackGames = v; await this.plugin.saveData(s); this.plugin.refresh(); this.display(); }));
+    if (s.trackGames !== false) {
+      const options = this.advancedSettings(containerEl, T("自定义游戏识别", "Customize game detection"));
+      this.textSetting(options, T("游戏进程关键词", "Game process keywords"), T("进程路径里含这些词就算在玩，逗号分隔；steamapps/common 会按游戏文件夹名分开记", "Playing counts when a process path contains one of these, comma-separated; steamapps/common is recorded per game folder"), "gameProcs");
+      this.textSetting(options, T("在最前面才算的 App", "Apps that count only in front"), T("这些 App 常驻后台，只有切到最前面时才算游戏时间，比如 Steam 客户端", "These apps stay running in the background and count as gaming only when in front, e.g. the Steam client"), "gameFrontApps");
+    }
   }
 }
 

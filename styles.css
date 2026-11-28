@@ -1,7 +1,7 @@
 /* 颜色：按浅色底配的一套低饱和纸面墨水色。主带上挨着的黄 / 蓝 / 红 / 青 / 绿彼此区分、不刺眼；
    内圈细线一个 Agent 一种颜色（Claude 橙、Codex 灰黑、WorkBuddy 青绿、DeepSeek 蓝、Antigravity 柔彩渐变），游戏是紫的，靠位置和粗细再区分一层。
    Agent 以外的几种设置里能改：改过的由插件挂在 body 上（--naut-c-xxx），没改过用这里的默认值，和 main.js 的 COLORS 一致 */
-.naut-root, .naut-rev-root, .naut-ai-modal, .naut-status-modal {
+.naut-root, .naut-embed, .naut-rev-root, .naut-ai-modal, .naut-status-modal {
   --naut-event: var(--naut-c-event, #d9a441);
   --naut-task: var(--naut-c-task, #5c86b4);
   --naut-prio: var(--naut-c-prio, #c8635f);
@@ -94,6 +94,10 @@
 
 /* 螺旋 */
 .naut-svg { width: 100%; max-width: 340px; display: block; margin: 0 auto; overflow: visible; }
+.naut-embed { margin-block: 12px; color: var(--text-muted); text-align: center; }
+.naut-embed .naut-hour { pointer-events: none; }
+.naut-embed .naut-seg:not([role="link"]) { cursor: default; }
+.naut-embed [role="link"]:focus-visible { stroke-width: 21; filter: brightness(1.14); }
 .naut-track { fill: none; stroke: var(--background-modifier-border); stroke-width: 17; stroke-linecap: round; }
 /* 没有记录的过去：斜纹（图案在螺旋自己的 <defs> 里，颜色跟着这里的 stripe） */
 .naut-gap { fill: none; stroke-width: 17; stroke-linecap: butt; opacity: .42; transition: opacity .16s ease-out, stroke-width .16s var(--naut-ease); }
@@ -424,6 +428,65 @@
 @media (prefers-reduced-motion: reduce) { .naut-main-slider, .naut-goal-input, .naut-goal-btns { animation: none !important; } .naut-main-slider input.naut-ms-range::-webkit-slider-thumb { transition: none; } }
 :is(input, textarea).naut-bad-input { border-color: #c8635f !important; box-shadow: 0 0 0 1px rgba(200, 99, 95, .25) !important; }
 .naut-setting-warn { color: var(--color-orange, #bf7a45); margin: -6px 0 12px; font-size: 12px; line-height: 1.5; }
+.vertical-tab-content.naut-settings { padding-block-start: 0; }
+.naut-settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-block-start: 10px;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.naut-settings-tabs, .naut-settings-toc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.naut-settings-tabs {
+  gap: 0 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.naut-settings-header button {
+  height: auto;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.naut-settings-tabs button {
+  min-height: 34px;
+  padding: 4px 6px;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+}
+.naut-settings-tabs button:hover, .naut-settings-toc button:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.naut-settings-tabs button[aria-current="page"] {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+  font-weight: 600;
+}
+.naut-settings-toc {
+  gap: 6px;
+  padding-block: 8px;
+  font-size: var(--font-ui-smaller);
+}
+.naut-settings-toc > span { color: var(--text-muted); margin-inline-end: 2px; }
+.naut-settings-toc button {
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  font-size: inherit;
+}
+.naut-settings-toc button[aria-current="location"] {
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-primary));
+  border-color: var(--interactive-accent);
+}
+.naut-settings-header button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
+.naut-settings-body { padding-block-start: 12px; }
+.naut-settings-advanced { margin-block: 10px; }
+.naut-settings-advanced summary { color: var(--text-muted); cursor: pointer; padding-block: 4px; }
 
 /* 进度条下面那几行：左边一格图标、文字从同一条线开始，数字等宽；细账在悬停提示里 */
 .naut-cap-row { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); align-items: baseline; margin-top: 3px; font-size: var(--font-ui-smaller); color: var(--text-muted); font-variant-numeric: tabular-nums; cursor: help; }
@@ -636,6 +699,7 @@ body:not(.is-focused) .naut-enter .naut-seg.naut-live { animation-play-state: ru
 .naut-label-group.is-kw-queued { --naut-lbl-c: var(--naut-kw-queued); }
 .naut-label-group.is-kw-delegated { --naut-lbl-c: var(--naut-kw-delegated); }
 .naut-link-line { fill: none; stroke: var(--naut-lbl-c); stroke-width: 0.9; stroke-dasharray: 2.5 2.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.30; transition: opacity .18s, stroke-width .15s, stroke-dasharray .18s; }
+.naut-label-box { fill: none; stroke: var(--interactive-accent); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
 .naut-link-dot { fill: var(--naut-lbl-c); opacity: 0.48; transition: opacity .18s, transform .18s; }
 .naut-label-body { transition: transform .18s cubic-bezier(.175, .885, .32, 1.275), opacity .15s; }
 .naut-label-bar { fill: var(--naut-lbl-c); opacity: 0.72; transition: opacity .15s; }

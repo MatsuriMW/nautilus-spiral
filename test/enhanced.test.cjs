@@ -158,6 +158,38 @@ const { DEFAULTS } = C;
     }
   }
 
+  // Use measured widths in layout and truncate only at a grapheme boundary.
+  {
+    const entry = { label: '👩🏽‍💻WWWWWWWWWW', midAngle: 0 };
+    const measure = (text) => [...text.replaceAll('👩🏽‍💻', '★')].reduce((width, c) => width + (c === '★' ? 156 : c === 'W' ? 13 : 4), 0);
+    const [label] = C.layoutSpiralLabels([entry], { measure });
+    assert.equal(label.text, '…', 'a grapheme wider than the available label must stay intact');
+    assert.ok(measure(label.text) <= label.w - 14);
+    const [wide] = C.layoutSpiralLabels([{ ...entry, label: 'WWWWWWWWWWWW' }], { measure });
+    assert.equal(wide.text, 'WWWWWWWWWW…');
+    assert.ok(measure(wide.text) <= wide.w - 14);
+  }
+
+  {
+    const plugin = Object.create(Plugin.prototype);
+    const path = 'Journal/2026-11-28.md';
+    const cfg = { ...DEFAULTS };
+    const raw = '- DOING 12:00 做任务 1h';
+    const first = plugin.parsedSpiralJournal(path, raw, cfg);
+    assert.equal(plugin.parsedSpiralJournal(path, raw, { ...cfg, minChunk: 10 }), first);
+    plugin.settings = cfg;
+    plugin.withCalendar = () => null;
+    const snapshot = JSON.stringify(first.items);
+    const opts = { content: raw, mirrorMap: new Map(), dayKey: '2026-11-28', bounds: {}, dayRel: 0, realRel: 0 };
+    const initial = plugin.prepareSpiralDay({ path }, null, { ...opts, now: 730, realNow: 730 });
+    const later = plugin.prepareSpiralDay({ path }, null, { ...opts, now: 750, realNow: 750 });
+    assert.equal(initial.plan.from, 730);
+    assert.equal(later.plan.from, 750);
+    assert.equal(JSON.stringify(first.items), snapshot, 'live scheduling must not mutate cached parsed tasks');
+    assert.notEqual(plugin.parsedSpiralJournal(path, raw, { ...cfg, dayCutoff: 0 }), first);
+    assert.notEqual(plugin.parsedSpiralJournal(path, raw + '\n- TODO 加一项', cfg), first);
+  }
+
   // 4. Mirror embed parsing, applyMirrorLines, source writeback & cache signatures
   {
     assert.equal(C.parseMirrorEmbed('- ![[项目/A#^ad-1]]').blockId, 'ad-1');
